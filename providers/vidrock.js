@@ -44,15 +44,58 @@ const PLAYBACK_HEADERS = {
 };
 
 // vidrock.net's own backend always advertises the same handful of named
-// servers (Nova, Luna, Orion, Astra, ...), but which of them are actually
-// reachable varies day to day - some sit behind a Cloudflare bot-challenge,
-// some 403 outright, some time out at the origin. Rather than serve a pile
-// of dead links that all fail the moment a user taps them, validate each one
-// and only return the ones that actually respond. There's no JS-level
-// timeout available in this sandbox (no setTimeout), so a hung check is
-// bounded only by the native fetch bridge's own ~30s timeout rather than a
-// tighter one - slower in the worst case, but still correct.
+// servers (Nova, Luna, Orion, Astra, Atlas, ...), but which of them are
+// actually reachable varies day to day - some sit behind a Cloudflare
+// bot-challenge, some 403 outright, some time out at the origin. Rather than
+// serve a pile of dead links that all fail the moment a user taps them,
+// validate each one and only return the ones that actually respond. There's
+// no JS-level timeout available in this sandbox (no setTimeout), so a hung
+// check is bounded only by the native fetch bridge's own ~30s timeout rather
+// than a tighter one - slower in the worst case, but still correct.
+//
+// A plain HEAD/ranged-GET on the stream URL isn't enough for HLS (.m3u8)
+// streams: the manifest itself (and any nested variant playlist under it)
+// is served by vidrock's own always-up routing layer, so it loads fine even
+// when the actual video segments it points to - hosted on a separate,
+// less reliable CDN - are dead or blocked (seen in practice: "Atlas"'s
+// master.m3u8 and its variant playlist both returned 200, while every
+// segment inside 403'd). So for .m3u8 URLs, walk the manifest chain down to
+// a real segment reference and validate that instead of the manifest.
+function isM3u8Url(url) {
+  return /\.m3u8(\?|$)/i.test(url);
+}
+
+function firstManifestRef(text, baseUrl) {
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+  if (lines.length === 0) return null;
+  try {
+    return new URL(lines[0], baseUrl).toString();
+  } catch (e) {
+    return null;
+  }
+}
+
+function validateM3u8Chain(url, headers, hopsLeft) {
+  return fetch(url, { headers })
+    .then(res => {
+      if (!res.ok) return false;
+      return res.text().then(text => {
+        const next = firstManifestRef(text, url);
+        if (!next) return true; // nothing to follow - manifest itself is the only signal we have
+        if (isM3u8Url(next) && hopsLeft > 0) {
+          return validateM3u8Chain(next, headers, hopsLeft - 1);
+        }
+        // `next` is an actual media segment - this is the real reachability check.
+        return rangedValidateUrl(next, headers);
+      });
+    })
+    .catch(() => false);
+}
+
 function validateStreamUrl(stream) {
+  if (isM3u8Url(stream.url)) {
+    return validateM3u8Chain(stream.url, stream.headers, 2);
+  }
   // A HEAD response that comes back with a definitive status (403, 522, ...)
   // is conclusive - retrying with GET won't change a Cloudflare challenge or
   // an origin timeout. Only fall back to a ranged GET when HEAD itself fails
@@ -60,12 +103,12 @@ function validateStreamUrl(stream) {
   // rather than a clean status code).
   return fetch(stream.url, { method: 'HEAD', headers: stream.headers })
     .then(res => res.ok || res.status === 206)
-    .catch(() => rangedValidate(stream));
+    .catch(() => rangedValidateUrl(stream.url, stream.headers));
 }
 
-function rangedValidate(stream) {
-  const headers = Object.assign({}, stream.headers, { Range: 'bytes=0-2048' });
-  return fetch(stream.url, { method: 'GET', headers })
+function rangedValidateUrl(url, headers) {
+  const rangedHeaders = Object.assign({}, headers, { Range: 'bytes=0-2048' });
+  return fetch(url, { method: 'GET', headers: rangedHeaders })
     .then(res => res.ok || res.status === 206)
     .catch(() => false);
 }

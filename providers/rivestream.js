@@ -113,6 +113,25 @@ function fetchFromService(service, tmdbId, mediaType, season, episode, mediaInfo
     });
 }
 
+// Which of these services actually return a working URL (vs. a 403, a dead
+// CDN, or a link-shortener page) drifts over time - "primevids" used to be
+// one of the two reliable ones (see comment above) and has since started
+// 403ing consistently. Rather than hardcode/update an exclusion list every
+// time a service degrades, validate each URL live and only return the ones
+// that actually respond.
+function validateStreamUrl(stream) {
+  return fetch(stream.url, { method: 'HEAD', headers: stream.headers })
+    .then(res => res.ok || res.status === 206)
+    .catch(() => rangedValidate(stream));
+}
+
+function rangedValidate(stream) {
+  const headers = Object.assign({}, stream.headers, { Range: 'bytes=0-2048' });
+  return fetch(stream.url, { method: 'GET', headers })
+    .then(res => res.ok || res.status === 206)
+    .catch(() => false);
+}
+
 function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) {
   console.log(`[RiveStream] getStreams start tmdbId=${tmdbId} type=${mediaType} S=${season || ''} E=${episode || ''}`);
 
@@ -126,8 +145,14 @@ function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) 
       SERVICES.map(service => fetchFromService(service, tmdbId, mediaType, season, episode, mediaInfo))
     ).then(results => {
       const streams = results.flat();
-      console.log(`[RiveStream] Found ${streams.length} stream(s) across ${SERVICES.length} services`);
-      return streams;
+      console.log(`[RiveStream] Found ${streams.length} stream(s) across ${SERVICES.length} services, validating...`);
+      return Promise.all(streams.map(s => validateStreamUrl(s).then(ok => ({ stream: s, ok })))).then(validated => {
+        const valid = validated.filter(v => v.ok).map(v => v.stream);
+        const dead = validated.filter(v => !v.ok).map(v => v.stream.name);
+        if (dead.length) console.log(`[RiveStream] Dropping unreachable: ${dead.join(', ')}`);
+        console.log(`[RiveStream] ${valid.length}/${streams.length} stream(s) validated OK`);
+        return valid;
+      });
     });
   }).catch(err => {
     console.log(`[RiveStream] getStreams failed: ${err.message}`);

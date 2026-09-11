@@ -120,6 +120,61 @@ function decryptPayload(token) {
   return gcmDecrypt(iv, ciphertext, GCM_KEY_HEX);
 }
 
+// Peachify's providers sometimes return dead/expired links (the upstream
+// CDN a given provider proxies to changes without peachify's own API
+// noticing) - validate each one live and only return what's actually
+// reachable, rather than showing a stream that 404s the moment it's tapped.
+// No JS-level timeout exists in this sandbox (no setTimeout), so a hung
+// check is bounded only by the native fetch bridge's own ~30s timeout.
+function isM3u8Url(url) {
+  return /\.m3u8(\?|$)/i.test(url);
+}
+
+function firstManifestRef(text, baseUrl) {
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+  if (lines.length === 0) return null;
+  try {
+    return new URL(lines[0], baseUrl).toString();
+  } catch (e) {
+    return null;
+  }
+}
+
+// HLS manifests are often served by a stable routing layer even when the
+// actual segments behind them are dead, so a plain HEAD/GET on the .m3u8
+// itself isn't a reliable check - walk the chain down to a real segment.
+function validateM3u8Chain(url, headers, hopsLeft) {
+  return fetch(url, { headers })
+    .then(res => {
+      if (!res.ok) return false;
+      return res.text().then(text => {
+        const next = firstManifestRef(text, url);
+        if (!next) return true;
+        if (isM3u8Url(next) && hopsLeft > 0) {
+          return validateM3u8Chain(next, headers, hopsLeft - 1);
+        }
+        return rangedValidateUrl(next, headers);
+      });
+    })
+    .catch(() => false);
+}
+
+function validateStreamUrl(stream) {
+  if (isM3u8Url(stream.url)) {
+    return validateM3u8Chain(stream.url, stream.headers, 2);
+  }
+  return fetch(stream.url, { method: 'HEAD', headers: stream.headers })
+    .then(res => res.ok || res.status === 206)
+    .catch(() => rangedValidateUrl(stream.url, stream.headers));
+}
+
+function rangedValidateUrl(url, headers) {
+  const rangedHeaders = Object.assign({}, headers, { Range: 'bytes=0-2048' });
+  return fetch(url, { method: 'GET', headers: rangedHeaders })
+    .then(res => res.ok || res.status === 206)
+    .catch(() => false);
+}
+
 function getTmdbInfo(tmdbId, mediaType) {
   const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
   const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
@@ -196,8 +251,14 @@ function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) 
       PROVIDERS.map(p => fetchFromProvider(p, tmdbId, mediaType, season, episode, mediaInfo))
     ).then(results => {
       const streams = results.flat();
-      console.log(`[Peachify] Found ${streams.length} stream(s) across ${PROVIDERS.length} providers`);
-      return streams;
+      console.log(`[Peachify] Found ${streams.length} stream(s) across ${PROVIDERS.length} providers, validating...`);
+      return Promise.all(streams.map(s => validateStreamUrl(s).then(ok => ({ stream: s, ok })))).then(validated => {
+        const valid = validated.filter(v => v.ok).map(v => v.stream);
+        const dead = validated.filter(v => !v.ok).map(v => v.stream.name);
+        if (dead.length) console.log(`[Peachify] Dropping unreachable: ${dead.join(', ')}`);
+        console.log(`[Peachify] ${valid.length}/${streams.length} stream(s) validated OK`);
+        return valid;
+      });
     });
   }).catch(err => {
     console.log(`[Peachify] getStreams failed: ${err.message}`);

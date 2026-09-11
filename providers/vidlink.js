@@ -80,6 +80,49 @@ function makeRequest(_0) {
   });
 }
 
+// Vidlink's own backend can hand back links to a CDN that's currently
+// throttling or dead (e.g. bcdn.hakunaymatata.com returning a plain nginx
+// 429) even though vidlink's API itself responded fine - validate each
+// resolved URL live and only return what's actually reachable, rather than
+// showing a stream that fails the instant it's tapped. No JS-level timeout
+// exists in this sandbox (no setTimeout), so a hung check is bounded only
+// by the native fetch bridge's own ~30s timeout.
+function isM3u8Url(url) {
+  return /\.m3u8(\?|$)/i.test(url);
+}
+function firstManifestRef(text, baseUrl) {
+  const lines = text.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+  if (lines.length === 0) return null;
+  try {
+    return new URL(lines[0], baseUrl).toString();
+  } catch (e) {
+    return null;
+  }
+}
+function validateM3u8Chain(url, headers, hopsLeft) {
+  return fetch(url, { headers }).then((res) => {
+    if (!res.ok) return false;
+    return res.text().then((text) => {
+      const next = firstManifestRef(text, url);
+      if (!next) return true;
+      if (isM3u8Url(next) && hopsLeft > 0) {
+        return validateM3u8Chain(next, headers, hopsLeft - 1);
+      }
+      return rangedValidateUrl(next, headers);
+    });
+  }).catch(() => false);
+}
+function validateStreamUrl(stream) {
+  if (isM3u8Url(stream.url)) {
+    return validateM3u8Chain(stream.url, stream.headers, 2);
+  }
+  return fetch(stream.url, { method: "HEAD", headers: stream.headers }).then((res) => res.ok || res.status === 206).catch(() => rangedValidateUrl(stream.url, stream.headers));
+}
+function rangedValidateUrl(url, headers) {
+  const rangedHeaders = Object.assign({}, headers, { Range: "bytes=0-2048" });
+  return fetch(url, { method: "GET", headers: rangedHeaders }).then((res) => res.ok || res.status === 206).catch(() => false);
+}
+
 // src/vidlink/tmdb.js
 function getTmdbInfo(tmdbId, mediaType) {
   return __async(this, null, function* () {
@@ -394,6 +437,17 @@ function processVidlinkResponse(data, mediaInfo) {
   return streams;
 }
 
+function validateAndFilterStreams(streams) {
+  console.log(`[Vidlink] Validating ${streams.length} stream(s)...`);
+  return Promise.all(streams.map((s) => validateStreamUrl(s).then((ok) => ({ stream: s, ok })))).then((validated) => {
+    const valid = validated.filter((v) => v.ok).map((v) => v.stream);
+    const dead = validated.filter((v) => !v.ok).map((v) => v.stream.name);
+    if (dead.length) console.log(`[Vidlink] Dropping unreachable: ${dead.join(", ")}`);
+    console.log(`[Vidlink] ${valid.length}/${streams.length} stream(s) validated OK`);
+    return valid;
+  });
+}
+
 // src/vidlink/index.js
 var QUALITY_ORDER = {
   "4K": 5,
@@ -445,11 +499,11 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
         const allStreams = directStreams.concat(...parsedStreamArrays);
         allStreams.sort((a, b) => (QUALITY_ORDER[b.quality] || -3) - (QUALITY_ORDER[a.quality] || -3));
         console.log(`[Vidlink] Successfully processed ${allStreams.length} total streams`);
-        return allStreams;
+        return yield validateAndFilterStreams(allStreams);
       } else {
         directStreams.sort((a, b) => (QUALITY_ORDER[b.quality] || -3) - (QUALITY_ORDER[a.quality] || -3));
         console.log(`[Vidlink] Successfully processed ${directStreams.length} streams`);
-        return directStreams;
+        return yield validateAndFilterStreams(directStreams);
       }
     } catch (error) {
       console.error(`[Vidlink] Error in getStreams: ${error.message}`);

@@ -1,0 +1,437 @@
+<title>Signal Test — 45 Titles</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+
+  :root {
+    --bg: #0b0d0a;
+    --surface: #141710;
+    --surface-2: #1a1e15;
+    --border: #2a3023;
+    --border-soft: #20261b;
+    --text: #dce3d5;
+    --text-dim: #8a9483;
+    --text-faint: #5c6656;
+    --accent: #4fd6c4;
+    --ch-movie: #e8a154;
+    --ch-series: #6fcf97;
+    --ch-anime: #7ba8e0;
+    --bad: #f1655c;
+    --good: #6fcf97;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Sans', -apple-system, sans-serif;
+    line-height: 1.5;
+  }
+  ::selection { background: var(--accent); color: #06110f; }
+
+  .mono { font-family: 'IBM Plex Mono', 'SF Mono', monospace; font-variant-numeric: tabular-nums; }
+
+  .scope-bg {
+    background-image:
+      linear-gradient(var(--border-soft) 1px, transparent 1px),
+      linear-gradient(90deg, var(--border-soft) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 40px 24px 80px; }
+
+  header.top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 16px;
+    padding-bottom: 22px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 28px;
+  }
+  .eyebrow {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .eyebrow .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--good);
+    box-shadow: 0 0 8px var(--good);
+  }
+  h1 {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 30px;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  .run-meta {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12.5px;
+    color: var(--text-dim);
+    text-align: right;
+    line-height: 1.7;
+  }
+  .run-meta b { color: var(--text); font-weight: 600; }
+
+  /* ---- category tiles ---- */
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin-bottom: 22px;
+  }
+  .tile {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--ch);
+    border-radius: 6px;
+    padding: 18px 20px;
+  }
+  .tile .cat-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ch);
+    margin-bottom: 4px;
+  }
+  .tile .cat-n { color: var(--text-faint); font-weight: 400; }
+  .tile .big {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 32px;
+    font-weight: 600;
+    margin: 6px 0 10px;
+  }
+  .tile .stats {
+    display: flex;
+    gap: 18px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12.5px;
+    color: var(--text-dim);
+  }
+  .tile .stats span b { color: var(--text); font-weight: 600; }
+
+  /* ---- anomaly panel ---- */
+  .anomaly {
+    background: linear-gradient(180deg, rgba(241,101,92,0.08), rgba(241,101,92,0.02));
+    border: 1px solid rgba(241,101,92,0.35);
+    border-radius: 6px;
+    padding: 18px 20px;
+    margin-bottom: 22px;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 20px;
+    align-items: center;
+  }
+  .anomaly .stripe {
+    align-self: stretch;
+    width: 3px;
+    background: var(--bad);
+    border-radius: 2px;
+  }
+  .anomaly .tag {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    color: var(--bad);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .anomaly h3 { margin: 0 0 6px; font-size: 16px; font-family: 'IBM Plex Mono', monospace; }
+  .anomaly p { margin: 0; color: var(--text-dim); font-size: 13.5px; max-width: 62ch; }
+  .anomaly .evidence {
+    font-family: 'IBM Plex Mono', monospace;
+    text-align: center;
+    padding: 10px 16px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+  }
+  .anomaly .evidence .num { font-size: 22px; font-weight: 700; color: var(--bad); }
+  .anomaly .evidence .lbl { font-size: 10px; color: var(--text-faint); letter-spacing: 0.06em; text-transform: uppercase; margin-top: 2px; }
+
+  /* ---- section headings ---- */
+  h2.section {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin: 34px 0 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  h2.section::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  /* ---- provider leaderboard ---- */
+  .leaderboard {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 20px;
+  }
+  .lb-row {
+    display: grid;
+    grid-template-columns: 140px 1fr 56px;
+    align-items: center;
+    gap: 14px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .lb-row:last-child { border-bottom: none; }
+  .lb-name { font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: var(--text); }
+  .lb-track { height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+  .lb-fill { height: 100%; background: var(--accent); border-radius: 4px; }
+  .lb-fill.zero { background: var(--border); }
+  .lb-count { font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; color: var(--text-dim); text-align: right; }
+
+  /* ---- filter chips ---- */
+  .chips { display: flex; gap: 8px; margin-bottom: 14px; }
+  .chip {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: border-color .15s, color .15s;
+  }
+  .chip:hover { color: var(--text); }
+  .chip.active { color: var(--bg); border-color: transparent; }
+  .chip[data-cat="all"].active { background: var(--text); }
+  .chip[data-cat="movie"].active { background: var(--ch-movie); }
+  .chip[data-cat="series"].active { background: var(--ch-series); }
+  .chip[data-cat="anime"].active { background: var(--ch-anime); }
+
+  /* ---- table ---- */
+  .table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 6px; }
+  table { width: 100%; border-collapse: collapse; min-width: 780px; }
+  thead th {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    text-align: left;
+    padding: 10px 14px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  thead th.num, tbody td.num { text-align: right; }
+  tbody td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--surface-2); }
+  tbody tr.capped td.time { color: var(--bad); }
+  .cat-dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-right: 8px;
+    vertical-align: middle;
+  }
+  .title-cell { font-weight: 500; }
+  .type-badge {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: var(--text-faint);
+    text-transform: uppercase;
+  }
+  .pref-name { color: var(--text); }
+  .pref-q {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--accent);
+    margin-left: 6px;
+  }
+  .cap-flag {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: var(--bad);
+    margin-left: 6px;
+  }
+
+  footer {
+    margin-top: 40px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11.5px;
+    color: var(--text-faint);
+  }
+
+  @media (max-width: 720px) {
+    .tiles { grid-template-columns: 1fr; }
+    .anomaly { grid-template-columns: 1fr; }
+    .anomaly .stripe { display: none; }
+    header.top { flex-direction: column; align-items: flex-start; }
+    .run-meta { text-align: left; }
+  }
+</style>
+
+<div class="scope-bg">
+<div class="wrap">
+
+  <header class="top">
+    <div>
+      <div class="eyebrow"><span class="dot"></span>Aggregator API · Signal Test</div>
+      <h1>45-Title Benchmark</h1>
+    </div>
+    <div class="run-meta">
+      15 movies · 15 series · 15 anime<br>
+      Wall time <b>3m 34s</b> · Providers queried <b>19</b><br>
+      Streams gathered <b>1,174</b>
+    </div>
+  </header>
+
+  <div class="tiles">
+    <div class="tile" style="--ch: var(--ch-movie)">
+      <div class="cat-label">Movies <span class="cat-n">n=15</span></div>
+      <div class="big mono">19.1</div>
+      <div class="stats">
+        <span>avg time <b>8.2s</b></span>
+        <span>preferred found <b>15/15</b></span>
+      </div>
+    </div>
+    <div class="tile" style="--ch: var(--ch-series)">
+      <div class="cat-label">Series <span class="cat-n">n=15</span></div>
+      <div class="big mono">36.6</div>
+      <div class="stats">
+        <span>avg time <b>20.0s</b></span>
+        <span>preferred found <b>15/15</b></span>
+      </div>
+    </div>
+    <div class="tile" style="--ch: var(--ch-anime)">
+      <div class="cat-label">Anime <span class="cat-n">n=15</span></div>
+      <div class="big mono">22.6</div>
+      <div class="stats">
+        <span>avg time <b>13.3s</b></span>
+        <span>preferred found <b>15/15</b></span>
+      </div>
+    </div>
+  </div>
+  <div style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--text-faint); margin: -8px 0 22px 4px;">big number = avg streams returned per title</div>
+
+  <div class="anomaly">
+    <div class="stripe"></div>
+    <div>
+      <div class="tag">⚠ Systemic timeout</div>
+      <h3>StreamFlix stalls every TV/anime-series request to the full 20s ceiling</h3>
+      <p>StreamFlix's episode lookup opens a WebSocket to a Firebase realtime-DB endpoint with its own 30s internal timeout — but the server's per-provider cap is 20s, so it's cut off first, every time, before ever succeeding or reaching its own failure point. Movies never touch this path and were unaffected (2.9s when tested directly). Recommend either lowering <code class="mono">PROVIDER_TIMEOUT_MS</code> so TV requests fail faster, or fixing/removing the WebSocket path — as-is, it adds ~20s of dead weight to every single TV and anime-series lookup.</p>
+    </div>
+    <div class="evidence">
+      <div class="num mono">23/23</div>
+      <div class="lbl">TV queries hit the cap</div>
+    </div>
+  </div>
+
+  <h2 class="section">Provider reliability across all 45 runs</h2>
+  <div class="leaderboard" id="leaderboard"></div>
+
+  <h2 class="section">Per-title results</h2>
+  <div class="chips">
+    <button class="chip active" data-cat="all">All · 45</button>
+    <button class="chip" data-cat="movie" style="--ch: var(--ch-movie)">Movies · 15</button>
+    <button class="chip" data-cat="series" style="--ch: var(--ch-series)">Series · 15</button>
+    <button class="chip" data-cat="anime" style="--ch: var(--ch-anime)">Anime · 15</button>
+  </div>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Title</th>
+          <th>Type</th>
+          <th class="num">Streams</th>
+          <th>Preferred pick</th>
+          <th class="num">Providers</th>
+          <th class="num">Time</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <footer>
+    Run against <span class="mono">server.js</span> (this repo's aggregator API), default provider set (19 of 20 enabled — <span class="mono">streamapi</span> excluded as self-referential). TMDB S1E1 used for all series/anime-series lookups.
+  </footer>
+
+</div>
+</div>
+
+<script>
+const ROWS = [{"cat":"movie","title":"Fight Club","type":"movie","tmdbId":550,"streams":14,"ms":10094,"succ":13,"queried":19,"prefName":"4KHDHub - HubCloud 10Gbps 1080p","prefQ":"1080p","prefSrc":"4khdhub"},{"cat":"movie","title":"The Dark Knight","type":"movie","tmdbId":155,"streams":19,"ms":9238,"succ":12,"queried":19,"prefName":"4KHDHub - HubCloud 10Gbps 2160p","prefQ":"2160p","prefSrc":"4khdhub"},{"cat":"movie","title":"Inception","type":"movie","tmdbId":27205,"streams":27,"ms":10066,"succ":12,"queried":19,"prefName":"HDHub4u 10Gbps","prefQ":"4K","prefSrc":"hdhub4u"},{"cat":"movie","title":"Oppenheimer","type":"movie","tmdbId":872585,"streams":26,"ms":8622,"succ":13,"queried":19,"prefName":"4KHDHub - HubCloud 10Gbps 2160p","prefQ":"2160p","prefSrc":"4khdhub"},{"cat":"movie","title":"The Shawshank Redemption","type":"movie","tmdbId":278,"streams":20,"ms":8334,"succ":11,"queried":19,"prefName":"4KHDHub - HubCloud 10Gbps 2160p","prefQ":"2160p","prefSrc":"4khdhub"},{"cat":"movie","title":"Pulp Fiction","type":"movie","tmdbId":680,"streams":13,"ms":8524,"succ":8,"queried":19,"prefName":"4KHDHub - HubCloud 10Gbps 2160p","prefQ":"2160p","prefSrc":"4khdhub"},{"cat":"movie","title":"The Matrix","type":"movie","tmdbId":603,"streams":19,"ms":6941,"succ":11,"queried":19,"prefName":"4KHDHub - HubCloud 10Gbps 2160p","prefQ":"2160p","prefSrc":"4khdhub"},{"cat":"movie","title":"Interstellar","type":"movie","tmdbId":157336,"streams":25,"ms":5599,"succ":10,"queried":19,"prefName":"4KHDHub - HubCloud 10Gbps 2160p","prefQ":"2160p","prefSrc":"4khdhub"},{"cat":"movie","title":"Parasite","type":"movie","tmdbId":496243,"streams":8,"ms":8890,"succ":10,"queried":19,"prefName":"MovieBox","prefQ":"1080p","prefSrc":"moviebox"},{"cat":"movie","title":"Dune: Part Two","type":"movie","tmdbId":693134,"streams":23,"ms":4904,"succ":9,"queried":19,"prefName":"HDHub4u FSL","prefQ":"4K","prefSrc":"hdhub4u"},{"cat":"movie","title":"The Godfather","type":"movie","tmdbId":238,"streams":17,"ms":11015,"succ":9,"queried":19,"prefName":"MovieBox","prefQ":"1080p","prefSrc":"moviebox"},{"cat":"movie","title":"Avengers: Endgame","type":"movie","tmdbId":299534,"streams":16,"ms":8440,"succ":11,"queried":19,"prefName":"UHDMovies [Driveseed]","prefQ":"2160p","prefSrc":"uhdmovies"},{"cat":"movie","title":"Gladiator","type":"movie","tmdbId":98,"streams":15,"ms":8326,"succ":11,"queried":19,"prefName":"MovieBox","prefQ":"1080p","prefSrc":"moviebox"},{"cat":"movie","title":"Titanic","type":"movie","tmdbId":597,"streams":21,"ms":9141,"succ":11,"queried":19,"prefName":"4KHDHub - HubCloud 10Gbps 2160p","prefQ":"2160p","prefSrc":"4khdhub"},{"cat":"movie","title":"The Mandalorian and Grogu","type":"movie","tmdbId":1228710,"streams":23,"ms":4467,"succ":8,"queried":19,"prefName":"4KHDHub - FSL 2160p","prefQ":"2160p","prefSrc":"4khdhub"},{"cat":"series","title":"Breaking Bad","type":"tv","tmdbId":1396,"streams":28,"ms":20033,"succ":10,"queried":19,"prefName":"MovieBox","prefQ":"1080p","prefSrc":"moviebox"},{"cat":"series","title":"Game of Thrones","type":"tv","tmdbId":1399,"streams":31,"ms":20025,"succ":9,"queried":19,"prefName":"4KHDHub - HubCloud 10Gbps 1080p","prefQ":"1080p","prefSrc":"4khdhub"},{"cat":"series","title":"Stranger Things","type":"tv","tmdbId":66732,"streams":57,"ms":20023,"succ":10,"queried":19,"prefName":"MovieBox","prefQ":"1080p","prefSrc":"moviebox"},{"cat":"series","title":"The Office","type":"tv","tmdbId":2316,"streams":16,"ms":20036,"succ":8,"queried":19,"prefName":"MovieBox","prefQ":"1080p","prefSrc":"moviebox"},{"cat":"series","title":"Friends","type":"tv","tmdbId":1668,"streams":36,"ms":20047,"succ":9,"queried":19,"prefName":"4KHDHub - FSL 1080p","prefQ":"1080p","prefSrc":"4khdhub"},{"cat":"series","title":"The Wire","type":"tv","tmdbId":1438,"streams":20,"ms":20042,"succ":7,"queried":19,"prefName":"4KHDHub - HubCloud 10Gbps 1080p","prefQ":"1080p","prefSrc":"4khdhub"},{"cat":"series","title":"Better Call Saul","type":"tv","tmdbId":60059,"streams":26,"ms":20032,"succ":8,"queried":19,"prefName":"MovieBox","prefQ":"1080p","prefSrc":"moviebox"},{"cat":"series","title":"The Boys","type":"tv","tmdbId":76479,"streams":41,"ms":20017,"succ":9,"queried":19,"prefName":"MovieBox","prefQ":"1080p","prefSrc":"moviebox"},{"cat":"series","title":"House of the Dragon","type":"tv","tmdbId":94997,"streams":60,"ms":20020,"succ":10,"queried":19,"prefName":"MovieBox","prefQ":"1080p","prefSrc":"moviebox"},{"cat":"series","title":"The Last of Us","type":"tv","tmdbId":100088,"streams":68,"ms":20030,"succ":13,"queried":19,"prefName":"MovieBox","prefQ":"1080p","prefSrc":"moviebox"},{"cat":"series","title":"Loki","type":"tv","tmdbId":84958,"streams":57,"ms":20025,"succ":12,"queried":19,"prefName":"MovieBox","prefQ":"1080p","prefSrc":"moviebox"},{"cat":"series","title":"Peaky Blinders","type":"tv","tmdbId":60574,"streams":46,"ms":20020,"succ":8,"queried":19,"prefName":"MovieBox","prefQ":"1080p","prefSrc":"moviebox"},{"cat":"series","title":"Chernobyl","type":"tv","tmdbId":87108,"streams":10,"ms":20024,"succ":4,"queried":19,"prefName":"Vidlink - 1080p","prefQ":"1080p","prefSrc":"vidlink"},{"cat":"series","title":"True Detective","type":"tv","tmdbId":46648,"streams":28,"ms":20019,"succ":9,"queried":19,"prefName":"4KHDHub - HubCloud 10Gbps 1080p","prefQ":"1080p","prefSrc":"4khdhub"},{"cat":"series","title":"The Mandalorian","type":"tv","tmdbId":82856,"streams":25,"ms":20036,"succ":7,"queried":19,"prefName":"4KHDHub - HubCloud 10Gbps 1080p","prefQ":"1080p","prefSrc":"4khdhub"},{"cat":"anime","title":"Spirited Away","type":"movie","tmdbId":129,"streams":24,"ms":5727,"succ":7,"queried":19,"prefName":"4KHDHub - FSL 1080p","prefQ":"1080p","prefSrc":"4khdhub"},{"cat":"anime","title":"Your Name.","type":"movie","tmdbId":372058,"streams":26,"ms":7050,"succ":7,"queried":19,"prefName":"4KHDHub - HubCloud 10Gbps 2160p","prefQ":"2160p","prefSrc":"4khdhub"},{"cat":"anime","title":"Demon Slayer: Mugen Train","type":"movie","tmdbId":635302,"streams":1,"ms":2431,"succ":1,"queried":19,"prefName":"RiveStream - Citadel","prefQ":"1080p","prefSrc":"rivestream"},{"cat":"anime","title":"Princess Mononoke","type":"movie","tmdbId":128,"streams":15,"ms":8462,"succ":7,"queried":19,"prefName":"MovieBox","prefQ":"1080p","prefSrc":"moviebox"},{"cat":"anime","title":"Suzume","type":"movie","tmdbId":916224,"streams":27,"ms":5631,"succ":9,"queried":19,"prefName":"4KHDHub - HubCloud 10Gbps 2160p","prefQ":"2160p","prefSrc":"4khdhub"},{"cat":"anime","title":"A Silent Voice","type":"movie","tmdbId":378064,"streams":3,"ms":2697,"succ":5,"queried":19,"prefName":"MovieBox","prefQ":"1080p","prefSrc":"moviebox"},{"cat":"anime","title":"Weathering with You","type":"movie","tmdbId":568160,"streams":21,"ms":6918,"succ":9,"queried":19,"prefName":"4KHDHub - HubCloud 10Gbps 2160p","prefQ":"2160p","prefSrc":"4khdhub"},{"cat":"anime","title":"Attack on Titan","type":"tv","tmdbId":1429,"streams":28,"ms":20018,"succ":7,"queried":19,"prefName":"MovieBox","prefQ":"1080p","prefSrc":"moviebox"},{"cat":"anime","title":"Jujutsu Kaisen","type":"tv","tmdbId":95479,"streams":36,"ms":20016,"succ":7,"queried":19,"prefName":"MovieBox","prefQ":"1080p","prefSrc":"moviebox"},{"cat":"anime","title":"Demon Slayer: Kimetsu no Yaiba","type":"tv","tmdbId":85937,"streams":16,"ms":20017,"succ":6,"queried":19,"prefName":"4KHDHub - HubCloud 10Gbps 1080p","prefQ":"1080p","prefSrc":"4khdhub"},{"cat":"anime","title":"One Piece","type":"tv","tmdbId":37854,"streams":45,"ms":20011,"succ":10,"queried":19,"prefName":"UHDMovies [Driveseed]","prefQ":"1080p","prefSrc":"uhdmovies"},{"cat":"anime","title":"My Hero Academia","type":"tv","tmdbId":65930,"streams":18,"ms":20013,"succ":8,"queried":19,"prefName":"4KHDHub - HubCloud 10Gbps 1080p","prefQ":"1080p","prefSrc":"4khdhub"},{"cat":"anime","title":"Death Note","type":"tv","tmdbId":13916,"streams":42,"ms":20014,"succ":7,"queried":19,"prefName":"MovieBox","prefQ":"1080p","prefSrc":"moviebox"},{"cat":"anime","title":"Naruto","type":"tv","tmdbId":46260,"streams":15,"ms":20024,"succ":6,"queried":19,"prefName":"4KHDHub - HubCloud 10Gbps 1080p","prefQ":"1080p","prefSrc":"4khdhub"},{"cat":"anime","title":"Chainsaw Man","type":"tv","tmdbId":114410,"streams":22,"ms":20017,"succ":7,"queried":19,"prefName":"MovieBox","prefQ":"1080p","prefSrc":"moviebox"}];
+
+const CH = { movie: 'var(--ch-movie)', series: 'var(--ch-series)', anime: 'var(--ch-anime)' };
+
+function renderLeaderboard() {
+  const counts = {};
+  ROWS.forEach(r => { /* placeholder, real counts injected below */ });
+}
+
+const PROVIDER_COUNTS = [["rivestream",45],["4khdhub",39],["vidlink",37],["moviebox",35],["uhdmovies",31],["vixsrc",30],["peachify",29],["castle",29],["vidrock",29],["anime-dekho",21],["hdhub4u",20],["movieblast",16],["streamflix",14],["netmirror",8],["kickassanime",8],["mallumv",3],["dvdplay",1],["showbox",0],["mycima",0]];
+
+function renderLeaderboardReal() {
+  const el = document.getElementById('leaderboard');
+  const max = 45;
+  el.innerHTML = PROVIDER_COUNTS.map(([id, n]) => `
+    <div class="lb-row">
+      <div class="lb-name">${id}</div>
+      <div class="lb-track"><div class="lb-fill ${n===0?'zero':''}" style="width:${(n/max*100).toFixed(1)}%"></div></div>
+      <div class="lb-count">${n}/45</div>
+    </div>
+  `).join('');
+}
+
+function renderTable(filter) {
+  const tbody = document.getElementById('tbody');
+  const rows = filter === 'all' ? ROWS : ROWS.filter(r => r.cat === filter);
+  tbody.innerHTML = rows.map(r => {
+    const capped = r.ms >= 19900;
+    const secs = (r.ms / 1000).toFixed(1);
+    return `
+      <tr class="${capped ? 'capped' : ''}">
+        <td class="title-cell"><span class="cat-dot" style="background:${CH[r.cat]}"></span>${r.title}</td>
+        <td class="type-badge">${r.type}</td>
+        <td class="num mono">${r.streams}</td>
+        <td><span class="pref-name">${r.prefName}</span><span class="pref-q">${r.prefQ || ''}</span></td>
+        <td class="num mono">${r.succ}/${r.queried}</td>
+        <td class="num mono time">${secs}s${capped ? '<span class=\"cap-flag\">CAP</span>' : ''}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+document.querySelectorAll('.chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    renderTable(chip.dataset.cat);
+  });
+});
+
+renderLeaderboardReal();
+renderTable('all');
+</script>

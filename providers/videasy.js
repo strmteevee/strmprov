@@ -93,22 +93,13 @@ const SERVERS = {
   }
 };
 
-const REQUEST_TIMEOUT_MS = 12000;
-
 // HTTP request helper using fetch (React Native compatible)
 function requestRaw(method, urlString, options) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`request to ${urlString} timed out after ${REQUEST_TIMEOUT_MS}ms`)), REQUEST_TIMEOUT_MS);
-  });
-  return Promise.race([
-    fetch(urlString, {
-      method: method,
-      headers: (options && options.headers) || {},
-      body: (options && options.body) || undefined
-    }),
-    timeout
-  ]).finally(() => clearTimeout(timer)).then(response => {
+  return fetch(urlString, {
+    method: method,
+    headers: (options && options.headers) || {},
+    body: (options && options.body) || undefined
+  }).then(response => {
     return response.text().then(body => {
       if (response.ok) {
         return { 

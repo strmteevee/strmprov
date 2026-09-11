@@ -54,7 +54,7 @@ var require_extractors = __commonJS({
     function extractVidmoly(url) {
       return __async(this, null, function* () {
         try {
-          const res = yield fetchWithTimeout(url, { headers: { "Referer": url } });
+          const res = yield fetch(url, { headers: { "Referer": url } });
           const html = yield res.text();
           const m = html.match(/file:\s*["'](.*?m3u8.*?)["']/);
           if (m)
@@ -67,7 +67,7 @@ var require_extractors = __commonJS({
     function extractFilemoon(url) {
       return __async(this, null, function* () {
         try {
-          const res = yield fetchWithTimeout(url, { headers: { "Referer": url } });
+          const res = yield fetch(url, { headers: { "Referer": url } });
           const html = yield res.text();
           const unpacked = unpack(html);
           if (unpacked) {
@@ -83,7 +83,7 @@ var require_extractors = __commonJS({
     function extractStreamhide(url) {
       return __async(this, null, function* () {
         try {
-          const res = yield fetchWithTimeout(url, { headers: { "Referer": url } });
+          const res = yield fetch(url, { headers: { "Referer": url } });
           const html = yield res.text();
           const unpacked = unpack(html);
           if (unpacked) {
@@ -99,7 +99,7 @@ var require_extractors = __commonJS({
     function extractVoe(url) {
       return __async(this, null, function* () {
         try {
-          const res = yield fetchWithTimeout(url);
+          const res = yield fetch(url);
           const html = yield res.text();
           const m = html.match(/hls':\s*'(.*?)'/);
           if (m)
@@ -139,24 +139,16 @@ var HEADERS = {
   "Content-Type": "application/json",
   "x-origin": "kickass-anime.ru"
 };
-var FETCH_TIMEOUT_MS = 12000;
-function fetchWithTimeout(url, options) {
-  var timer;
-  var timeout = new Promise(function (_, reject) {
-    timer = setTimeout(function () { reject(new Error("request to " + url + " timed out after " + FETCH_TIMEOUT_MS + "ms")); }, FETCH_TIMEOUT_MS);
-  });
-  return Promise.race([fetch(url, options), timeout]).finally(function () { clearTimeout(timer); });
-}
 function getStreams(tmdbId, mediaType, season, episode) {
   return __async(this, null, function* () {
     try {
       const tmdbUrl = `https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=${TMDB_API_KEY}`;
-      const mediaInfo = yield (yield fetchWithTimeout(tmdbUrl, { skipSizeCheck: true })).json();
+      const mediaInfo = yield (yield fetch(tmdbUrl, { skipSizeCheck: true })).json();
       const title = mediaInfo.title || mediaInfo.name;
       if (!title)
         return [];
       const searchBody = JSON.stringify({ page: "1", query: title });
-      const searchResp = yield fetchWithTimeout(`${BASE_URL}/api/fsearch`, {
+      const searchResp = yield fetch(`${BASE_URL}/api/fsearch`, {
         method: "POST",
         headers: HEADERS,
         body: searchBody,
@@ -175,7 +167,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
         return [];
       const showName = showSlug.startsWith("/") ? showSlug : `/${showSlug}`;
       const episodesUrl = `${BASE_URL}/api/show${showName}/episodes?ep=1&lang=ja-JP`;
-      const epsResp = yield fetchWithTimeout(episodesUrl, { headers: HEADERS, skipSizeCheck: true });
+      const epsResp = yield fetch(episodesUrl, { headers: HEADERS, skipSizeCheck: true });
       const epsData = yield epsResp.json();
       const episodes = epsData && epsData.result ? epsData.result : [];
       let targetEpisode = null;
@@ -194,7 +186,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
       const epNum = Math.floor(parseFloat(targetEpisode.episode_number || 1));
       const epSlug = targetEpisode.slug;
       const episodeUrl = `${BASE_URL}/api/show${showName}/episode/ep-${epNum}-${epSlug}`;
-      const serversResp = yield fetchWithTimeout(episodeUrl, { headers: HEADERS, skipSizeCheck: true });
+      const serversResp = yield fetch(episodeUrl, { headers: HEADERS, skipSizeCheck: true });
       const serversData = yield serversResp.json();
       if (!serversData || !serversData.servers)
         return [];
@@ -209,7 +201,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
               "Origin": serverHost,
               "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
             };
-            const pageResp = yield fetchWithTimeout(server.src, { headers: serverHeaders, skipSizeCheck: true });
+            const pageResp = yield fetch(server.src, { headers: serverHeaders, skipSizeCheck: true });
             const pageText = yield pageResp.text();
             const m3u8Match = pageText.match(/(https?:)?\/\/[^\s"'<>]+\.m3u8/i);
             if (m3u8Match) {

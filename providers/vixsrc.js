@@ -46,14 +46,6 @@ var BASE_URL = "https://vixsrc.to";
 var USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 // src/vixsrc/http.js
-const REQUEST_TIMEOUT_MS = 12000;
-function withRequestTimeout(promise, url) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`request to ${url} timed out after ${REQUEST_TIMEOUT_MS}ms`)), REQUEST_TIMEOUT_MS);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
 function makeRequest(_0) {
   return __async(this, arguments, function* (url, options = {}) {
     const defaultHeaders = __spreadValues({
@@ -64,10 +56,10 @@ function makeRequest(_0) {
       "Connection": "keep-alive"
     }, options.headers);
     try {
-      const response = yield withRequestTimeout(fetch(url, __spreadValues({
+      const response = yield fetch(url, __spreadValues({
         method: options.method || "GET",
         headers: defaultHeaders
-      }, options)), url);
+      }, options));
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }

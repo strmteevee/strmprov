@@ -49,7 +49,7 @@ function fetchLatestDomain() {
     if (now - domainCache.ts < 36e5)
       return domainCache.url;
     try {
-      const response = yield fetchWithTimeout(DOMAINS_URL);
+      const response = yield fetch(DOMAINS_URL);
       const data = yield response.json();
       if (data && data["4khdhub"]) {
         domainCache.url = data["4khdhub"];
@@ -60,21 +60,13 @@ function fetchLatestDomain() {
     return domainCache.url;
   });
 }
-const FETCH_TIMEOUT_MS = 12000;
-function fetchWithTimeout(url, options) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`request to ${url} timed out after ${FETCH_TIMEOUT_MS}ms`)), FETCH_TIMEOUT_MS);
-  });
-  return Promise.race([fetch(url, options), timeout]).finally(() => clearTimeout(timer));
-}
 function fetchText(_0) {
   return __async(this, arguments, function* (url, options = {}) {
     const retries = options.retries !== void 0 ? options.retries : 2;
     const delay = options.delay !== void 0 ? options.delay : 1e3;
     for (let i = 0; i <= retries; i++) {
       try {
-        const response = yield fetchWithTimeout(url, {
+        const response = yield fetch(url, {
           headers: __spreadValues({
             "User-Agent": USER_AGENT
           }, options.headers)
@@ -82,9 +74,6 @@ function fetchText(_0) {
         return yield response.text();
       } catch (err) {
         console.log(`[4KHDHub] Request failed for ${url}: ${err.message}${i < retries ? `, retrying (${i + 1}/${retries})...` : ""}`);
-      }
-      if (i < retries) {
-        yield new Promise((r) => setTimeout(r, delay * Math.pow(2, i)));
       }
     }
     return null;
@@ -97,7 +86,7 @@ function getTmdbDetails(tmdbId, type) {
     const url = `https://api.themoviedb.org/3/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
     console.log(`[4KHDHub] Fetching TMDB details from: ${url}`);
     try {
-      const response = yield fetchWithTimeout(url);
+      const response = yield fetch(url);
       const data = yield response.json();
       if (isSeries) {
         return {
@@ -382,7 +371,7 @@ function extractHubCloud(hubCloudUrl, baseMeta) {
 function resolveHubCloudFinalLink(url) {
   return __async(this, null, function* () {
     try {
-      const response = yield fetchWithTimeout(url, { headers: { "User-Agent": USER_AGENT } });
+      const response = yield fetch(url, { headers: { "User-Agent": USER_AGENT } });
       const finalUrl = response.url || url;
       try {
         const link = new URL(finalUrl).searchParams.get("link");

@@ -2,13 +2,14 @@ import { DOMAINS_URL, DOMAIN_CACHE_TTL, MAIN_URL, HEADERS, updateMainUrl, TMDB_B
 
 let domainCacheTimestamp = 0;
 
-const FETCH_TIMEOUT_MS = 12000;
+// Nuvio's JS sandbox has no setTimeout/timer of any kind - the native fetch
+// bridge already enforces its own 30s connect/read/write timeouts, so this
+// used to wrap fetch in a JS-level timeout via setTimeout, but that just
+// threw a ReferenceError (silently swallowed by callers' try/catch, making
+// every request quietly return nothing). Kept as a passthrough so callers
+// and imports don't need to change.
 export function fetchWithTimeout(url, options) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`request to ${url} timed out after ${FETCH_TIMEOUT_MS}ms`)), FETCH_TIMEOUT_MS);
-  });
-  return Promise.race([fetch(url, options), timeout]).finally(() => clearTimeout(timer));
+  return fetch(url, options);
 }
 
 export function formatBytes(bytes) {

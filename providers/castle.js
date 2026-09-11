@@ -68,22 +68,14 @@ var PLAYBACK_HEADERS = {
 };
 
 // src/castle/http.js
-const REQUEST_TIMEOUT_MS = 12000;
-function withRequestTimeout(promise, url) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`request to ${url} timed out after ${REQUEST_TIMEOUT_MS}ms`)), REQUEST_TIMEOUT_MS);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
 function makeRequest(_0) {
   return __async(this, arguments, function* (url, options = {}) {
     try {
-      const response = yield withRequestTimeout(fetch(url, {
+      const response = yield fetch(url, {
         method: options.method || "GET",
         headers: __spreadValues(__spreadValues({}, API_HEADERS), options.headers),
         body: options.body
-      }), url);
+      });
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }

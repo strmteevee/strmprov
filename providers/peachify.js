@@ -41,15 +41,6 @@ const REQUEST_HEADERS = {
   'Accept': 'application/json'
 };
 
-const FETCH_TIMEOUT_MS = 12000;
-function fetchWithTimeout(url, options) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`request to ${url} timed out after ${FETCH_TIMEOUT_MS}ms`)), FETCH_TIMEOUT_MS);
-  });
-  return Promise.race([fetch(url, options), timeout]).finally(() => clearTimeout(timer));
-}
-
 // ---- crypto-js WordArray <-> byte helpers ----
 
 function bytesToWordArray(bytes) {
@@ -132,7 +123,7 @@ function decryptPayload(token) {
 function getTmdbInfo(tmdbId, mediaType) {
   const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
   const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
-  return fetchWithTimeout(url, { headers: { 'User-Agent': USER_AGENT } })
+  return fetch(url, { headers: { 'User-Agent': USER_AGENT } })
     .then(res => res.json())
     .then(data => {
       const title = mediaType === 'tv' ? data.name : data.title;
@@ -154,7 +145,7 @@ function fetchFromProvider(provider, tmdbId, mediaType, season, episode, mediaIn
   let apiUrl = `${API_BASE}/${provider}/${mediaType}/${tmdbId}`;
   if (mediaType === 'tv') apiUrl += `/${season}/${episode}`;
 
-  return fetchWithTimeout(apiUrl, { headers: REQUEST_HEADERS })
+  return fetch(apiUrl, { headers: REQUEST_HEADERS })
     .then(res => {
       if (!res.ok) return null;
       return res.json();

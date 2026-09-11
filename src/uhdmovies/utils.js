@@ -3,19 +3,15 @@ import { HEADERS, DOMAINS_URL, FALLBACK_DOMAIN, TMDB_BASE_URL, TMDB_API_KEY } fr
 
 let cachedDomain = "";
 
-// None of this file's fetch() calls previously had a timeout, so a single
-// stalled request (very plausible on a real mobile connection, much less so
-// on a fast/stable dev network) would hang the whole getStreams() call
-// forever instead of failing gracefully - it looks like "loading, but no
-// streams ever appear" from the app's side. Every fetch below is wrapped so
-// a stuck request fails fast instead of hanging indefinitely.
-const FETCH_TIMEOUT_MS = 10000;
+// Nuvio's JS sandbox has no setTimeout/timer of any kind - the native fetch
+// bridge already enforces its own 30s connect/read/write timeouts, so this
+// used to wrap fetch in a JS-level timeout via setTimeout, but that just
+// threw a ReferenceError (silently swallowed by callers' try/catch, making
+// every request quietly return nothing instead of hanging - the opposite of
+// the intended fix). Kept as a passthrough so callers and imports don't need
+// to change.
 export function fetchWithTimeout(url, options) {
-    let timer;
-    const timeout = new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`request to ${url} timed out after ${FETCH_TIMEOUT_MS}ms`)), FETCH_TIMEOUT_MS);
-    });
-    return Promise.race([fetch(url, options), timeout]).finally(() => clearTimeout(timer));
+    return fetch(url, options);
 }
 
 export async function getMainUrl() {

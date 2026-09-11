@@ -30,18 +30,10 @@ const SERVICE_TIMEOUT_MS = 10000;
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-function withTimeout(promise, ms) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
-
 function getTmdbInfo(tmdbId, mediaType) {
   const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
   const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
-  return withTimeout(fetch(url, { headers: { 'User-Agent': USER_AGENT } }), SERVICE_TIMEOUT_MS)
+  return fetch(url, { headers: { 'User-Agent': USER_AGENT } })
     .then(res => res.json())
     .then(data => {
       const title = mediaType === 'tv' ? data.name : data.title;
@@ -83,7 +75,7 @@ function fetchFromService(service, tmdbId, mediaType, season, episode, mediaInfo
     apiUrl += `&season=${season}&episode=${episode}`;
   }
 
-  return withTimeout(fetch(apiUrl, { headers: { 'User-Agent': USER_AGENT, 'Accept': 'application/json' } }), SERVICE_TIMEOUT_MS)
+  return fetch(apiUrl, { headers: { 'User-Agent': USER_AGENT, 'Accept': 'application/json' } })
     .then(res => {
       if (!res.ok) return [];
       return res.json();

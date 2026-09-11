@@ -1,6 +1,6 @@
 /**
  * uhdmovies - Built from src/uhdmovies/
- * Generated: 2026-09-11T08:56:39.224Z
+ * Generated: 2026-09-11T16:50:57.642Z
  */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -82,13 +82,8 @@ var HEADERS = {
 // src/uhdmovies/utils.js
 var import_cheerio_without_node_native = __toESM(require("cheerio-without-node-native"));
 var cachedDomain = "";
-var FETCH_TIMEOUT_MS = 1e4;
 function fetchWithTimeout(url, options) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`request to ${url} timed out after ${FETCH_TIMEOUT_MS}ms`)), FETCH_TIMEOUT_MS);
-  });
-  return Promise.race([fetch(url, options), timeout]).finally(() => clearTimeout(timer));
+  return fetch(url, options);
 }
 function getMainUrl() {
   return __async(this, null, function* () {

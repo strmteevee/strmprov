@@ -43,36 +43,29 @@ const PLAYBACK_HEADERS = {
   'Referer': `${VIDROCK_BASE_URL}/`
 };
 
-const VALIDATE_TIMEOUT_MS = 4000;
-
-function withTimeout(promise, ms) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error('timed out')), ms);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
-
 // vidrock.net's own backend always advertises the same handful of named
 // servers (Nova, Luna, Orion, Astra, ...), but which of them are actually
 // reachable varies day to day - some sit behind a Cloudflare bot-challenge,
 // some 403 outright, some time out at the origin. Rather than serve a pile
 // of dead links that all fail the moment a user taps them, validate each one
-// and only return the ones that actually respond.
+// and only return the ones that actually respond. There's no JS-level
+// timeout available in this sandbox (no setTimeout), so a hung check is
+// bounded only by the native fetch bridge's own ~30s timeout rather than a
+// tighter one - slower in the worst case, but still correct.
 function validateStreamUrl(stream) {
   // A HEAD response that comes back with a definitive status (403, 522, ...)
   // is conclusive - retrying with GET won't change a Cloudflare challenge or
   // an origin timeout. Only fall back to a ranged GET when HEAD itself fails
   // outright (some CDNs reject the method with a hard connection error
   // rather than a clean status code).
-  return withTimeout(fetch(stream.url, { method: 'HEAD', headers: stream.headers }), VALIDATE_TIMEOUT_MS)
+  return fetch(stream.url, { method: 'HEAD', headers: stream.headers })
     .then(res => res.ok || res.status === 206)
     .catch(() => rangedValidate(stream));
 }
 
 function rangedValidate(stream) {
   const headers = Object.assign({}, stream.headers, { Range: 'bytes=0-2048' });
-  return withTimeout(fetch(stream.url, { method: 'GET', headers }), VALIDATE_TIMEOUT_MS)
+  return fetch(stream.url, { method: 'GET', headers })
     .then(res => res.ok || res.status === 206)
     .catch(() => false);
 }

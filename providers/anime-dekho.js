@@ -54,7 +54,7 @@ var require_extractors = __commonJS({
     function extractVidmoly(url) {
       return __async(this, null, function* () {
         try {
-          const res = yield fetchWithTimeout(url, { headers: { "Referer": url } });
+          const res = yield fetch(url, { headers: { "Referer": url } });
           const html = yield res.text();
           const m = html.match(/file:\s*["'](.*?m3u8.*?)["']/);
           if (m)
@@ -67,7 +67,7 @@ var require_extractors = __commonJS({
     function extractFilemoon(url) {
       return __async(this, null, function* () {
         try {
-          const res = yield fetchWithTimeout(url, { headers: { "Referer": url } });
+          const res = yield fetch(url, { headers: { "Referer": url } });
           const html = yield res.text();
           const unpacked = unpack(html);
           if (unpacked) {
@@ -83,7 +83,7 @@ var require_extractors = __commonJS({
     function extractStreamhide(url) {
       return __async(this, null, function* () {
         try {
-          const res = yield fetchWithTimeout(url, { headers: { "Referer": url } });
+          const res = yield fetch(url, { headers: { "Referer": url } });
           const html = yield res.text();
           const unpacked = unpack(html);
           if (unpacked) {
@@ -99,7 +99,7 @@ var require_extractors = __commonJS({
     function extractVoe(url) {
       return __async(this, null, function* () {
         try {
-          const res = yield fetchWithTimeout(url);
+          const res = yield fetch(url);
           const html = yield res.text();
           const m = html.match(/hls':\s*'(.*?)'/);
           if (m)
@@ -138,24 +138,16 @@ var HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
   "Referer": `${BASE_URL}/`
 };
-var FETCH_TIMEOUT_MS = 12000;
-function fetchWithTimeout(url, options) {
-  var timer;
-  var timeout = new Promise(function (_, reject) {
-    timer = setTimeout(function () { reject(new Error("request to " + url + " timed out after " + FETCH_TIMEOUT_MS + "ms")); }, FETCH_TIMEOUT_MS);
-  });
-  return Promise.race([fetch(url, options), timeout]).finally(function () { clearTimeout(timer); });
-}
 function getStreams(tmdbId, mediaType, season, episode) {
   return __async(this, null, function* () {
     try {
       const tmdbUrl = `https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=${TMDB_API_KEY}`;
-      const mediaInfo = yield (yield fetchWithTimeout(tmdbUrl, { skipSizeCheck: true })).json();
+      const mediaInfo = yield (yield fetch(tmdbUrl, { skipSizeCheck: true })).json();
       const title = mediaInfo.title || mediaInfo.name;
       if (!title)
         return [];
       const searchUrl = `${BASE_URL}/?s=${encodeURIComponent(title)}`;
-      const searchHtml = yield (yield fetchWithTimeout(searchUrl, { headers: HEADERS, skipSizeCheck: true })).text();
+      const searchHtml = yield (yield fetch(searchUrl, { headers: HEADERS, skipSizeCheck: true })).text();
       const $ = cheerio.load(searchHtml);
       let itemUrl = null;
       $("ul[data-results] li article").each((_, el) => {
@@ -176,7 +168,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
       }
       if (!itemUrl)
         return [];
-      const animePage = yield (yield fetchWithTimeout(itemUrl, { headers: HEADERS, skipSizeCheck: true })).text();
+      const animePage = yield (yield fetch(itemUrl, { headers: HEADERS, skipSizeCheck: true })).text();
       const $2 = cheerio.load(animePage);
       const bodyClass = $2("body").attr("class") || "";
       const termMatch = bodyClass.match(/(?:term|postid)-(\d+)/);
@@ -196,7 +188,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
           }
         });
       }
-      const targetPage = yield (yield fetchWithTimeout(targetUrl, { headers: HEADERS, skipSizeCheck: true })).text();
+      const targetPage = yield (yield fetch(targetUrl, { headers: HEADERS, skipSizeCheck: true })).text();
       const $3 = cheerio.load(targetPage);
       const targetBodyClass = $3("body").attr("class") || "";
       const targetTermMatch = targetBodyClass.match(/(?:term|postid)-(\d+)/);
@@ -206,7 +198,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
       for (let i = 0; i <= 10; i++) {
         try {
           const iframePageUrl = `${BASE_URL}/?trdekho=${i}&trid=${targetTerm}&trtype=${mediaType2}`;
-          const iframePageHtml = yield (yield fetchWithTimeout(iframePageUrl, { headers: HEADERS, skipSizeCheck: true })).text();
+          const iframePageHtml = yield (yield fetch(iframePageUrl, { headers: HEADERS, skipSizeCheck: true })).text();
           const $4 = cheerio.load(iframePageHtml);
           const iframeSrc = $4("iframe").attr("src");
           if (iframeSrc && iframeSrc.startsWith("http")) {

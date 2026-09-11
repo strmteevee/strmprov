@@ -1,6 +1,6 @@
 /**
  * movieblast - Built from src/movieblast/
- * Generated: 2026-09-11T13:43:06.205Z
+ * Generated: 2026-09-11T16:50:57.636Z
  */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -80,13 +80,8 @@ var TMDB_BASE_URL = "https://api.themoviedb.org/3";
 
 // src/movieblast/utils.js
 var import_crypto_js = __toESM(require("crypto-js"));
-var FETCH_TIMEOUT_MS = 12e3;
 function fetchWithTimeout(url, options) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`request to ${url} timed out after ${FETCH_TIMEOUT_MS}ms`)), FETCH_TIMEOUT_MS);
-  });
-  return Promise.race([fetch(url, options), timeout]).finally(() => clearTimeout(timer));
+  return fetch(url, options);
 }
 function generateSignedUrl(urlStr) {
   try {

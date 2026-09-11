@@ -40,15 +40,6 @@ const PLAYER_KEY = '3a67e8866ae1d2bb9e81fe7f73315a56eb3bdf5e3e755c7554c8be6910aa
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-const FETCH_TIMEOUT_MS = 12000;
-function fetchWithTimeout(url, options) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`request to ${url} timed out after ${FETCH_TIMEOUT_MS}ms`)), FETCH_TIMEOUT_MS);
-  });
-  return Promise.race([fetch(url, options), timeout]).finally(() => clearTimeout(timer));
-}
-
 const STREAM_HEADERS = {
   'User-Agent': USER_AGENT,
   'Referer': API_BASE + '/',
@@ -68,7 +59,7 @@ function apiHeaders(referer) {
 function getTmdbInfo(tmdbId, mediaType) {
   const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
   const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
-  return fetchWithTimeout(url, { headers: { 'User-Agent': USER_AGENT } })
+  return fetch(url, { headers: { 'User-Agent': USER_AGENT } })
     .then(res => res.json())
     .then(data => {
       const title = mediaType === 'tv' ? data.name : data.title;
@@ -102,7 +93,7 @@ function fetchStreams(tmdbId, mediaType, season, episode, mediaInfo) {
   const pageUrl = `${API_BASE}${path}`;
 
   console.log(`[NetMirror] Requesting: ${apiUrl}`);
-  return fetchWithTimeout(apiUrl, { headers: apiHeaders(pageUrl) })
+  return fetch(apiUrl, { headers: apiHeaders(pageUrl) })
     .then(res => {
       if (!res.ok) {
         return res.json().catch(() => null).then(body => {

@@ -18,8 +18,6 @@ let cache = {
 };
 const CACHE_TTL = 1000 * 60 * 5; // 5 minutes
 
-const REQUEST_TIMEOUT_MS = 12000;
-
 // Helper function for HTTP requests
 function makeRequest(url, options = {}) {
   const defaultHeaders = {
@@ -29,21 +27,13 @@ function makeRequest(url, options = {}) {
     'Connection': 'keep-alive'
   };
 
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`request to ${url} timed out after ${REQUEST_TIMEOUT_MS}ms`)), REQUEST_TIMEOUT_MS);
-  });
-
-  return Promise.race([
-    fetch(url, {
-      ...options,
-      headers: {
-        ...defaultHeaders,
-        ...options.headers
-      }
-    }),
-    timeout
-  ]).finally(() => clearTimeout(timer)).then(response => {
+  return fetch(url, {
+    ...options,
+    headers: {
+      ...defaultHeaders,
+      ...options.headers
+    }
+  }).then(response => {
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
@@ -192,11 +182,6 @@ function getEpisodesFromWebSocket(movieKey, totalSeasons = 1, targetSeason = nul
     let expectedResponses = 0;
     let responsesReceived = 0;
 
-    const overallTimeout = setTimeout(() => {
-      try { ws.close(); } catch {}
-      reject(new Error('WebSocket timeout'));
-    }, 30000);
-
     function sendSeasonRequest(season) {
       const payload = {
         t: 'd',
@@ -243,7 +228,6 @@ function getEpisodesFromWebSocket(movieKey, totalSeasons = 1, targetSeason = nul
             // meant the request just sat there doing nothing until the full
             // 30s overallTimeout fired instead of failing immediately.
             if (d_data.r === currentSeason && b_data.s && b_data.s !== 'ok') {
-              clearTimeout(overallTimeout);
               try { ws.close(); } catch {}
               reject(new Error(`WebSocket query denied: ${b_data.s}${b_data.d ? ' - ' + b_data.d : ''}`));
               return;
@@ -259,7 +243,6 @@ function getEpisodesFromWebSocket(movieKey, totalSeasons = 1, targetSeason = nul
                 responsesReceived = 0;
                 sendSeasonRequest(currentSeason);
               } else {
-                clearTimeout(overallTimeout);
                 try { ws.close(); } catch {}
                 resolve(seasonsData);
               }
@@ -302,12 +285,7 @@ function getEpisodesFromWebSocket(movieKey, totalSeasons = 1, targetSeason = nul
     };
 
     ws.onerror = function (err) {
-      clearTimeout(overallTimeout);
       reject(new Error('WebSocket error'));
-    };
-
-    ws.onclose = function () {
-      clearTimeout(overallTimeout);
     };
   });
 }

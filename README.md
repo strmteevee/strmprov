@@ -13,7 +13,7 @@ This project is a fork/continuation of the `nuvio-providers` collection original
 1. Open **Nuvio** > **Settings** > **Plugins**
 2. Add this repository URL:
    ```
-   https://raw.githubusercontent.com/strmteevee/strmprov/refs/heads/master
+   https://raw.githubusercontent.com/strmteevee/strmprov/refs/heads/main
    ```
 3. Refresh and enable the providers you want
 

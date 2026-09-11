@@ -9,16 +9,6 @@
 // Requires the server's URL to be configured in this provider's settings
 // (Nuvio > Settings > Plugins > StreamAPI) before it can return anything.
 
-const REQUEST_TIMEOUT_MS = 25000;
-
-function withTimeout(promise, ms, label) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-  });
-  return Promise.race([Promise.resolve(promise), timeout]).finally(() => clearTimeout(timer));
-}
-
 function getServerUrl() {
   if (typeof global !== 'undefined' && global.SCRAPER_SETTINGS && global.SCRAPER_SETTINGS.serverUrl) {
     return String(global.SCRAPER_SETTINGS.serverUrl).trim().replace(/\/+$/, '');
@@ -61,7 +51,7 @@ function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) 
   const url = `${serverUrl}/api/streams?${params.toString()}`;
   console.log(`[StreamAPI] Requesting: ${url}`);
 
-  return withTimeout(fetch(url), REQUEST_TIMEOUT_MS, 'API request')
+  return fetch(url)
     .then(res => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();

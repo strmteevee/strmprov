@@ -39,20 +39,11 @@ const BASE_HEADERS = {
   'Content-Type': 'application/json'
 };
 
-const FETCH_TIMEOUT_MS = 12000;
-function fetchWithTimeout(url, options) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`request to ${url} timed out after ${FETCH_TIMEOUT_MS}ms`)), FETCH_TIMEOUT_MS);
-  });
-  return Promise.race([fetch(url, options), timeout]).finally(() => clearTimeout(timer));
-}
-
 let cachedToken = null;
 
 function getBearerToken() {
   if (cachedToken) return Promise.resolve(cachedToken);
-  return fetchWithTimeout(`${API_BASE}/home?host=moviebox.ph`, { headers: BASE_HEADERS })
+  return fetch(`${API_BASE}/home?host=moviebox.ph`, { headers: BASE_HEADERS })
     .then(res => {
       const xUser = res.headers.get('x-user');
       if (xUser) {
@@ -75,7 +66,7 @@ function authHeaders(token, extra) {
 function getTmdbInfo(tmdbId, mediaType) {
   const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
   const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
-  return fetchWithTimeout(url, { headers: { 'User-Agent': USER_AGENT } })
+  return fetch(url, { headers: { 'User-Agent': USER_AGENT } })
     .then(res => res.json())
     .then(data => {
       const title = mediaType === 'tv' ? data.name : data.title;
@@ -127,7 +118,7 @@ function findBestMatch(items, mediaInfo, mediaType) {
 }
 
 function search(token, keyword) {
-  return fetchWithTimeout(`${API_BASE}/subject/search`, {
+  return fetch(`${API_BASE}/subject/search`, {
     method: 'POST',
     headers: authHeaders(token),
     body: JSON.stringify({ keyword, page: 1, perPage: 20 })
@@ -137,13 +128,13 @@ function search(token, keyword) {
 }
 
 function getCanonicalSubject(token, detailPath) {
-  return fetchWithTimeout(`${API_BASE}/detail?detailPath=${encodeURIComponent(detailPath)}`, { headers: authHeaders(token) })
+  return fetch(`${API_BASE}/detail?detailPath=${encodeURIComponent(detailPath)}`, { headers: authHeaders(token) })
     .then(res => res.json())
     .then(json => (json && json.data && json.data.subject) || null);
 }
 
 function getPlayDomain(token) {
-  return fetchWithTimeout(`${API_BASE}/media-player/get-domain`, { headers: authHeaders(token) })
+  return fetch(`${API_BASE}/media-player/get-domain`, { headers: authHeaders(token) })
     .then(res => res.json())
     .then(json => (json && json.data ? String(json.data).replace(/\/$/, '') : 'https://netfilm.world'));
 }
@@ -151,7 +142,7 @@ function getPlayDomain(token) {
 function fetchPlayData(token, domain, subjectId, detailPath, se, ep) {
   const referer = `${domain}/spa/videoPlayPage/movies/${detailPath}?id=${subjectId}&type=/movie/detail&detailSe=${se}&detailEp=${ep}&lang=en`;
   const playUrl = `${domain}/wefeed-h5api-bff/subject/play?subjectId=${subjectId}&se=${se}&ep=${ep}&detailPath=${detailPath}`;
-  return fetchWithTimeout(playUrl, { headers: authHeaders(token, { Referer: referer }) })
+  return fetch(playUrl, { headers: authHeaders(token, { Referer: referer }) })
     .then(res => res.json())
     .then(json => (json && json.data) || null);
 }
@@ -160,7 +151,7 @@ function fetchCaptions(token, subjectId, detailPath, firstStream) {
   if (!firstStream) return Promise.resolve([]);
   const format = firstStream.format || 'MP4';
   const capUrl = `${API_BASE}/subject/caption?format=${format}&id=${firstStream.id}&subjectId=${subjectId}&detailPath=${detailPath}`;
-  return fetchWithTimeout(capUrl, { headers: authHeaders(token) })
+  return fetch(capUrl, { headers: authHeaders(token) })
     .then(res => res.json())
     .then(json => {
       const captions = (json && json.data && json.data.captions) || [];

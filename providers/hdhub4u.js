@@ -1,6 +1,6 @@
 /**
  * hdhub4u - Built from src/hdhub4u/
- * Generated: 2026-09-11T13:42:01.685Z
+ * Generated: 2026-09-11T16:50:57.161Z
  */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -83,13 +83,8 @@ function updateMainUrl(url) {
 
 // src/hdhub4u/utils.js
 var domainCacheTimestamp = 0;
-var FETCH_TIMEOUT_MS = 12e3;
 function fetchWithTimeout(url, options) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`request to ${url} timed out after ${FETCH_TIMEOUT_MS}ms`)), FETCH_TIMEOUT_MS);
-  });
-  return Promise.race([fetch(url, options), timeout]).finally(() => clearTimeout(timer));
+  return fetch(url, options);
 }
 function formatBytes(bytes) {
   if (!bytes || bytes === 0)

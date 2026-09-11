@@ -2010,6 +2010,23 @@ let cache = {
 };
 const CACHE_TTL = 1000 * 60 * 5; // 5 minutes
 
+// The Firebase-backed WebSocket episode lookup this provider used to rely on
+// now permanently rejects anonymous reads ("permission_denied" on every
+// query, confirmed live), so TV lookups always fall through to a guessed
+// direct URL (`.../tv/{key}/s{season}/episode{episode}.mkv`) that's never
+// actually been confirmed to exist for that title/episode. Rather than hand
+// back a guess that's frequently just a 404 dressed up as a stream, validate
+// it live first. No JS-level timeout exists in this sandbox (no setTimeout),
+// so a hung check is bounded only by the native fetch bridge's own ~30s
+// timeout.
+function validateStreamUrl(url, headers) {
+  return fetch(url, { method: 'HEAD', headers })
+    .then(res => res.ok || res.status === 206)
+    .catch(() => fetch(url, { method: 'GET', headers: Object.assign({}, headers, { Range: 'bytes=0-2048' }) })
+      .then(res => res.ok || res.status === 206)
+      .catch(() => false));
+}
+
 // Helper function for HTTP requests
 function makeRequest(url, options = {}) {
   const defaultHeaders = {
@@ -2462,20 +2479,31 @@ function processTVStreams(tvData, config, seasonNum, episodeNum) {
         }
       }
       
-      // Fallback if no episodes found
+      // Fallback if no episodes found - this URL is a guess, never confirmed
+      // to actually exist for this title/episode, so validate it live rather
+      // than handing back what's often just a 404 dressed up as a stream.
       if (streams.length === 0 && config.premium && seasonNum !== null && episodeNum !== null) {
         const fallbackUrl = `${config.premium[0]}tv/${tvData.moviekey}/s${seasonNum}/episode${episodeNum}.mkv`;
-        streams.push({
-          name: "StreamFlix",
-          title: `${tvData.moviename} S${seasonNum}E${episodeNum} (Fallback)`,
-          url: fallbackUrl,
-          quality: "720p",
-          size: "Unknown",
-          type: 'direct',
-          headers: {
-            'Referer': 'https://api.streamflix.app',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        const fallbackHeaders = {
+          'Referer': 'https://api.streamflix.app',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        };
+        return validateStreamUrl(fallbackUrl, fallbackHeaders).then(ok => {
+          if (ok) {
+            streams.push({
+              name: "StreamFlix",
+              title: `${tvData.moviename} S${seasonNum}E${episodeNum} (Fallback)`,
+              url: fallbackUrl,
+              quality: "720p",
+              size: "Unknown",
+              type: 'direct',
+              headers: fallbackHeaders
+            });
+          } else {
+            console.log('[StreamFlix] Fallback URL not reachable, dropping');
           }
+          console.log(`[StreamFlix] Generated ${streams.length} TV streams`);
+          return streams;
         });
       }
 
@@ -2484,24 +2512,31 @@ function processTVStreams(tvData, config, seasonNum, episodeNum) {
     })
     .catch(error => {
       console.error('[StreamFlix] WebSocket failed, using fallback:', error.message);
-      
-      // Generate fallback stream
+
+      // Same unconfirmed guess as above - validate before returning it.
       if (config.premium && seasonNum !== null && episodeNum !== null) {
         const fallbackUrl = `${config.premium[0]}tv/${tvData.moviekey}/s${seasonNum}/episode${episodeNum}.mkv`;
-        return [{
-          name: "StreamFlix",
-          title: `${tvData.moviename} S${seasonNum}E${episodeNum} (Fallback)`,
-          url: fallbackUrl,
-          quality: "720p",
-          size: "Unknown",
-          type: 'direct',
-          headers: {
-            'Referer': 'https://api.streamflix.app',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        const fallbackHeaders = {
+          'Referer': 'https://api.streamflix.app',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        };
+        return validateStreamUrl(fallbackUrl, fallbackHeaders).then(ok => {
+          if (!ok) {
+            console.log('[StreamFlix] Fallback URL not reachable, dropping');
+            return [];
           }
-        }];
+          return [{
+            name: "StreamFlix",
+            title: `${tvData.moviename} S${seasonNum}E${episodeNum} (Fallback)`,
+            url: fallbackUrl,
+            quality: "720p",
+            size: "Unknown",
+            type: 'direct',
+            headers: fallbackHeaders
+          }];
+        });
       }
-      
+
       return [];
     });
 }

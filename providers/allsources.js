@@ -2173,6 +2173,9 @@ function getEpisodesFromWebSocket(movieKey, totalSeasons = 1, targetSeason = nul
     let messageBuffer = '';
     let expectedResponses = 0;
     let responsesReceived = 0;
+    let settled = false;
+    function safeResolve(v) { if (!settled) { settled = true; resolve(v); } }
+    function safeReject(e) { if (!settled) { settled = true; reject(e); } }
 
     function sendSeasonRequest(season) {
       const payload = {
@@ -2221,7 +2224,7 @@ function getEpisodesFromWebSocket(movieKey, totalSeasons = 1, targetSeason = nul
             // 30s overallTimeout fired instead of failing immediately.
             if (d_data.r === currentSeason && b_data.s && b_data.s !== 'ok') {
               try { ws.close(); } catch {}
-              reject(new Error(`WebSocket query denied: ${b_data.s}${b_data.d ? ' - ' + b_data.d : ''}`));
+              safeReject(new Error(`WebSocket query denied: ${b_data.s}${b_data.d ? ' - ' + b_data.d : ''}`));
               return;
             }
 
@@ -2236,7 +2239,7 @@ function getEpisodesFromWebSocket(movieKey, totalSeasons = 1, targetSeason = nul
                 sendSeasonRequest(currentSeason);
               } else {
                 try { ws.close(); } catch {}
-                resolve(seasonsData);
+                safeResolve(seasonsData);
               }
               return;
             }
@@ -2277,7 +2280,17 @@ function getEpisodesFromWebSocket(movieKey, totalSeasons = 1, targetSeason = nul
     };
 
     ws.onerror = function (err) {
-      reject(new Error('WebSocket error'));
+      safeReject(new Error('WebSocket error'));
+    };
+
+    // With no setTimeout available in this sandbox, onclose is the only other
+    // guaranteed termination signal - a clean/idle close often doesn't fire
+    // "error" at all, and without this the promise above would hang forever
+    // instead of ever settling. Resolve with whatever season data was
+    // gathered before the connection ended rather than leaving the caller
+    // stuck (a no-op if onmessage/onerror already settled this).
+    ws.onclose = function () {
+      safeResolve(seasonsData);
     };
   });
 }

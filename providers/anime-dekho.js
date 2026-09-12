@@ -193,25 +193,30 @@ function getStreams(tmdbId, mediaType, season, episode) {
       const targetBodyClass = $3("body").attr("class") || "";
       const targetTermMatch = targetBodyClass.match(/(?:term|postid)-(\d+)/);
       const targetTerm = targetTermMatch?.[1] || term;
-      const streams = [];
       const epNum = episode || 1;
-      for (let i = 0; i <= 10; i++) {
-        try {
+      // The 11 track indices are independent lookups (each just asks "does
+      // track i exist for this title"), so probing them one at a time was
+      // paying their full round-trip latency 11 times over for no reason -
+      // running them in parallel cuts this from ~11x that latency to ~1x.
+      const iframeUrls = yield Promise.all(
+        Array.from({ length: 11 }, (_, i) => {
           const iframePageUrl = `${BASE_URL}/?trdekho=${i}&trid=${targetTerm}&trtype=${mediaType2}`;
-          const iframePageHtml = yield (yield fetch(iframePageUrl, { headers: HEADERS, skipSizeCheck: true })).text();
-          const $4 = cheerio.load(iframePageHtml);
-          const iframeSrc = $4("iframe").attr("src");
-          if (iframeSrc && iframeSrc.startsWith("http")) {
-            streams.push({
-              url: iframeSrc,
-              quality: "Unknown",
-              title: `AnimeDekho [S${season || 1}E${epNum}]`,
-              subtitles: []
-            });
-          }
-        } catch (_) {
-        }
-      }
+          return fetch(iframePageUrl, { headers: HEADERS, skipSizeCheck: true })
+            .then(res => res.text())
+            .then(html => {
+              const $4 = cheerio.load(html);
+              const iframeSrc = $4("iframe").attr("src");
+              return (iframeSrc && iframeSrc.startsWith("http")) ? iframeSrc : null;
+            })
+            .catch(() => null);
+        })
+      );
+      const streams = iframeUrls.filter(Boolean).map(iframeSrc => ({
+        url: iframeSrc,
+        quality: "Unknown",
+        title: `AnimeDekho [S${season || 1}E${epNum}]`,
+        subtitles: []
+      }));
       return streams;
     } catch (e) {
       console.error("[AnimeDekho]", e);
@@ -223,27 +228,31 @@ var { extract } = require_extractors();
 function wrappedGetStreams(...args) {
   return __async(this, null, function* () {
     const streams = yield getStreams(...args);
-    const finalStreams = [];
-    for (const s of streams) {
-      if (!s.url)
-        continue;
-      const ext = yield extract(s.url);
-      if (ext) {
-        s.url = ext.url;
-        if (ext.quality !== "Unknown")
-          s.quality = ext.quality;
-        s.name = "AnimeDekho";
-        s.provider = "anime-dekho";
-        s.headers = HEADERS;
-        finalStreams.push(s);
-      } else if (s.url.includes(".mp4") || s.url.includes(".m3u8") || s.url.includes(".mkv") || s.url.includes(".avi") || s.url.startsWith("magnet:") || s.url.includes("/api/file/") || s.url.includes(".cloudflarestorage.com")) {
-        s.name = "AnimeDekho";
-        s.provider = "anime-dekho";
-        s.headers = HEADERS;
-        finalStreams.push(s);
-      }
-    }
-    return finalStreams;
+    // Each candidate's extraction is independent of the others (a different
+    // embed host per candidate - abyssplayer, rubystm, cloudy, vidmoly,
+    // emturbovid, ...), but this used to await them one at a time, so the
+    // total wait was the SUM of every host's latency instead of just the
+    // slowest one. Running them in parallel preserves the original filtering
+    // logic and result order exactly, just without the serial wait.
+    const extracted = yield Promise.all(streams.map(s => {
+      if (!s.url) return Promise.resolve(null);
+      return Promise.resolve(extract(s.url)).then(ext => {
+        if (ext) {
+          return Object.assign({}, s, {
+            url: ext.url,
+            quality: ext.quality !== "Unknown" ? ext.quality : s.quality,
+            name: "AnimeDekho",
+            provider: "anime-dekho",
+            headers: HEADERS
+          });
+        }
+        if (s.url.includes(".mp4") || s.url.includes(".m3u8") || s.url.includes(".mkv") || s.url.includes(".avi") || s.url.startsWith("magnet:") || s.url.includes("/api/file/") || s.url.includes(".cloudflarestorage.com")) {
+          return Object.assign({}, s, { name: "AnimeDekho", provider: "anime-dekho", headers: HEADERS });
+        }
+        return null;
+      }).catch(() => null);
+    }));
+    return extracted.filter(Boolean);
   });
 }
 module.exports = { getStreams: wrappedGetStreams };

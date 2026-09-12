@@ -65,6 +65,21 @@ function isM3u8Url(url) {
   return /\.m3u8(\?|$)/i.test(url);
 }
 
+// Astra's per-resolution URLs route through a v1.streamrk.site proxy in
+// front of hakunaymatata.com - the same backend already found unreliable
+// behind Vidlink (rate-limited there). Here it doesn't fail fast: measured
+// directly, it takes ~19-20 seconds to return a Cloudflare 522 (origin
+// connection timeout) rather than erroring out quickly. Since validation
+// runs every candidate in parallel and waits for all of them, that one slow
+// host was single-handedly stretching every Vidrock call to ~20+ seconds
+// even when a fast, valid stream (e.g. Nova, usually ready in ~1-2s) was
+// already available - there's no JS timer in this sandbox to cut a single
+// slow request short, so the only fix is to not make the request at all for
+// a host already proven to hang this long.
+function isKnownSlowHost(url) {
+  return /hakunaymatata\.com/i.test(url);
+}
+
 function firstManifestRef(text, baseUrl) {
   const lines = text.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
   if (lines.length === 0) return null;
@@ -76,12 +91,16 @@ function firstManifestRef(text, baseUrl) {
 }
 
 function validateM3u8Chain(url, headers, hopsLeft) {
+  if (isKnownSlowHost(url)) {
+    return Promise.resolve(false);
+  }
   return fetch(url, { headers })
     .then(res => {
       if (!res.ok) return false;
       return res.text().then(text => {
         const next = firstManifestRef(text, url);
         if (!next) return true; // nothing to follow - manifest itself is the only signal we have
+        if (isKnownSlowHost(next)) return false;
         if (isM3u8Url(next) && hopsLeft > 0) {
           return validateM3u8Chain(next, headers, hopsLeft - 1);
         }
@@ -93,6 +112,9 @@ function validateM3u8Chain(url, headers, hopsLeft) {
 }
 
 function validateStreamUrl(stream) {
+  if (isKnownSlowHost(stream.url)) {
+    return Promise.resolve(false);
+  }
   if (isM3u8Url(stream.url)) {
     return validateM3u8Chain(stream.url, stream.headers, 2);
   }

@@ -29,7 +29,7 @@
       "id": "allsources",
       "name": "All Sources",
       "description": "Combines every other scraper in this repo into one plugin, ranks the results (1080p/4K preferred for movies, everything shown for series, 30GB size cap), and returns after ~15s or once every source has answered, whichever comes first. The individual scrapers below still exist separately if you'd rather enable them one at a time.",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "author": "Nuvio Team",
       "supportedTypes": [
         "movie",
@@ -77,7 +77,7 @@
       "id": "vidrock",
       "name": "Vidrock",
       "description": "Vidrock multi-server streaming with AES-256-GCM decrypted sources",
-      "version": "2.1.1",
+      "version": "2.1.2",
       "author": "Nuvio Team",
       "supportedTypes": [
         "movie",
@@ -238,35 +238,6 @@
       ]
     },
     {
-      "id": "videasy",
-      "name": "VIDEASY",
-      "description": "VideoEasy streaming with multiple server support and languages",
-      "version": "1.1.1",
-      "author": "Nuvio Team",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "filename": "providers/videasy.js",
-      "enabled": false,
-      "limited": true,
-      "formats": [
-        "m3u8",
-        "mp4",
-        "mkv"
-      ],
-      "logo": "https://www.videasy.net/logo.png",
-      "contentLanguage": [
-        "en",
-        "de",
-        "it",
-        "fr",
-        "hi",
-        "es",
-        "pt"
-      ]
-    },
-    {
       "id": "vidlink",
       "name": "Vidlink",
       "description": "Vidlink streaming with encrypted TMDB ID support for movies and TV shows",
@@ -362,7 +333,7 @@
       "id": "anime-dekho",
       "name": "AnimeDekho",
       "description": "AnimeDekho anime streaming (sub/dub)",
-      "version": "1.1.1",
+      "version": "1.1.2",
       "author": "Nuvio Team",
       "supportedTypes": [
         "movie",

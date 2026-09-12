@@ -7,8 +7,9 @@
 // `node build.js` re-bundles the esbuild-based providers - this file is
 // generated output, not meant to be hand-edited.
 //
-// Why a generator instead of a hand-written combined file: 16 providers'
-// worth of scraping/decryption logic pasted and kept in sync by hand would
+// Why a generator instead of a hand-written combined file: a dozen-plus
+// providers' worth of scraping/decryption logic pasted and kept in sync by
+// hand would
 // drift out of date the moment any individual provider file changes (which
 // happens often - see this repo's fix history). Regenerating mechanically
 // from the current provider files guarantees the combined file never lags
@@ -35,7 +36,6 @@ const SOURCES = [
   { id: 'netmirror', varName: 'NetMirror', name: 'NetMirror' },
   { id: 'streamflix', varName: 'StreamFlix', name: 'StreamFlix' },
   { id: 'vixsrc', varName: 'VixSrc', name: 'Vixsrc' },
-  { id: 'videasy', varName: 'Videasy', name: 'VIDEASY' },
   { id: 'vidlink', varName: 'VidLink', name: 'Vidlink' },
   { id: 'castle', varName: 'Castle', name: 'Castle' },
   { id: 'hdhub4u', varName: 'HdHub4u', name: 'HDHub4u' },

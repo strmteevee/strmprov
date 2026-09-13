@@ -32,7 +32,6 @@ const SOURCES = [
   { id: 'moviebox', varName: 'MovieBox', name: 'MovieBox' },
   { id: 'rivestream', varName: 'RiveStream', name: 'RiveStream' },
   { id: '4khdhub', varName: 'FourKHdHub', name: '4KHDHub' },
-  { id: 'uhdmovies', varName: 'UhdMovies', name: 'UHDMovies' },
   { id: 'netmirror', varName: 'NetMirror', name: 'NetMirror' },
   { id: 'vixsrc', varName: 'VixSrc', name: 'Vixsrc' },
   { id: 'vidlink', varName: 'VidLink', name: 'Vidlink' },
@@ -154,13 +153,31 @@ function movieTier(quality) {
 // report the best quality tier - any other source beats a Castle stream
 // regardless of tier. It's still allowed to win if it's genuinely the only
 // stream available at all, since a Castle pick beats no pick.
+//
+// video-downloads.googleusercontent.com links (a Google Drive delivery
+// format several of these sources can end up resolving to via
+// driveseed/HubCloud-style chains) get the same treatment: confirmed live
+// that host doesn't support HTTP Range requests at all - a ranged request
+// gets the full multi-GB file back, 200 not 206 - which breaks players that
+// need random access just to start (ExoPlayer/Android TV confirmed, "links
+// visible but not playable").
+function isNonSeekableGoogleDriveLink(stream) {
+  return typeof stream.url === 'string' && stream.url.includes('googleusercontent.com');
+}
+
 function preferredRank(stream, tierFn) {
-  return [stream.source === 'castle' ? 1 : 0, tierFn(stream.quality)];
+  return [
+    stream.source === 'castle' ? 1 : 0,
+    isNonSeekableGoogleDriveLink(stream) ? 1 : 0,
+    tierFn(stream.quality)
+  ];
 }
 
 function rankIsBetter(a, b) {
-  if (a[0] !== b[0]) return a[0] < b[0];
-  return a[1] < b[1];
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return a[i] < b[i];
+  }
+  return false;
 }
 
 // Drops anything over MAX_SIZE_GB, hides sub-1080p results for movies, then

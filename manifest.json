@@ -160,7 +160,7 @@
     {
       "id": "uhdmovies",
       "name": "UHDMovies",
-      "description": "UHD Movies streaming with multiple resolution",
+      "description": "UHD Movies streaming with multiple resolution. Its only reachable delivery path (driveseed's \"Instant Download\") always terminates at a video-downloads.googleusercontent.com Google Drive link, which does not support HTTP Range requests at all (a ranged request gets back the full multi-GB file, 200 not 206) - this breaks playback on players that need random access to start (ExoPlayer/Android TV confirmed). Playable again as of 2026-09-13 via server.js/addon-server.js's own /proxy (lib/rangeProxy.js), which fakes Range support for exactly this host - but that only helps the server-based install paths (StreamAPI, the Stremio addon); the standalone allsources.js combined plugin has no server to proxy through, so uhdmovies is deliberately left out of build-combined.js's SOURCES list and won't appear there.",
       "version": "1.3.1",
       "author": "Nuvio Team",
       "supportedTypes": [

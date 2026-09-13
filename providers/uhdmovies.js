@@ -282,7 +282,16 @@ function extractDriveseedPage(url) {
           const resolvedUrl = yield extractVideoSeed(landedUrl);
           return resolvedUrl ? { name: "Driveseed Instant", url: resolvedUrl, quality, size } : null;
         } else if (text.includes("resume cloud")) {
-          const cloudRes = yield fetchWithTimeout(baseDomain + href, { headers: HEADERS });
+          // href here is already an absolute URL (confirmed live) - the old
+          // baseDomain+href concatenation would have produced a malformed
+          // double-domain URL and silently failed every time. Fixed, but
+          // this path is now also confirmed gated behind a real Cloudflare
+          // Turnstile challenge (the page's "Generate Cloud Link" button
+          // posts an action_token that the server actually validates - an
+          // empty/missing one is rejected) - not something to try to solve
+          // programmatically, so this still won't produce a stream today.
+          const cloudUrl = href.startsWith("http") ? href : baseDomain + href;
+          const cloudRes = yield fetchWithTimeout(cloudUrl, { headers: HEADERS });
           const cloudHtml = yield cloudRes.text();
           const link = import_cheerio_without_node_native.default.load(cloudHtml)("a.btn-success").first().attr("href");
           return link ? { name: "Driveseed Cloud", url: link, quality, size } : null;

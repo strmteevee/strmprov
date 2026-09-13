@@ -1452,448 +1452,6 @@ ${formatBytes(link.meta.bytes || 0)}`,
   return { getStreams: getStreams };
 })();
 
-const UhdMoviesSource = (function () {
-/**
- * uhdmovies - Built from src/uhdmovies/
- * Generated: 2026-09-11T16:50:57.642Z
- */
-var __create = Object.create;
-var __defProp = Object.defineProperty;
-var __defProps = Object.defineProperties;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropDescs = Object.getOwnPropertyDescriptors;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __getOwnPropSymbols = Object.getOwnPropertySymbols;
-var __getProtoOf = Object.getPrototypeOf;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __propIsEnum = Object.prototype.propertyIsEnumerable;
-var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
-var __spreadValues = (a, b) => {
-  for (var prop in b || (b = {}))
-    if (__hasOwnProp.call(b, prop))
-      __defNormalProp(a, prop, b[prop]);
-  if (__getOwnPropSymbols)
-    for (var prop of __getOwnPropSymbols(b)) {
-      if (__propIsEnum.call(b, prop))
-        __defNormalProp(a, prop, b[prop]);
-    }
-  return a;
-};
-var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
-  // If the importer is in node compatibility mode or this is not an ESM
-  // file that has been converted to a CommonJS file using a Babel-
-  // compatible transform (i.e. "__esModule" has not been set), then set
-  // "default" to the CommonJS "module.exports" for node compatibility.
-  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
-  mod
-));
-var __async = (__this, __arguments, generator) => {
-  return new Promise((resolve, reject) => {
-    var fulfilled = (value) => {
-      try {
-        step(generator.next(value));
-      } catch (e) {
-        reject(e);
-      }
-    };
-    var rejected = (value) => {
-      try {
-        step(generator.throw(value));
-      } catch (e) {
-        reject(e);
-      }
-    };
-    var step = (x) => x.done ? resolve(x.value) : Promise.resolve(x.value).then(fulfilled, rejected);
-    step((generator = generator.apply(__this, __arguments)).next());
-  });
-};
-
-// src/uhdmovies/index.js
-var import_cheerio_without_node_native2 = __toESM(require("cheerio-without-node-native"));
-
-// src/uhdmovies/constants.js
-var DOMAINS_URL = "https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json";
-var FALLBACK_DOMAIN = "https://uhdmovies.pink";
-var TMDB_API_KEY = "1865f43a0549ca50d341dd9ab8b29f49";
-var TMDB_BASE_URL = "https://api.themoviedb.org/3";
-var HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-  "Accept-Language": "en-US,en;q=0.9",
-  "Cache-Control": "max-age=0",
-  "Connection": "keep-alive",
-  "Upgrade-Insecure-Requests": "1"
-};
-
-// src/uhdmovies/utils.js
-var import_cheerio_without_node_native = __toESM(require("cheerio-without-node-native"));
-var cachedDomain = "";
-function fetchWithTimeout(url, options) {
-  return fetch(url, options);
-}
-function getMainUrl() {
-  return __async(this, null, function* () {
-    if (cachedDomain)
-      return cachedDomain;
-    try {
-      const response = yield fetchWithTimeout(DOMAINS_URL, { headers: { "User-Agent": "Mozilla/5.0" } });
-      const data = yield response.json();
-      cachedDomain = data["UHDMovies"] || FALLBACK_DOMAIN;
-      return cachedDomain;
-    } catch (e) {
-      return FALLBACK_DOMAIN;
-    }
-  });
-}
-function getBaseUrl(url) {
-  try {
-    const urlObj = new URL(url);
-    return `${urlObj.protocol}//${urlObj.host}`;
-  } catch (e) {
-    return "";
-  }
-}
-function fixUrl(url, domain) {
-  if (!url)
-    return "";
-  if (url.startsWith("http"))
-    return url;
-  if (url.startsWith("//"))
-    return `https:${url}`;
-  if (url.startsWith("/"))
-    return domain + url;
-  return `${domain}/${url}`;
-}
-function bypassHrefli(url) {
-  return __async(this, null, function* () {
-    const host = getBaseUrl(url);
-    try {
-      const res1 = yield fetchWithTimeout(url, { headers: HEADERS });
-      const html1 = yield res1.text();
-      const $1 = import_cheerio_without_node_native.default.load(html1);
-      const formUrl1 = $1("form#landing").attr("action");
-      const formData1 = {};
-      $1("form#landing input").each((_, el) => {
-        formData1[$1(el).attr("name")] = $1(el).attr("value") || "";
-      });
-      const res2 = yield fetchWithTimeout(formUrl1, {
-        method: "POST",
-        headers: __spreadProps(__spreadValues({}, HEADERS), { "Content-Type": "application/x-www-form-urlencoded" }),
-        body: new URLSearchParams(formData1).toString()
-      });
-      const html2 = yield res2.text();
-      const $2 = import_cheerio_without_node_native.default.load(html2);
-      const formUrl2 = $2("form#landing").attr("action");
-      const formData2 = {};
-      $2("form#landing input").each((_, el) => {
-        formData2[$2(el).attr("name")] = $2(el).attr("value") || "";
-      });
-      const res3 = yield fetchWithTimeout(formUrl2, {
-        method: "POST",
-        headers: __spreadProps(__spreadValues({}, HEADERS), { "Content-Type": "application/x-www-form-urlencoded" }),
-        body: new URLSearchParams(formData2).toString()
-      });
-      const html3 = yield res3.text();
-      const $3 = import_cheerio_without_node_native.default.load(html3);
-      const script = $3("script:contains(?go=)").html() || "";
-      const skTokenMatch = script.match(/\?go=([^"]+)/);
-      if (!skTokenMatch)
-        return null;
-      const skToken = skTokenMatch[1];
-      const wpHttp2 = formData2["_wp_http2"] || "";
-      const res4 = yield fetchWithTimeout(`${host}?go=${skToken}`, {
-        headers: __spreadProps(__spreadValues({}, HEADERS), { "Cookie": `${skToken}=${wpHttp2}` })
-      });
-      const html4 = yield res4.text();
-      const $4 = import_cheerio_without_node_native.default.load(html4);
-      const metaRefresh = $4('meta[http-equiv="refresh"]').attr("content") || "";
-      const driveUrlMatch = metaRefresh.match(/url=(.+)/);
-      if (!driveUrlMatch)
-        return null;
-      const driveUrl = driveUrlMatch[1];
-      const res5 = yield fetchWithTimeout(driveUrl, { headers: HEADERS });
-      const html5 = yield res5.text();
-      const pathMatch = html5.match(/replace\("([^"]+)"\)/);
-      if (!pathMatch || pathMatch[1] === "/404")
-        return null;
-      return fixUrl(pathMatch[1], getBaseUrl(driveUrl));
-    } catch (e) {
-      return null;
-    }
-  });
-}
-function fetchTmdbDetails(tmdbId, mediaType) {
-  return __async(this, null, function* () {
-    var _a;
-    try {
-      const url = `${TMDB_BASE_URL}/${mediaType}/${tmdbId}?api_key=${TMDB_API_KEY}&append_to_response=external_ids`;
-      const res = yield fetchWithTimeout(url, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          "Accept": "application/json"
-        }
-      });
-      const data = yield res.json();
-      return {
-        title: mediaType === "movie" ? data.title || data.original_title : data.name || data.original_name,
-        year: (data.release_date || data.first_air_date || "").substring(0, 4),
-        imdbId: (_a = data.external_ids) == null ? void 0 : _a.imdb_id
-      };
-    } catch (e) {
-      return null;
-    }
-  });
-}
-function getIndexQuality(str) {
-  if (!str)
-    return "Unknown";
-  const match = str.match(/(\d{3,4})[pP]/);
-  if (match)
-    return match[1] + "p";
-  if (str.toUpperCase().includes("4K") || str.toUpperCase().includes("UHD"))
-    return "2160p";
-  return "Unknown";
-}
-function extractVideoSeed(finallink) {
-  return __async(this, null, function* () {
-    try {
-      const urlObj = new URL(finallink);
-      const host = urlObj.host || "video-seed.xyz";
-      // Driveseed rotates through several gateway domains that all use this
-      // same decrypt-the-token flow (video-seed.dev, video-plex.xyz,
-      // video-gen.xyz confirmed live) - most put the token in a ?url= query
-      // param, but at least one (video-gen.xyz) puts it bare in the path
-      // instead, with no query string at all.
-      const token = finallink.includes("url=") ? finallink.split("url=")[1] : (urlObj.pathname || "").replace(/^\//, "");
-      if (!token)
-        return null;
-      const res = yield fetchWithTimeout(`https://${host}/api`, {
-        method: "POST",
-        headers: __spreadProps(__spreadValues({}, HEADERS), {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "x-token": host,
-          "Referer": finallink
-        }),
-        body: `keys=${encodeURIComponent(token)}`
-      });
-      const text = yield res.text();
-      const urlMatch = text.match(/url":"([^"]+)"/);
-      return urlMatch ? urlMatch[1].replace(/\\\//g, "/") : null;
-    } catch (e) {
-      return null;
-    }
-  });
-}
-function extractDriveseedPage(url) {
-  return __async(this, null, function* () {
-    const streams = [];
-    try {
-      let pageUrl = url;
-      if (url.includes("r?key=")) {
-        const res2 = yield fetchWithTimeout(url, { headers: HEADERS });
-        const html2 = yield res2.text();
-        const redirectMatch = html2.match(/replace\("([^"]+)"\)/);
-        if (redirectMatch) {
-          pageUrl = getBaseUrl(url) + redirectMatch[1];
-        }
-      }
-      const res = yield fetchWithTimeout(pageUrl, { headers: HEADERS });
-      const html = yield res.text();
-      const $ = import_cheerio_without_node_native.default.load(html);
-      const baseDomain = getBaseUrl(pageUrl);
-      const qualityText = $("li.list-group-item").first().text() || "";
-      const size = $("li:nth-child(3)").text().replace("Size : ", "").trim();
-      const quality = getIndexQuality(qualityText);
-      const elements = $("div.text-center > a").get();
-      const buttonResults = yield Promise.all(elements.map((el) => __async(this, null, function* () {
-        const text = $(el).text().toLowerCase();
-        const href = $(el).attr("href");
-        if (!href)
-          return null;
-        if (text.includes("instant download")) {
-          const instantRes = yield fetchWithTimeout(href, { headers: HEADERS, redirect: "follow" });
-          const landedUrl = instantRes.url || "";
-          const afterUrlParam = landedUrl.includes("url=") ? landedUrl.split("url=")[1] : "";
-          // "Instant Download" lands on one of several gateway domains
-          // (confirmed live: video-seed.dev, video-plex.xyz, video-gen.xyz) -
-          // video-seed.dev happens to put the real, already-playable URL
-          // straight in ?url=, but the others put an encrypted token there
-          // (or bare in the path) that still needs decrypting through that
-          // gateway's own /api endpoint. Treating every gateway's ?url= value
-          // as a final URL - the previous behavior - returned raw undecrypted
-          // tokens as "streams" for the latter, which obviously never played.
-          if (afterUrlParam && afterUrlParam.startsWith("http")) {
-            return { name: "Driveseed Instant", url: afterUrlParam, quality, size };
-          }
-          const resolvedUrl = yield extractVideoSeed(landedUrl);
-          return resolvedUrl ? { name: "Driveseed Instant", url: resolvedUrl, quality, size } : null;
-        } else if (text.includes("resume cloud")) {
-          const cloudRes = yield fetchWithTimeout(baseDomain + href, { headers: HEADERS });
-          const cloudHtml = yield cloudRes.text();
-          const link = import_cheerio_without_node_native.default.load(cloudHtml)("a.btn-success").first().attr("href");
-          return link ? { name: "Driveseed Cloud", url: link, quality, size } : null;
-        } else if (text.includes("cloud download")) {
-          return { name: "Driveseed Cloud", url: href, quality, size };
-        }
-        return null;
-      })));
-      streams.push(...buttonResults.filter(Boolean));
-    } catch (e) {
-    }
-    return streams;
-  });
-}
-
-// src/uhdmovies/index.js
-function getStreams(tmdbId, mediaType, seasonNum = 1, episodeNum = 1) {
-  return __async(this, null, function* () {
-    console.log(`[UHDMovies] Querying streams for TMDB: ${tmdbId}, Type: ${mediaType}`);
-    const details = yield fetchTmdbDetails(tmdbId, mediaType);
-    if (!details)
-      return [];
-    const mainUrl = yield getMainUrl();
-    const query = details.title;
-    const searchUrl = `${mainUrl}/?s=${encodeURIComponent(query)}`;
-    try {
-      const searchRes = yield fetchWithTimeout(searchUrl, { headers: __spreadProps(__spreadValues({}, HEADERS), { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" }) });
-      const searchHtml = yield searchRes.text();
-      const $search = import_cheerio_without_node_native2.default.load(searchHtml);
-      // A plain "does the post title contain the movie title" substring check
-      // also matches every sequel whose title happens to start with the same
-      // words - confirmed live: searching for "Guardians of the Galaxy"
-      // (2014) matched "Guardians of the Galaxy Vol. 3 (2023)" instead, since
-      // that title contains the query as a prefix, and stopping at the FIRST
-      // such match meant whichever franchise entry the site listed first won
-      // regardless of which one was actually requested. Scanning every
-      // candidate and preferring one whose own year matches TMDB's release
-      // year disambiguates the franchise correctly; falling back to the old
-      // first-match behavior when no year match exists keeps this from
-      // regressing titles where the post simply doesn't state a year.
-      let targetUrl = "";
-      let fallbackUrl = "";
-      const queryLower = details.title.toLowerCase();
-      $search("article.gridlove-post, article.latestPost").each((i, el) => {
-        const title = $search(el).find("h1.sanket, h2.title a").text() || $search(el).find("a").attr("title") || "";
-        const href = $search(el).find("div.entry-image > a, h2.title a, a").first().attr("href");
-        if (!href || !title)
-          return;
-        const matches = title.toLowerCase().includes(queryLower) || details.imdbId && title.includes(details.imdbId);
-        if (!matches)
-          return;
-        if (!fallbackUrl)
-          fallbackUrl = href;
-        const yearMatch = title.match(/(19|20)\d{2}/);
-        if (!targetUrl && details.year && yearMatch && yearMatch[0] === details.year) {
-          targetUrl = href;
-        }
-      });
-      if (!targetUrl)
-        targetUrl = fallbackUrl;
-      if (!targetUrl) {
-        console.log("[UHDMovies] No search result found");
-        return [];
-      }
-      const pageRes = yield fetchWithTimeout(targetUrl, { headers: __spreadProps(__spreadValues({}, HEADERS), { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" }) });
-      const pageHtml = yield pageRes.text();
-      const $ = import_cheerio_without_node_native2.default.load(pageHtml);
-      const allStreams = [];
-      if (mediaType === "movie") {
-        const iframeRegex = /\[.*\]/;
-        $("div.entry-content > p, div.entry-content > div").each((i, el) => {
-          const text = $(el).text();
-          if (iframeRegex.test(text)) {
-            const quality = getIndexQuality(text);
-            const nextHref = $(el).next().find("a.maxbutton-1, a.maxbutton").attr("href") || $(el).find("a.maxbutton-1, a.maxbutton").attr("href");
-            if (nextHref) {
-              allStreams.push({ url: nextHref, quality });
-            }
-          }
-        });
-      } else {
-        const episodesMap = {};
-        let currentSeason = seasonNum;
-        $("pre, p, a, h3").each((i, el) => {
-          const text = $(el).text().trim();
-          const seasonMatch = text.match(/(?:season\s*|S)(\d+)/i);
-          if (seasonMatch && text.length < 20) {
-            currentSeason = parseInt(seasonMatch[1]);
-          }
-          if (($(el).is("a") || $(el).find("a").length > 0) && text.toLowerCase().includes("episode")) {
-            if (text.toLowerCase().includes("zip"))
-              return;
-            const epMatch = text.match(/Episode\s*(\d+)/i);
-            if (epMatch) {
-              const realEp = parseInt(epMatch[1]);
-              const epUrl = $(el).is("a") ? $(el).attr("href") : $(el).find("a").attr("href");
-              if (epUrl) {
-                const key = `${currentSeason}-${realEp}`;
-                if (!episodesMap[key])
-                  episodesMap[key] = [];
-                episodesMap[key].push(epUrl);
-              }
-            }
-          }
-        });
-        const targetKey = `${seasonNum}-${episodeNum}`;
-        const urls = episodesMap[targetKey] || [];
-        urls.forEach((url) => {
-          allStreams.push({ url, quality: "Unknown" });
-        });
-      }
-      const resultGroups = yield Promise.all(allStreams.map((item) => __async(this, null, function* () {
-        let finalLink = item.url;
-        if (finalLink.includes("unblockedgames")) {
-          finalLink = yield bypassHrefli(finalLink);
-        }
-        if (!finalLink)
-          return [];
-        if (finalLink.includes("driveseed") || finalLink.includes("driveleech")) {
-          const streams = yield extractDriveseedPage(finalLink);
-          return streams.map((s) => __spreadProps(__spreadValues({}, s), {
-            name: "UHDMovies [Driveseed]",
-            title: `UHDMovies - ${s.quality} ${s.size ? `[${s.size}]` : ""}`,
-            quality: s.quality || item.quality,
-            provider: "uhdmovies"
-          }));
-        } else if (finalLink.includes("video-seed")) {
-          const streamUrl = yield extractVideoSeed(finalLink);
-          if (!streamUrl)
-            return [];
-          return [{
-            name: "UHDMovies [VideoSeed]",
-            title: `UHDMovies - ${item.quality}`,
-            url: streamUrl,
-            quality: item.quality,
-            provider: "uhdmovies"
-          }];
-        }
-        return [{
-          name: "UHDMovies",
-          title: `UHDMovies - ${item.quality}`,
-          url: finalLink,
-          quality: item.quality,
-          provider: "uhdmovies"
-        }];
-      })));
-      return resultGroups.flat();
-    } catch (e) {
-      console.error("[UHDMovies] Error:", e.message);
-      return [];
-    }
-  });
-}
-  return { getStreams: getStreams };
-})();
-
 const NetMirrorSource = (function () {
 // NetMirror Scraper for Nuvio Local Scrapers
 //
@@ -4267,7 +3825,21 @@ function getStreams(tmdbId, mediaType = "movie", season = null, episode = null) 
         };
       });
       const qualityOrder = { "4K": 4, "1080p": 2, "720p": 1, "480p": 0, "Unknown": -2 };
-      return streams.sort((a, b) => (qualityOrder[b.quality] || -3) - (qualityOrder[a.quality] || -3));
+      // HubCloud's "10Gbps" links resolve to a video-downloads.googleusercontent.com
+      // Google Drive URL that (confirmed live) doesn't support HTTP Range
+      // requests at all - a ranged request gets the full multi-GB file back,
+      // 200 not 206 - which breaks players that need random access to even
+      // start (ExoPlayer/Android TV confirmed). ZipDisk/Pixeldrain links from
+      // the same page were confirmed to properly return 206/Content-Range,
+      // so bias those ahead at the same quality tier instead of letting
+      // whichever button happened to appear first in the page decide - the
+      // Google Drive link stays available, just no longer picked first.
+      const isNonSeekable = (url) => typeof url === "string" && url.includes("googleusercontent.com");
+      return streams.sort((a, b) => {
+        const byQuality = (qualityOrder[b.quality] || -3) - (qualityOrder[a.quality] || -3);
+        if (byQuality !== 0) return byQuality;
+        return (isNonSeekable(a.url) ? 1 : 0) - (isNonSeekable(b.url) ? 1 : 0);
+      });
     } catch (error) {
       console.error(`[HDHub4u] Scraping error: ${error.message}`);
       return [];
@@ -5607,7 +5179,6 @@ const SOURCES = [
   { id: 'moviebox', name: 'MovieBox', mod: MovieBoxSource },
   { id: 'rivestream', name: 'RiveStream', mod: RiveStreamSource },
   { id: '4khdhub', name: '4KHDHub', mod: FourKHdHubSource },
-  { id: 'uhdmovies', name: 'UHDMovies', mod: UhdMoviesSource },
   { id: 'netmirror', name: 'NetMirror', mod: NetMirrorSource },
   { id: 'vixsrc', name: 'Vixsrc', mod: VixSrcSource },
   { id: 'vidlink', name: 'Vidlink', mod: VidLinkSource },
@@ -5671,13 +5242,31 @@ function movieTier(quality) {
 // report the best quality tier - any other source beats a Castle stream
 // regardless of tier. It's still allowed to win if it's genuinely the only
 // stream available at all, since a Castle pick beats no pick.
+//
+// video-downloads.googleusercontent.com links (a Google Drive delivery
+// format several of these sources can end up resolving to via
+// driveseed/HubCloud-style chains) get the same treatment: confirmed live
+// that host doesn't support HTTP Range requests at all - a ranged request
+// gets the full multi-GB file back, 200 not 206 - which breaks players that
+// need random access just to start (ExoPlayer/Android TV confirmed, "links
+// visible but not playable").
+function isNonSeekableGoogleDriveLink(stream) {
+  return typeof stream.url === 'string' && stream.url.includes('googleusercontent.com');
+}
+
 function preferredRank(stream, tierFn) {
-  return [stream.source === 'castle' ? 1 : 0, tierFn(stream.quality)];
+  return [
+    stream.source === 'castle' ? 1 : 0,
+    isNonSeekableGoogleDriveLink(stream) ? 1 : 0,
+    tierFn(stream.quality)
+  ];
 }
 
 function rankIsBetter(a, b) {
-  if (a[0] !== b[0]) return a[0] < b[0];
-  return a[1] < b[1];
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return a[i] < b[i];
+  }
+  return false;
 }
 
 // Drops anything over MAX_SIZE_GB, hides sub-1080p results for movies, then

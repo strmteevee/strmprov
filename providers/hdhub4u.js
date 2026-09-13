@@ -899,7 +899,27 @@ function getStreams(tmdbId, mediaType = "movie", season = null, episode = null) 
         };
       });
       const qualityOrder = { "4K": 4, "1080p": 2, "720p": 1, "480p": 0, "Unknown": -2 };
-      return streams.sort((a, b) => (qualityOrder[b.quality] || -3) - (qualityOrder[a.quality] || -3));
+      // HubCloud's "10Gbps" links resolve to a video-downloads.googleusercontent.com
+      // Google Drive URL that (confirmed live) doesn't support HTTP Range
+      // requests at all - a ranged request gets the full multi-GB file back,
+      // 200 not 206 - which breaks players that need random access to even
+      // start (ExoPlayer/Android TV confirmed). ZipDisk/Pixeldrain links from
+      // the same page were confirmed to properly return 206/Content-Range,
+      // so bias those ahead at the same quality tier instead of letting
+      // whichever button happened to appear first in the page decide - the
+      // Google Drive link stays available, just no longer picked first.
+      // Seekability is checked BEFORE quality, not just as a tiebreaker
+      // within the same tier - a working 480p stream is more useful than a
+      // higher-quality one that fails to even start on a strict player, so a
+      // non-seekable link should never outrank a seekable one regardless of
+      // resolution (mirrors how lib/aggregate.js ranks the cross-provider
+      // [PREFERRED] pick for the same reason).
+      const isNonSeekable = (url) => typeof url === "string" && url.includes("googleusercontent.com");
+      return streams.sort((a, b) => {
+        const bySeekable = (isNonSeekable(a.url) ? 1 : 0) - (isNonSeekable(b.url) ? 1 : 0);
+        if (bySeekable !== 0) return bySeekable;
+        return (qualityOrder[b.quality] || -3) - (qualityOrder[a.quality] || -3);
+      });
     } catch (error) {
       console.error(`[HDHub4u] Scraping error: ${error.message}`);
       return [];

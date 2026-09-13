@@ -312,15 +312,37 @@ function getStreams(tmdbId, mediaType, seasonNum = 1, episodeNum = 1) {
       const searchRes = yield fetchWithTimeout(searchUrl, { headers: __spreadProps(__spreadValues({}, HEADERS), { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" }) });
       const searchHtml = yield searchRes.text();
       const $search = import_cheerio_without_node_native2.default.load(searchHtml);
+      // A plain "does the post title contain the movie title" substring check
+      // also matches every sequel whose title happens to start with the same
+      // words - confirmed live: searching for "Guardians of the Galaxy"
+      // (2014) matched "Guardians of the Galaxy Vol. 3 (2023)" instead, since
+      // that title contains the query as a prefix, and stopping at the FIRST
+      // such match meant whichever franchise entry the site listed first won
+      // regardless of which one was actually requested. Scanning every
+      // candidate and preferring one whose own year matches TMDB's release
+      // year disambiguates the franchise correctly; falling back to the old
+      // first-match behavior when no year match exists keeps this from
+      // regressing titles where the post simply doesn't state a year.
       let targetUrl = "";
+      let fallbackUrl = "";
+      const queryLower = details.title.toLowerCase();
       $search("article.gridlove-post, article.latestPost").each((i, el) => {
         const title = $search(el).find("h1.sanket, h2.title a").text() || $search(el).find("a").attr("title") || "";
         const href = $search(el).find("div.entry-image > a, h2.title a, a").first().attr("href");
-        if (href && (title.toLowerCase().includes(details.title.toLowerCase()) || details.imdbId && title.includes(details.imdbId))) {
+        if (!href || !title)
+          return;
+        const matches = title.toLowerCase().includes(queryLower) || details.imdbId && title.includes(details.imdbId);
+        if (!matches)
+          return;
+        if (!fallbackUrl)
+          fallbackUrl = href;
+        const yearMatch = title.match(/(19|20)\d{2}/);
+        if (!targetUrl && details.year && yearMatch && yearMatch[0] === details.year) {
           targetUrl = href;
-          return false;
         }
       });
+      if (!targetUrl)
+        targetUrl = fallbackUrl;
       if (!targetUrl) {
         console.log("[UHDMovies] No search result found");
         return [];

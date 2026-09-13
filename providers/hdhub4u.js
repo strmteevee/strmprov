@@ -220,11 +220,21 @@ function calculateTitleSimilarity(title1, title2) {
   score -= Math.min(0.2, extraWordsCount * 0.01);
   return score;
 }
-function findBestTitleMatch(mediaInfo, searchResults, mediaType, season) {
+// HDHub4u often has MULTIPLE separate posts for the exact same title+year -
+// a full "1080p 720p 480p Dual Audio" post alongside minimal single-quality
+// ones (e.g. "480p BluRay 390MB"). The scoring below penalizes a title for
+// each extra word it has over the search query, which - confirmed live for
+// Guardians of the Galaxy (2014) - means a bare-bones post can outscore a
+// fuller one purely for having fewer words, even though the fuller post is
+// the more useful (and, live, the only actually working) one. Rather than
+// try to perfectly re-tune that heuristic, returning every plausible match
+// instead of just the top one lets getStreams try several posts and merge
+// whatever links they produce, so one low-effort or dead post can no longer
+// wipe out everything for a title that has better posts available too.
+function findTitleMatches(mediaInfo, searchResults, mediaType, season) {
   if (!searchResults || searchResults.length === 0)
-    return null;
-  let bestMatch = null;
-  let bestScore = 0;
+    return [];
+  const scored = [];
   for (const result of searchResults) {
     let score = calculateTitleSimilarity(mediaInfo.title, result.title);
     if (score <= 0)
@@ -262,14 +272,15 @@ function findBestTitleMatch(mediaInfo, searchResults, mediaType, season) {
     if (result.title.toLowerCase().includes("2160p") || result.title.toLowerCase().includes("4k")) {
       score += 0.05;
     }
-    if (score > bestScore && score > 0.3) {
-      bestScore = score;
-      bestMatch = result;
+    if (score > 0.3) {
+      scored.push({ result, score });
     }
   }
-  if (bestMatch)
-    console.log(`[HDHub4u] Best title match: "${bestMatch.title}" (score: ${bestScore.toFixed(2)})`);
-  return bestMatch;
+  scored.sort((a, b) => b.score - a.score);
+  if (scored.length > 0) {
+    console.log(`[HDHub4u] Title matches: ${scored.map((s) => `"${s.result.title}" (${s.score.toFixed(2)})`).join(", ")}`);
+  }
+  return scored.map((s) => s.result);
 }
 function getTMDBDetails(tmdbId, mediaType) {
   return __async(this, null, function* () {
@@ -526,17 +537,39 @@ function hubCloudExtractor(url, referer) {
             return [];
           }
         } else if (text.includes("10gbps") || link && link.includes("hubcloud.cx")) {
-          let targetUrl = link;
-          if (link && !link.includes("hubcloud.cx")) {
-            try {
-              const resp = yield fetchWithTimeout(link, { method: "GET", redirect: "manual" });
+          // Both button variants need their redirect chain walked to reach a
+          // real file - "10Gbps" buttons (gpdl./pixel.hubcloud.ist) used to
+          // redirect straight to a ?link=<real url> location in one hop, but
+          // confirmed live that they now take an extra hop first through a
+          // *.workers.dev gateway (still just ?id=..., no "link=" yet) before
+          // finally landing on gamerxyt.com/dl.php?link=<real url> - the old
+          // single-hop check left the URL on that intermediate gateway, which
+          // serves an HTML "please wait" page instead of video. Walking the
+          // chain instead of assuming a fixed hop count survives that kind of
+          // change. hubcloud.cx links, previously assumed to already be a
+          // final target needing no resolution, turned out on the same live
+          // check to dead-end at a Telegram bot deep link (t.me/...) instead
+          // of any HTTP file - there's nothing playable to extract from those,
+          // so unlike the 10Gbps case, finding no "link=" here means dropping
+          // the button entirely rather than falling back to a broken URL.
+          let targetUrl = null;
+          try {
+            let currentLink = link;
+            for (let hop = 0; hop < 5 && currentLink; hop++) {
+              const resp = yield fetchWithTimeout(currentLink, { method: "GET", redirect: "manual" });
               const loc = resp.headers.get("location");
-              if (loc && loc.includes("link=")) {
+              if (!loc)
+                break;
+              if (loc.includes("link=")) {
                 targetUrl = loc.substring(loc.indexOf("link=") + 5);
+                break;
               }
-            } catch (e) {
+              currentLink = loc;
             }
+          } catch (e) {
           }
+          if (!targetUrl)
+            return [];
           return [{ source: `HubCloud - 10Gbps ${labelExtras}`, quality, url: targetUrl, size: sizeInBytes, fileName }];
         } else if (text.includes("zipdisk") || link && link.includes("workers.dev")) {
           return [{ source: `ZipDisk Server ${labelExtras}`, quality, url: link, size: sizeInBytes, fileName }];
@@ -804,15 +837,34 @@ function getStreams(tmdbId, mediaType = "movie", season = null, episode = null) 
       const searchResults = yield search(searchQuery);
       if (searchResults.length === 0)
         return [];
-      const bestMatch = findBestTitleMatch(mediaInfo, searchResults, mediaType, season);
-      if (!bestMatch) {
+      const matches = findTitleMatches(mediaInfo, searchResults, mediaType, season);
+      if (matches.length === 0) {
         console.log(`[HDHub4u] No confident match for "${mediaInfo.title}" - refusing to guess from unrelated search results`);
         return [];
       }
-      const selectedMedia = bestMatch;
-      console.log(`[HDHub4u] Selected: "${selectedMedia.title}" (${selectedMedia.url})`);
-      const result = yield getDownloadLinks(selectedMedia.url);
-      const finalLinks = result.finalLinks;
+      // Try several top-scoring posts, not just the single best-scoring one -
+      // HDHub4u frequently splits the same title+year across multiple posts
+      // of differing quality/completeness, and the single best-scored post
+      // is sometimes a dead or minimal one with no working links at all even
+      // when a fuller post for the same title does have them (confirmed
+      // live). Merging survives that instead of failing outright.
+      const candidates = matches.slice(0, 3);
+      const perCandidate = yield Promise.all(candidates.map((media) => __async(this, null, function* () {
+        console.log(`[HDHub4u] Trying: "${media.title}" (${media.url})`);
+        try {
+          const result2 = yield getDownloadLinks(media.url);
+          return result2.finalLinks;
+        } catch (e) {
+          return [];
+        }
+      })));
+      const seenUrls = /* @__PURE__ */ new Set();
+      const finalLinks = perCandidate.flat().filter((link) => {
+        if (!link.url || seenUrls.has(link.url))
+          return false;
+        seenUrls.add(link.url);
+        return true;
+      });
       let filteredLinks = finalLinks;
       if (mediaType === "tv" && episode !== null) {
         filteredLinks = finalLinks.filter((link) => link.episode === episode);

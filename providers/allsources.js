@@ -684,6 +684,19 @@ function getTmdbInfo(tmdbId, mediaType) {
 function normalizeTitle(title) {
   return (title || '')
     .toLowerCase()
+    // MovieBox's search splits one multi-season show into one result row
+    // PER SEASON (or season range) - "The Office S1", "The Office S9",
+    // "The Office S1-S8" - all sharing the same underlying subjectId.
+    // Left un-stripped, a correctly season-matched row only ever qualifies
+    // for the weaker "starts with" score below (since "office s1" !==
+    // "office"), while a same-named but unrelated adaptation with no season
+    // suffix in its title gets the full exact-match score instead - even
+    // with a year that doesn't match at all. Confirmed live: this is
+    // exactly why "The Office" (2005, US) S1E1 played a different
+    // same-titled adaptation entirely. Stripping the suffix first makes
+    // every season-row of the right show compare equal to a bare title, so
+    // the year check below can actually do its job.
+    .replace(/\s+s\d+(\s*-\s*s\d+)?\s*$/i, '')
     .replace(/\b(the|a|an)\b/g, '')
     .replace(/[:\-_]/g, ' ')
     .replace(/\s+/g, ' ')

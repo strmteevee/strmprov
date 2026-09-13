@@ -42,6 +42,9 @@ const SOURCES = [
   { id: 'movieblast', varName: 'MovieBlast', name: 'MovieBlast' },
   { id: 'anime-dekho', varName: 'AnimeDekho', name: 'AnimeDekho' },
   { id: 'kickassanime', varName: 'KickassAnime', name: 'KickassAnime' },
+  { id: 'vegamovies', varName: 'VegaMovies', name: 'VegaMovies' },
+  { id: 'vidfastpro', varName: 'VidFastPro', name: 'VidFastPro' },
+  { id: 'allmovieland', varName: 'AllMovieLand', name: 'AllMovieLand' },
 ];
 
 // Strips a provider file's trailing `module.exports = ...` statement (or,

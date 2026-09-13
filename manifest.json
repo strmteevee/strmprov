@@ -368,6 +368,90 @@
       "contentLanguage": [
         "en"
       ]
+    },
+    {
+      "id": "doflix",
+      "name": "DoFlix",
+      "description": "Direct links via DoFlix's own TMDB-keyed API (reverse-engineered from its CloudStream plugin). Unverified: every request from development tooling was blocked at the TLS layer itself (the server demands TLS renegotiation then closes the connection) - this may work from Nuvio's real OkHttp-based fetch even though it failed in every test client tried while building it.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/doflix.js",
+      "enabled": true,
+      "formats": [
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=watchkaroabhi.com&sz=128",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "vegamovies",
+      "name": "VegaMovies",
+      "description": "Direct links via VegaMovies' G-Direct resolver (ported from the open-source CloudStream extension). Its original primary resolver, V-Cloud, is now behind a real Cloudflare challenge and unusable here; this uses the same download page's G-Direct option instead, which isn't protected - verified end-to-end.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/vegamovies.js",
+      "enabled": true,
+      "formats": [
+        "mkv",
+        "mp4"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=vegamovies.mq&sz=128",
+      "contentLanguage": [
+        "en",
+        "hi"
+      ]
+    },
+    {
+      "id": "vidfastpro",
+      "name": "VidFastPro",
+      "description": "Multi-server streaming (including a 4K server) via vidfast.vc, ported from the open-source CineStream CloudStream extension. Verified end-to-end.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/vidfastpro.js",
+      "enabled": true,
+      "formats": [
+        "m3u8",
+        "mp4"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=vidfast.vc&sz=128",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "allmovieland",
+      "name": "AllMovieLand",
+      "description": "Multi-language streaming via allmovieland, ported from the open-source CineStream CloudStream extension. Verified end-to-end.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/allmovieland.js",
+      "enabled": true,
+      "formats": [
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=allmovieland.one&sz=128",
+      "contentLanguage": [
+        "en",
+        "hi"
+      ]
     }
   ]
 }

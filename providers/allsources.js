@@ -4580,10 +4580,38 @@ function isNonSeekableGoogleDriveLink(stream) {
   return typeof stream.url === 'string' && stream.url.includes('googleusercontent.com');
 }
 
+// How many of the best-ranked candidates get actually test-fetched before
+// settling on one to tag [PREFERRED] - probed concurrently, so the added
+// latency is roughly one probe's worth, not this number's worth.
+const PREFERRED_PROBE_CANDIDATES = 5;
+const PROBE_TIMEOUT_SECONDS = 6;
+
+// Same "no setTimeout in this sandbox" problem as COMBINE_TIMEOUT_SECONDS
+// above, solved the same way: race the real probe fetch against a delay
+// endpoint instead of a JS timer. If the delay endpoint itself is
+// unreachable there's no way to tell how much time has actually passed, so -
+// same reasoning as buildTimeoutGuard - the safe fallback is to just wait
+// for the real probe to resolve on its own rather than guessing it failed.
+function probeStream(stream) {
+  const headers = Object.assign({ Range: 'bytes=0-1024' }, stream.headers || {});
+  const probeFetch = fetch(stream.url, { method: 'GET', headers }).then(res => res.ok).catch(() => false);
+  const guard = fetch(`https://httpbin.org/delay/${PROBE_TIMEOUT_SECONDS}`).then(() => 'TIMED_OUT').catch(() => 'GUARD_UNAVAILABLE');
+  return Promise.race([probeFetch, guard]).then(result => {
+    if (result === 'GUARD_UNAVAILABLE') return probeFetch;
+    if (result === 'TIMED_OUT') return false;
+    return result;
+  });
+}
+
 // Drops anything over MAX_SIZE_GB or backed by a known-non-seekable host,
-// hides sub-1080p results for movies, then tags the best remaining stream by
-// resolution tier as [PREFERRED] and moves it to the front - the rest of the
-// (filtered) list is left untouched.
+// hides sub-1080p results for movies, then probes the best-ranked candidates
+// and tags the first one that's actually reachable as [PREFERRED], moving it
+// to the front - the rest of the (filtered) list is left untouched. Falls
+// back to the top-ranked candidate untested if every probe in the batch
+// fails, rather than tagging nothing - a small ranged GET confirming a 200/206
+// response isn't a full playability guarantee, but it reliably catches the
+// "shows up but won't play" failures (dead domains, 404s, already-expired
+// signed URLs) that quality-tier ranking alone has no way to see coming.
 function applyPreferredLogic(streams, mediaType) {
   let filtered = streams.filter(s => {
     const gb = getStreamSizeGB(s);
@@ -4595,24 +4623,29 @@ function applyPreferredLogic(streams, mediaType) {
     filtered = filtered.filter(s => tierFn(s.quality) !== null);
   }
 
-  if (filtered.length === 0) return filtered;
+  if (filtered.length === 0) return Promise.resolve(filtered);
 
-  let best = filtered[0];
-  let bestRank = preferredRank(best, tierFn);
-  for (const s of filtered) {
-    const r = preferredRank(s, tierFn);
-    if (rankIsBetter(r, bestRank)) {
-      best = s;
-      bestRank = r;
-    }
-  }
-
-  const tagged = Object.assign({}, best, {
-    name: `[PREFERRED] ${best.name || best.source}`.trim(),
-    isPreferred: true
+  const ranked = filtered.slice().sort((a, b) => {
+    const ra = preferredRank(a, tierFn);
+    const rb = preferredRank(b, tierFn);
+    if (rankIsBetter(ra, rb)) return -1;
+    if (rankIsBetter(rb, ra)) return 1;
+    return 0;
   });
-  const rest = filtered.filter(s => s !== best);
-  return [tagged, ...rest];
+
+  const candidates = ranked.slice(0, PREFERRED_PROBE_CANDIDATES);
+  return Promise.all(candidates.map(probeStream)).then(results => {
+    let best = ranked[0];
+    for (let i = 0; i < candidates.length; i++) {
+      if (results[i]) { best = candidates[i]; break; }
+    }
+    const tagged = Object.assign({}, best, {
+      name: `[PREFERRED] ${best.name || best.source}`.trim(),
+      isPreferred: true
+    });
+    const rest = filtered.filter(s => s !== best);
+    return [tagged, ...rest];
+  });
 }
 
 // ---- Combining ----
@@ -4676,9 +4709,10 @@ function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) 
   });
 
   function finalize() {
-    const ranked = applyPreferredLogic(collected, type);
-    console.log(`[AllSources] Returning ${ranked.length} stream(s) after ranking (from ${collected.length} collected)`);
-    return ranked;
+    return applyPreferredLogic(collected, type).then(ranked => {
+      console.log(`[AllSources] Returning ${ranked.length} stream(s) after ranking (from ${collected.length} collected)`);
+      return ranked;
+    });
   }
 
   const allDone = Promise.all(sourceRuns).then(() => 'ALL_DONE');

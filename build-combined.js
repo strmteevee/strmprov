@@ -150,6 +150,20 @@ function movieTier(quality) {
   return null;
 }
 
+// Castle's streams have proven unreliable enough in practice that they
+// should never be the featured [PREFERRED] pick, even when they happen to
+// report the best quality tier - any other source beats a Castle stream
+// regardless of tier. It's still allowed to win if it's genuinely the only
+// stream available at all, since a Castle pick beats no pick.
+function preferredRank(stream, tierFn) {
+  return [stream.source === 'castle' ? 1 : 0, tierFn(stream.quality)];
+}
+
+function rankIsBetter(a, b) {
+  if (a[0] !== b[0]) return a[0] < b[0];
+  return a[1] < b[1];
+}
+
 // Drops anything over MAX_SIZE_GB, hides sub-1080p results for movies, then
 // tags the best remaining stream by resolution tier as [PREFERRED] and moves
 // it to the front - the rest of the (filtered) list is left untouched.
@@ -167,12 +181,12 @@ function applyPreferredLogic(streams, mediaType) {
   if (filtered.length === 0) return filtered;
 
   let best = filtered[0];
-  let bestTier = tierFn(best.quality);
+  let bestRank = preferredRank(best, tierFn);
   for (const s of filtered) {
-    const tier = tierFn(s.quality);
-    if (tier < bestTier) {
+    const r = preferredRank(s, tierFn);
+    if (rankIsBetter(r, bestRank)) {
       best = s;
-      bestTier = tier;
+      bestRank = r;
     }
   }
 

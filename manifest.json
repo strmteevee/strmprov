@@ -202,7 +202,7 @@
     {
       "id": "streamflix",
       "name": "StreamFlix",
-      "description": "Direct links via StreamFlix API",
+      "description": "Direct links via StreamFlix API. Disabled: all three of StreamFlix's own CDN paths are confirmed dead as of 2026-09-13 - bb.streamflixserver.site and cf.streamflixserver.site no longer resolve at all (NXDOMAIN), and the remaining premium S3 bucket (wasabisys.com) 404s on every object tested - so every stream this provider can produce fails to play. Re-enable if StreamFlix's config.json ever points at working hosts again.",
       "version": "1.1.1",
       "author": "Nuvio Team",
       "supportedTypes": [
@@ -210,7 +210,7 @@
         "tv"
       ],
       "filename": "providers/streamflix.js",
-      "enabled": true,
+      "enabled": false,
       "formats": [
         "mkv"
       ],

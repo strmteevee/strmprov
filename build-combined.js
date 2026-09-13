@@ -34,7 +34,6 @@ const SOURCES = [
   { id: '4khdhub', varName: 'FourKHdHub', name: '4KHDHub' },
   { id: 'uhdmovies', varName: 'UhdMovies', name: 'UHDMovies' },
   { id: 'netmirror', varName: 'NetMirror', name: 'NetMirror' },
-  { id: 'streamflix', varName: 'StreamFlix', name: 'StreamFlix' },
   { id: 'vixsrc', varName: 'VixSrc', name: 'Vixsrc' },
   { id: 'vidlink', varName: 'VidLink', name: 'Vidlink' },
   { id: 'castle', varName: 'Castle', name: 'Castle' },

@@ -213,7 +213,12 @@ function extractVideoSeed(finallink) {
     try {
       const urlObj = new URL(finallink);
       const host = urlObj.host || "video-seed.xyz";
-      const token = finallink.split("?url=")[1];
+      // Driveseed rotates through several gateway domains that all use this
+      // same decrypt-the-token flow (video-seed.dev, video-plex.xyz,
+      // video-gen.xyz confirmed live) - most put the token in a ?url= query
+      // param, but at least one (video-gen.xyz) puts it bare in the path
+      // instead, with no query string at all.
+      const token = finallink.includes("url=") ? finallink.split("url=")[1] : (urlObj.pathname || "").replace(/^\//, "");
       if (!token)
         return null;
       const res = yield fetchWithTimeout(`https://${host}/api`, {
@@ -261,10 +266,21 @@ function extractDriveseedPage(url) {
           return null;
         if (text.includes("instant download")) {
           const instantRes = yield fetchWithTimeout(href, { headers: HEADERS, redirect: "follow" });
-          if (instantRes.url && instantRes.url.includes("url=")) {
-            return { name: "Driveseed Instant", url: instantRes.url.split("url=")[1], quality, size };
+          const landedUrl = instantRes.url || "";
+          const afterUrlParam = landedUrl.includes("url=") ? landedUrl.split("url=")[1] : "";
+          // "Instant Download" lands on one of several gateway domains
+          // (confirmed live: video-seed.dev, video-plex.xyz, video-gen.xyz) -
+          // video-seed.dev happens to put the real, already-playable URL
+          // straight in ?url=, but the others put an encrypted token there
+          // (or bare in the path) that still needs decrypting through that
+          // gateway's own /api endpoint. Treating every gateway's ?url= value
+          // as a final URL - the previous behavior - returned raw undecrypted
+          // tokens as "streams" for the latter, which obviously never played.
+          if (afterUrlParam && afterUrlParam.startsWith("http")) {
+            return { name: "Driveseed Instant", url: afterUrlParam, quality, size };
           }
-          return null;
+          const resolvedUrl = yield extractVideoSeed(landedUrl);
+          return resolvedUrl ? { name: "Driveseed Instant", url: resolvedUrl, quality, size } : null;
         } else if (text.includes("resume cloud")) {
           const cloudRes = yield fetchWithTimeout(baseDomain + href, { headers: HEADERS });
           const cloudHtml = yield cloudRes.text();

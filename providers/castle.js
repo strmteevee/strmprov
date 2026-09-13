@@ -490,10 +490,18 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       const tracks = episode && episode.tracks || [];
       const resolution = 2;
       // Each language track is an independent request - fetch them all concurrently
-      // instead of one at a time.
+      // instead of one at a time. `existIndividualVideo` looks like it should mean
+      // "this language has its own separate video file", but Castle's getVideoV1
+      // endpoint reliably returns a distinct URL per languageId even when the flag
+      // is false (confirmed directly: both Hindi and English tracks below had it
+      // false, yet each returned its own working stream). Gating on that flag was
+      // skipping every real per-language track and falling through to the "shared"
+      // endpoint instead, which just serves whatever Castle marks as its own
+      // isDefault track - observed to be Hindi for an English-audience title, with
+      // no English option ever surfacing. Only `languageId` itself is required.
       const trackResults = yield Promise.all(tracks.map((track) => __async(this, null, function* () {
         const langName = track.languageName || track.abbreviate || "Unknown";
-        if (!track.existIndividualVideo || !track.languageId) return [];
+        if (!track.languageId) return [];
         try {
           console.log(`[Castle] Fetching ${langName} (languageId: ${track.languageId})`);
           const videoData = yield getVideoV1(securityKey, currentMovieId, episodeId, track.languageId, resolution);
@@ -514,7 +522,22 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         const sharedStreams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, "[Shared]");
         allStreams.push(...sharedStreams);
       }
-      allStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
+      // Once every language track is included, several can tie on quality -
+      // bias English (or the shared/default track, when no language info
+      // exists at all) to the front on a tie so it - not an arbitrary
+      // language that happened to load first - is the one aggregate.js picks
+      // as [PREFERRED]. Other languages remain in the list, just not first.
+      const languagePriority = (name) => {
+        if (!name) return 2;
+        if (name.includes("[English]")) return 0;
+        if (name.includes("[Shared]")) return 1;
+        return 2;
+      };
+      allStreams.sort((a, b) => {
+        const byQuality = getQualityValue(b.quality) - getQualityValue(a.quality);
+        if (byQuality !== 0) return byQuality;
+        return languagePriority(a.name) - languagePriority(b.name);
+      });
       console.log(`[Castle] Total streams found: ${allStreams.length}`);
       return allStreams;
     } catch (error) {

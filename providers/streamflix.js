@@ -80,6 +80,71 @@ function getConfig() {
     });
 }
 
+// StreamFlix's own data.json (their entire content catalog, one big JSON
+// array) has been observed to reliably have its connection cut mid-stream by
+// their server before the full body arrives - confirmed directly across
+// many attempts, different tools, and different protocols, always failing
+// a few hundred KB in with the far side just closing the socket. A plain
+// response.text()/json() call rejects outright when that happens, discarding
+// every byte that *did* arrive. Reading the body manually, chunk by chunk,
+// lets us keep what came through before the cutoff instead of losing all of
+// it - `getReader()` is guarded because it's uncertain whether Nuvio's
+// in-app fetch polyfill (as opposed to Node's, used when this same file runs
+// under server.js/addon-server.js) exposes a streaming body; where it
+// doesn't, this just falls through to the original all-or-nothing behavior.
+function readBodyLenient(response) {
+  if (!response.body || typeof response.body.getReader !== 'function') {
+    return response.text();
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  function pump() {
+    return reader.read().then(({ done, value }) => {
+      if (done) return text;
+      if (value) text += decoder.decode(value, { stream: true });
+      return pump();
+    });
+  }
+  return pump().catch(() => text);
+}
+
+// Recovers whatever complete top-level items made it into data.data before
+// a truncation cut the response off mid-object, by walking bracket depth
+// (tracking string/escape state so braces inside descriptions don't confuse
+// it) and slicing back to the last item that closed cleanly.
+function parseJsonLenient(text) {
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    const keyIdx = text.indexOf('"data"');
+    const bracketStart = keyIdx === -1 ? -1 : text.indexOf('[', keyIdx);
+    if (bracketStart === -1) throw e;
+
+    let depth = 0, inString = false, escape = false, lastItemEnd = -1;
+    for (let i = bracketStart; i < text.length; i++) {
+      const ch = text[i];
+      if (inString) {
+        if (escape) escape = false;
+        else if (ch === '\\') escape = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
+      if (ch === '{' || ch === '[') depth++;
+      else if (ch === '}' || ch === ']') {
+        depth--;
+        if (depth === 1 && ch === '}') lastItemEnd = i;
+      }
+    }
+    if (lastItemEnd === -1) throw e;
+
+    const items = JSON.parse(text.slice(bracketStart, lastItemEnd + 1) + ']');
+    console.log(`[StreamFlix] data.json was truncated mid-response - recovered ${items.length} entries from before the cutoff`);
+    return { data: items };
+  }
+}
+
 // Get data with caching
 function getData() {
   const now = Date.now();
@@ -89,7 +154,8 @@ function getData() {
 
   console.log('[StreamFlix] Fetching data...');
   return makeRequest(DATA_URL)
-    .then(response => response.json())
+    .then(response => readBodyLenient(response))
+    .then(text => parseJsonLenient(text))
     .then(json => {
       cache.data = json;
       cache.dataTimestamp = now;

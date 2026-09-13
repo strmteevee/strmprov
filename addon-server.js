@@ -39,6 +39,7 @@ const aggregate = require('./lib/aggregate');
 const tmdb = require('./lib/tmdb');
 const profileStore = require('./lib/profileStore');
 const gemini = require('./lib/gemini');
+const indycar = require('./providers/indycar');
 
 const PORT = 3100;
 const CATALOG_SEED_COUNT = 10;
@@ -79,9 +80,21 @@ function buildManifest(profileId) {
         types: ['movie', 'series'],
         catalogs: [
             { type: 'movie', id: 'strmprov-foryou-movie', name: 'For You' },
-            { type: 'series', id: 'strmprov-foryou-series', name: 'For You' }
+            { type: 'series', id: 'strmprov-foryou-series', name: 'For You' },
+            {
+                type: 'movie',
+                id: 'indycar-videos',
+                name: 'IndyCar Videos',
+                // Not every Stremio-protocol client is guaranteed to render
+                // a genre-filter UI for a catalog's `extra` (this repo has
+                // hit exactly that kind of documented-vs-actual gap with
+                // Nuvio before) - so genre stays optional here, and leaving
+                // it unset returns every category merged, newest first, as
+                // the always-useful default rather than an empty catalog.
+                extra: [{ name: 'genre', options: indycar.CATEGORIES, isRequired: false }]
+            }
         ],
-        idPrefixes: ['tt'],
+        idPrefixes: ['tt', 'indycar:'],
         behaviorHints: { configurable: false, configurationRequired: false }
     };
 }
@@ -230,6 +243,40 @@ function buildCatalog(profileId, type) {
     return regenerateCatalog(profileId, type, mediaType, aiSeeds, tmdbSeeds, watchedIds, cacheKey, seedFingerprint);
 }
 
+// IndyCar videos have no TMDB entry, no watch history, and no personalization
+// - this is a plain, static catalog, unlike "For You" above. `releaseInfo`
+// uses the video's own date (read from its URL, not its displayed text - see
+// providers/indycar.js for why) so the client can still show/sort by date.
+function buildIndycarCatalog(genre) {
+    return indycar.listVideos(genre || null).then((videos) => videos.map((v) => ({
+        id: v.id,
+        type: 'movie',
+        name: v.title,
+        poster: v.poster,
+        description: v.description,
+        releaseInfo: v.timestamp ? new Date(v.timestamp).toISOString().substring(0, 10) : undefined
+    })));
+}
+
+// IndyCar's "Full Race Replay" videos resolve to a YouTube `ytId` instead of
+// a direct `url` (see providers/indycar.js's getVideoStreams for why) - the
+// Stremio stream protocol supports both shapes, so this just passes through
+// whichever one a given video actually produced.
+function buildIndycarStreamResponse(id) {
+    const videoPath = `/videos/${id.slice('indycar:'.length)}`;
+    return indycar.getVideoStreams(videoPath).then((streams) => ({
+        streams: streams.map((s) => {
+            const stream = { name: s.name || 'IndyCar', title: s.quality || '' };
+            if (s.ytId) stream.ytId = s.ytId;
+            else stream.url = s.url;
+            return stream;
+        })
+    })).catch((err) => {
+        console.error(`[addon-server] IndyCar stream error for ${id}: ${err.message}`);
+        return { streams: [] };
+    });
+}
+
 function buildStreamResponse(profileId, type, rawId) {
     const mediaType = type === 'series' ? 'tv' : 'movie';
     const [imdbId, seasonStr, episodeStr] = rawId.split(':');
@@ -313,20 +360,28 @@ const server = http.createServer((req, res) => {
 
     if (resource === 'catalog' && parts.length >= 5) {
         const type = parts[3];
-        const idWithExt = parts[4];
-        const id = idWithExt.replace(/\.json$/, '');
-        // Only the two catalogs declared in the manifest are ever served.
-        const validId = id === `strmprov-foryou-${type}`;
-        if (!validId || (type !== 'movie' && type !== 'series')) {
-            return sendJson(res, 200, { metas: [] });
+        const id = parts[4].replace(/\.json$/, '');
+        // Extra catalog params (genre, search, skip, ...) arrive as an extra
+        // path segment when present: /catalog/:type/:id/name=value.json
+        const extraRaw = parts.length >= 6 ? decodeURIComponent(parts[5].replace(/\.json$/, '')) : '';
+        const extra = new URLSearchParams(extraRaw);
+
+        if (id === `strmprov-foryou-${type}` && (type === 'movie' || type === 'series')) {
+            return buildCatalog(profileId, type).then(metas => sendJson(res, 200, { metas }));
         }
-        return buildCatalog(profileId, type).then(metas => sendJson(res, 200, { metas }));
+        if (id === 'indycar-videos' && type === 'movie') {
+            return buildIndycarCatalog(extra.get('genre')).then(metas => sendJson(res, 200, { metas }));
+        }
+        return sendJson(res, 200, { metas: [] });
     }
 
     if (resource === 'stream' && parts.length >= 5) {
         const type = parts[3];
         const idWithExt = decodeURIComponent(parts.slice(4).join('/'));
         const id = idWithExt.replace(/\.json$/, '');
+        if (id.startsWith('indycar:')) {
+            return buildIndycarStreamResponse(id).then(body => sendJson(res, 200, body));
+        }
         if (type !== 'movie' && type !== 'series') {
             return sendJson(res, 200, { streams: [] });
         }

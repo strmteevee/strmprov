@@ -37,6 +37,7 @@ const SOURCES = [
   { id: 'vidlink', varName: 'VidLink', name: 'Vidlink' },
   { id: 'castle', varName: 'Castle', name: 'Castle' },
   { id: 'hdhub4u', varName: 'HdHub4u', name: 'HDHub4u' },
+  { id: 'penguplay', varName: 'PenguPlay', name: 'PenguPlay' },
   { id: 'movieblast', varName: 'MovieBlast', name: 'MovieBlast' },
   { id: 'anime-dekho', varName: 'AnimeDekho', name: 'AnimeDekho' },
   { id: 'kickassanime', varName: 'KickassAnime', name: 'KickassAnime' },

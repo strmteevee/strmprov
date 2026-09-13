@@ -307,6 +307,28 @@
       ]
     },
     {
+      "id": "penguplay",
+      "name": "PenguPlay",
+      "description": "Relays the PenguPlay Stremio addon, itself a multi-source aggregator (4KHDHub, MovieBox, VegaMovies, HDHub4u, VidLink, VidFast, 2Peckle and others).",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/penguplay.js",
+      "enabled": true,
+      "formats": [
+        "mkv",
+        "mp4"
+      ],
+      "logo": "https://pengu.uk/penguplay-icon.png",
+      "contentLanguage": [
+        "en",
+        "hin"
+      ]
+    },
+    {
       "id": "movieblast",
       "name": "MovieBlast",
       "description": "Direct links via MovieBlast API with multi-language support",

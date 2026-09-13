@@ -6,14 +6,22 @@
 // stream list. This provider just forwards the request and passes the
 // results straight through.
 //
-// Requires the server's URL to be configured in this provider's settings
-// (Nuvio > Settings > Plugins > StreamAPI) before it can return anything.
+// This was originally meant to read the server URL from this provider's own
+// Settings screen (onSettings() below, via global.SCRAPER_SETTINGS.serverUrl)
+// - confirmed directly against a real Nuvio install that no such settings
+// screen actually appears, even with manifest.json's hasSettings:true set,
+// so there's no way to populate that value at all in practice. DEFAULT_URL
+// below is the fallback: edit it to point at your own server's LAN IP (or a
+// tunnel URL for remote access) - global.SCRAPER_SETTINGS.serverUrl is still
+// checked first and overrides it, in case a future Nuvio version does
+// surface real per-provider settings.
+const DEFAULT_URL = 'http://192.168.50.252:3000';
 
 function getServerUrl() {
   if (typeof global !== 'undefined' && global.SCRAPER_SETTINGS && global.SCRAPER_SETTINGS.serverUrl) {
     return String(global.SCRAPER_SETTINGS.serverUrl).trim().replace(/\/+$/, '');
   }
-  return null;
+  return DEFAULT_URL;
 }
 
 function getProviderFilter() {
@@ -27,10 +35,6 @@ function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) 
   console.log(`[StreamAPI] getStreams tmdbId=${tmdbId} type=${mediaType} S=${season || ''} E=${episode || ''}`);
 
   const serverUrl = getServerUrl();
-  if (!serverUrl) {
-    console.log('[StreamAPI] No server URL configured - go to Scraper Settings and set it');
-    return Promise.resolve([]);
-  }
 
   const type = mediaType === 'tv' ? 'tv' : 'movie';
   if (type === 'tv' && (!season || !episode)) {
@@ -67,6 +71,11 @@ function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) 
     });
 }
 
+// Kept in case a future Nuvio version does surface real per-provider
+// settings - confirmed against a real install that this screen doesn't
+// currently appear at all despite manifest.json's hasSettings:true, so
+// DEFAULT_URL above (edit it directly) is the only reliable way to
+// configure this today.
 function onSettings() {
   return Promise.resolve([
     { type: 'header', label: 'StreamAPI Configuration' },
@@ -75,7 +84,7 @@ function onSettings() {
       key: 'serverUrl',
       label: 'Server URL',
       placeholder: 'http://192.168.1.50:3000',
-      description: 'Base URL of a running strmprov server (`npm run serve` from this repo). Must be reachable from your device - a LAN IP only works while on the same network, so use a public/tunnel URL for remote access.'
+      description: 'Base URL of a running strmprov server (`npm run serve` from this repo), overriding DEFAULT_URL in this file. Must be reachable from your device - a LAN IP only works while on the same network, so use a public/tunnel URL for remote access.'
     },
     {
       type: 'text',

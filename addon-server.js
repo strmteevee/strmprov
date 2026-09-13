@@ -42,7 +42,8 @@ const gemini = require('./lib/gemini');
 
 const PORT = 3100;
 const CATALOG_SEED_COUNT = 10;
-const CATALOG_MAX_ITEMS = 24;
+const CATALOG_MIN_ITEMS = 30;
+const CATALOG_MAX_ITEMS = 40;
 const AI_CACHE_TTL_MS = 1000 * 60 * 60 * 24;
 
 function getLocalIp() {
@@ -108,6 +109,7 @@ function tmdbItemToMeta(item, mediaType, type) {
 // approach, kept as the fallback for when Gemini isn't configured or every
 // model attempt fails, so the catalog never just breaks.
 function buildTmdbCatalog(seeds, mediaType, type, watchedIds) {
+    if (seeds.length === 0) return Promise.resolve([]);
     return Promise.all(seeds.map(seed =>
         tmdb.getRecommendations(seed.tmdbId, mediaType).then(list =>
             list.length ? list : tmdb.getSimilar(seed.tmdbId, mediaType)
@@ -119,9 +121,7 @@ function buildTmdbCatalog(seeds, mediaType, type, watchedIds) {
             if (watchedIds.has(id) || candidates.has(id) || !item.poster_path) continue;
             candidates.set(id, item);
         }
-        return Array.from(candidates.values())
-            .sort((a, b) => (b.popularity || 0) - (a.popularity || 0))
-            .slice(0, CATALOG_MAX_ITEMS);
+        return Array.from(candidates.values()).sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
     });
 }
 
@@ -136,45 +136,98 @@ function buildAiCatalog(seeds, mediaType, watchedIds) {
             seen.add(id);
             items.push(r.item);
         }
-        return items.slice(0, CATALOG_MAX_ITEMS);
+        return items;
     });
 }
 
-function buildCatalog(profileId, type) {
-    const mediaType = type === 'series' ? 'tv' : 'movie';
-    const history = profileStore.getHistory(profileId).filter(h => h.mediaType === mediaType);
-
-    if (history.length === 0) {
-        // Nothing watched yet on this profile for this type - nothing to
-        // seed recommendations from. An empty catalog (rather than a guess)
-        // is the honest result here.
-        return Promise.resolve([]);
-    }
-
-    const watchedIds = new Set(history.map(h => String(h.tmdbId)));
-    const seeds = history.slice(0, CATALOG_SEED_COUNT);
-    const cacheKey = `ai-${type}`;
-    const seedFingerprint = seeds.map(s => s.tmdbId).join(',');
-
-    const cached = profileStore.getCache(profileId, cacheKey);
-    if (cached && cached.seedFingerprint === seedFingerprint && Date.now() - cached.generatedAt < AI_CACHE_TTL_MS) {
-        return Promise.resolve(cached.metas);
-    }
-
-    // Gemini's own occasional per-model overload is already retried inside
-    // lib/gemini.js - a null here means "not configured, or every model
-    // attempt genuinely failed", which is what actually falls back to TMDB.
-    return buildAiCatalog(seeds, mediaType, watchedIds)
-        .then(items => items ? { items, source: 'gemini' } : buildTmdbCatalog(seeds, mediaType, type, watchedIds).then(items => ({ items, source: 'tmdb' })))
+// The actual (re)build: AI recommendations first, topped up with TMDB
+// similar/recommendations if that falls short of CATALOG_MIN_ITEMS (a niche
+// taste can easily not have 30 AI-resolvable matches on its own). The TMDB
+// top-up only ever uses same-type seeds - its endpoints structurally can't
+// recommend a different media type than the seed, unlike the AI path.
+function regenerateCatalog(profileId, type, mediaType, aiSeeds, tmdbSeeds, watchedIds, cacheKey, seedFingerprint) {
+    return buildAiCatalog(aiSeeds, mediaType, watchedIds)
+        .then(items => ({ items: items || [], source: items ? 'gemini' : 'none' }))
+        .then(({ items, source }) => {
+            // Targets CATALOG_MAX_ITEMS here, not CATALOG_MIN_ITEMS - some
+            // AI suggestions won't resolve to a usable IMDb id later in
+            // tmdbItemToMeta and get dropped after this point, so gathering
+            // only exactly the minimum up front reliably undershoots it
+            // once that attrition happens (seen directly: 31 raw items
+            // became 26 in the final response). Aiming for the max instead
+            // leaves enough headroom to still clear the minimum.
+            if (items.length >= CATALOG_MAX_ITEMS || tmdbSeeds.length === 0) {
+                return { items, source };
+            }
+            const seenIds = new Set(items.map(i => String(i.id)));
+            return buildTmdbCatalog(tmdbSeeds, mediaType, type, watchedIds).then(extra => {
+                const merged = items.slice();
+                for (const item of extra) {
+                    if (merged.length >= CATALOG_MAX_ITEMS) break;
+                    const id = String(item.id);
+                    if (seenIds.has(id)) continue;
+                    seenIds.add(id);
+                    merged.push(item);
+                }
+                return { items: merged, source: items.length ? `${source}+tmdb` : 'tmdb' };
+            });
+        })
         .then(({ items, source }) => {
             console.log(`[addon-server] Built "${type}" catalog for profile ${profileId} from ${source} (${items.length} item(s))`);
-            return Promise.all(items.map(item => tmdbItemToMeta(item, mediaType, type)))
+            return Promise.all(items.slice(0, CATALOG_MAX_ITEMS).map(item => tmdbItemToMeta(item, mediaType, type)))
                 .then(metas => metas.filter(Boolean));
         })
         .then(metas => {
             profileStore.setCache(profileId, cacheKey, { seedFingerprint, generatedAt: Date.now(), metas });
             return metas;
         });
+}
+
+function buildCatalog(profileId, type) {
+    const mediaType = type === 'series' ? 'tv' : 'movie';
+    const fullHistory = profileStore.getHistory(profileId);
+    const sameTypeHistory = fullHistory.filter(h => h.mediaType === mediaType);
+
+    if (fullHistory.length === 0) {
+        // Nothing watched yet on this profile at all - nothing to seed
+        // recommendations from in either type. An empty catalog (rather
+        // than a guess) is the honest result here.
+        return Promise.resolve([]);
+    }
+
+    // Prefer same-type history to seed recommendations; if this profile has
+    // never watched this type at all (e.g. a series-only viewer asking for
+    // a movie catalog), fall back to its overall history instead of coming
+    // back empty - see lib/gemini.js's buildPrompt for how the AI path
+    // reasons across a cross-type seed set. watchedIds stays same-type only
+    // regardless, since a movie and a TV series can share the same TMDB id
+    // for unrelated titles - cross-type exclusion would be wrong, not just
+    // unnecessary.
+    const watchedIds = new Set(sameTypeHistory.map(h => String(h.tmdbId)));
+    const aiSeeds = (sameTypeHistory.length > 0 ? sameTypeHistory : fullHistory).slice(0, CATALOG_SEED_COUNT);
+    const tmdbSeeds = sameTypeHistory.slice(0, CATALOG_SEED_COUNT);
+    const cacheKey = `ai-${type}`;
+    const seedFingerprint = aiSeeds.map(s => s.tmdbId).join(',');
+
+    const cached = profileStore.getCache(profileId, cacheKey);
+    const isFresh = cached && cached.seedFingerprint === seedFingerprint && Date.now() - cached.generatedAt < AI_CACHE_TTL_MS;
+
+    if (isFresh) {
+        return Promise.resolve(cached.metas);
+    }
+    if (cached) {
+        // Stale (a new watch changed the seed set, or the TTL passed) -
+        // serve what's cached right now instead of making this request
+        // wait on a fresh Gemini + TMDB round trip, and refresh it in the
+        // background so the NEXT request gets the updated list.
+        regenerateCatalog(profileId, type, mediaType, aiSeeds, tmdbSeeds, watchedIds, cacheKey, seedFingerprint)
+            .catch(err => console.error(`[addon-server] Background catalog refresh failed: ${err.message}`));
+        return Promise.resolve(cached.metas);
+    }
+
+    // No cache at all yet for this profile+type - this one request has no
+    // choice but to wait for the real thing.
+    return regenerateCatalog(profileId, type, mediaType, aiSeeds, tmdbSeeds, watchedIds, cacheKey, seedFingerprint);
 }
 
 function buildStreamResponse(profileId, type, rawId) {

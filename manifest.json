@@ -414,7 +414,7 @@
     {
       "id": "vidfastpro",
       "name": "VidFastPro",
-      "description": "Multi-server streaming (including a 4K server) via vidfast.vc, ported from the open-source CineStream CloudStream extension. Verified end-to-end.",
+      "description": "Multi-server streaming (including a 4K server) via vidfast.vc, ported from the open-source CineStream CloudStream extension. Disabled: suspected of occasionally serving the wrong episode for TV content (traced to vidfast.vc's own server-side content mapping, not this scraper's request logic - see repo history) - re-enable once confirmed fixed or disproven.",
       "version": "1.0.0",
       "author": "Nuvio Team",
       "supportedTypes": [
@@ -422,7 +422,7 @@
         "tv"
       ],
       "filename": "providers/vidfastpro.js",
-      "enabled": true,
+      "enabled": false,
       "formats": [
         "m3u8",
         "mp4"

@@ -300,12 +300,26 @@ function buildStreamResponse(profileId, type, rawId) {
                 if (s.headers && Object.keys(s.headers).length) {
                     behaviorHints.proxyHeaders = { request: s.headers };
                 }
-                return {
+                const stream = {
                     url: s.url,
                     name: s.name || s.source || 'Stream',
                     title: [s.quality, s.size].filter(Boolean).join(' | ') || s.title || '',
                     behaviorHints
                 };
+                // Several providers (Castle, MovieBox, VidLink, ...) already
+                // extract subtitle tracks tied to this exact stream's own
+                // file - a better match than a generic hash-based lookup,
+                // since it's guaranteed to be the subtitle that ships with
+                // this specific release. This was being silently dropped
+                // here; Stremio's protocol names the field `lang`, but every
+                // provider except kickassanime.js calls it `language`.
+                if (Array.isArray(s.subtitles) && s.subtitles.length) {
+                    const subtitles = s.subtitles
+                        .filter(sub => sub && sub.url)
+                        .map(sub => ({ url: sub.url, lang: sub.lang || sub.language || 'unknown' }));
+                    if (subtitles.length) stream.subtitles = subtitles;
+                }
+                return stream;
             });
             return { streams: stremioStreams };
         });

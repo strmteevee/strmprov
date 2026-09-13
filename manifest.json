@@ -160,7 +160,7 @@
     {
       "id": "uhdmovies",
       "name": "UHDMovies",
-      "description": "UHD Movies streaming with multiple resolution. Its only reachable delivery path (driveseed's \"Instant Download\") always terminates at a video-downloads.googleusercontent.com Google Drive link, which does not support HTTP Range requests at all (a ranged request gets back the full multi-GB file, 200 not 206) - this breaks playback on players that need random access to start (ExoPlayer/Android TV confirmed). Playable again as of 2026-09-13 via server.js/addon-server.js's own /proxy (lib/rangeProxy.js), which fakes Range support for exactly this host - but that only helps the server-based install paths (StreamAPI, the Stremio addon); the standalone allsources.js combined plugin has no server to proxy through, so uhdmovies is deliberately left out of build-combined.js's SOURCES list and won't appear there.",
+      "description": "UHD Movies streaming with multiple resolution. Disabled: its only reachable delivery path (driveseed's \"Instant Download\") always terminates at a video-downloads.googleusercontent.com Google Drive link, which does not support HTTP Range requests at all (a ranged request gets back the full multi-GB file, 200 not 206). A proxy that fakes Range support by discarding leading bytes (lib/rangeProxy.js) was tried and briefly shipped, but confirmed live not to actually solve this: a request for a range near the end of a real movie file - which many MKVs need immediately for their seek index - took over 4 minutes over a Pi's real upload bandwidth, far past any player's timeout. The one alternative path (\"Resume Cloud\") is gated behind a real Cloudflare Turnstile challenge that isn't something to solve programmatically. Re-enable if the site adds a genuinely seekable delivery option.",
       "version": "1.3.1",
       "author": "Nuvio Team",
       "supportedTypes": [
@@ -168,7 +168,7 @@
         "tv"
       ],
       "filename": "providers/uhdmovies.js",
-      "enabled": true,
+      "enabled": false,
       "formats": [
         "mkv"
       ],

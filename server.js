@@ -4,7 +4,6 @@ const path = require('path');
 const os = require('os');
 const { URL } = require('url');
 const { readManifest, aggregateStreams } = require('./lib/aggregate');
-const { rewriteStreamUrls, handleProxyRequest } = require('./lib/rangeProxy');
 
 const PORT = 3000;
 
@@ -28,7 +27,7 @@ function sendJson(res, status, body) {
 // GET /api/streams?tmdbId=550&type=movie
 // GET /api/streams?tmdbId=1396&type=tv&season=1&episode=1
 // GET /api/streams?tmdbId=550&type=movie&providers=vidrock,moviebox
-function handleStreamsApi(query, res, baseUrl) {
+function handleStreamsApi(query, res) {
     const tmdbId = query.get('tmdbId');
     const mediaType = query.get('type') === 'tv' ? 'tv' : 'movie';
     const season = query.get('season') ? parseInt(query.get('season'), 10) : null;
@@ -49,22 +48,15 @@ function handleStreamsApi(query, res, baseUrl) {
 
     aggregateStreams(tmdbId, mediaType, season, episode, { providerIds, preferred: wantPreferred })
         .then(({ streams, perProvider, totalMs }) => {
-            // Some sources (confirmed: video-downloads.googleusercontent.com
-            // Google Drive links) don't support HTTP Range requests at all,
-            // which breaks playback on players that need random access just
-            // to start (ExoPlayer/Android TV). Routing those through this
-            // server's own /proxy (lib/rangeProxy.js) fakes Range support
-            // instead of handing the player a URL it can't actually use.
-            const rewritten = rewriteStreamUrls(streams, baseUrl);
             sendJson(res, 200, {
                 tmdbId,
                 mediaType,
                 season,
                 episode,
                 totalMs,
-                totalStreams: rewritten.length,
+                totalStreams: streams.length,
                 providers: perProvider,
-                streams: rewritten
+                streams
             });
         });
 }
@@ -104,16 +96,12 @@ const server = http.createServer((req, res) => {
     }
 
     const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    const baseUrl = `http://${req.headers.host || `localhost:${PORT}`}`;
 
     if (parsedUrl.pathname === '/api/streams') {
-        return handleStreamsApi(parsedUrl.searchParams, res, baseUrl);
+        return handleStreamsApi(parsedUrl.searchParams, res);
     }
     if (parsedUrl.pathname === '/api/providers') {
         return handleProvidersApi(res);
-    }
-    if (parsedUrl.pathname === '/proxy') {
-        return handleProxyRequest(req, res, parsedUrl.searchParams);
     }
 
     // Prepare file path

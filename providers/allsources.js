@@ -3824,22 +3824,24 @@ function getStreams(tmdbId, mediaType = "movie", season = null, episode = null) 
           provider: "hdhub4u"
         };
       });
-      const qualityOrder = { "4K": 4, "1080p": 2, "720p": 1, "480p": 0, "Unknown": -2 };
       // HubCloud's "10Gbps" links resolve to a video-downloads.googleusercontent.com
       // Google Drive URL that (confirmed live) doesn't support HTTP Range
       // requests at all - a ranged request gets the full multi-GB file back,
-      // 200 not 206 - which breaks players that need random access to even
-      // start (ExoPlayer/Android TV confirmed). ZipDisk/Pixeldrain links from
-      // the same page were confirmed to properly return 206/Content-Range,
-      // so bias those ahead at the same quality tier instead of letting
-      // whichever button happened to appear first in the page decide - the
-      // Google Drive link stays available, just no longer picked first.
+      // 200 not 206. A proxy that fakes Range support by discarding leading
+      // bytes was tried (lib/rangeProxy.js) before concluding that doesn't
+      // actually help: a request for a range near the end of a real movie
+      // file - which many MKVs need immediately for their seek index - took
+      // over 4 minutes over a Pi's real upload bandwidth, far past any
+      // player's timeout. So these are dropped here entirely rather than
+      // just deprioritized, even when they're the only result for a given
+      // quality - the same exclusion lib/aggregate.js applies for any other
+      // provider's Google Drive links, kept here too since this file can
+      // also be installed directly as its own standalone Nuvio plugin
+      // without ever going through aggregate.js.
       const isNonSeekable = (url) => typeof url === "string" && url.includes("googleusercontent.com");
-      return streams.sort((a, b) => {
-        const byQuality = (qualityOrder[b.quality] || -3) - (qualityOrder[a.quality] || -3);
-        if (byQuality !== 0) return byQuality;
-        return (isNonSeekable(a.url) ? 1 : 0) - (isNonSeekable(b.url) ? 1 : 0);
-      });
+      const playableStreams = streams.filter((s) => !isNonSeekable(s.url));
+      const qualityOrder = { "4K": 4, "1080p": 2, "720p": 1, "480p": 0, "Unknown": -2 };
+      return playableStreams.sort((a, b) => (qualityOrder[b.quality] || -3) - (qualityOrder[a.quality] || -3));
     } catch (error) {
       console.error(`[HDHub4u] Scraping error: ${error.message}`);
       return [];
@@ -5242,40 +5244,37 @@ function movieTier(quality) {
 // report the best quality tier - any other source beats a Castle stream
 // regardless of tier. It's still allowed to win if it's genuinely the only
 // stream available at all, since a Castle pick beats no pick.
-//
+function preferredRank(stream, tierFn) {
+  return [stream.source === 'castle' ? 1 : 0, tierFn(stream.quality)];
+}
+
+function rankIsBetter(a, b) {
+  if (a[0] !== b[0]) return a[0] < b[0];
+  return a[1] < b[1];
+}
+
 // video-downloads.googleusercontent.com links (a Google Drive delivery
 // format several of these sources can end up resolving to via
-// driveseed/HubCloud-style chains) get the same treatment: confirmed live
-// that host doesn't support HTTP Range requests at all - a ranged request
-// gets the full multi-GB file back, 200 not 206 - which breaks players that
-// need random access just to start (ExoPlayer/Android TV confirmed, "links
-// visible but not playable").
+// driveseed/HubCloud-style chains) are dropped outright, not just
+// deprioritized - confirmed live that host doesn't support HTTP Range
+// requests at all (a ranged request gets the full multi-GB file back, 200
+// not 206), and tried proxying around it server-side before concluding that
+// doesn't actually help: a request for a range near the end of a real movie
+// file - which many MKVs need immediately for their seek index - took over
+// 4 minutes over a Pi's real upload bandwidth, far past any player's
+// timeout. Worse than no result at all, so excluded even as a last resort.
 function isNonSeekableGoogleDriveLink(stream) {
   return typeof stream.url === 'string' && stream.url.includes('googleusercontent.com');
 }
 
-function preferredRank(stream, tierFn) {
-  return [
-    stream.source === 'castle' ? 1 : 0,
-    isNonSeekableGoogleDriveLink(stream) ? 1 : 0,
-    tierFn(stream.quality)
-  ];
-}
-
-function rankIsBetter(a, b) {
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return a[i] < b[i];
-  }
-  return false;
-}
-
-// Drops anything over MAX_SIZE_GB, hides sub-1080p results for movies, then
-// tags the best remaining stream by resolution tier as [PREFERRED] and moves
-// it to the front - the rest of the (filtered) list is left untouched.
+// Drops anything over MAX_SIZE_GB or backed by a known-non-seekable host,
+// hides sub-1080p results for movies, then tags the best remaining stream by
+// resolution tier as [PREFERRED] and moves it to the front - the rest of the
+// (filtered) list is left untouched.
 function applyPreferredLogic(streams, mediaType) {
   let filtered = streams.filter(s => {
     const gb = getStreamSizeGB(s);
-    return gb === null || gb <= MAX_SIZE_GB;
+    return (gb === null || gb <= MAX_SIZE_GB) && !isNonSeekableGoogleDriveLink(s);
   });
 
   const tierFn = mediaType === 'tv' ? seriesTier : movieTier;

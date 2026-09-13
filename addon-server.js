@@ -40,7 +40,6 @@ const tmdb = require('./lib/tmdb');
 const profileStore = require('./lib/profileStore');
 const gemini = require('./lib/gemini');
 const indycar = require('./providers/indycar');
-const { rewriteStreamUrls, handleProxyRequest } = require('./lib/rangeProxy');
 
 const PORT = 3100;
 const CATALOG_SEED_COUNT = 10;
@@ -278,7 +277,7 @@ function buildIndycarStreamResponse(id) {
     });
 }
 
-function buildStreamResponse(profileId, type, rawId, baseUrl) {
+function buildStreamResponse(profileId, type, rawId) {
     const mediaType = type === 'series' ? 'tv' : 'movie';
     const [imdbId, seasonStr, episodeStr] = rawId.split(':');
     const season = seasonStr ? parseInt(seasonStr, 10) : null;
@@ -296,15 +295,7 @@ function buildStreamResponse(profileId, type, rawId, baseUrl) {
         return aggregate.aggregateStreams(found.tmdbId, found.mediaType, season, episode).then(({ streams }) => {
             profileStore.recordWatch(profileId, { tmdbId: found.tmdbId, mediaType: found.mediaType, title: found.title, year: found.year });
 
-            // Some sources (confirmed: video-downloads.googleusercontent.com
-            // Google Drive links) don't support HTTP Range requests at all,
-            // which breaks playback on players that need random access just
-            // to start (ExoPlayer/Android TV). Routing those through this
-            // server's own /proxy (lib/rangeProxy.js) fakes Range support
-            // instead of handing the player a URL it can't actually use.
-            const rewritten = rewriteStreamUrls(streams, baseUrl);
-
-            const stremioStreams = rewritten.map(s => {
+            const stremioStreams = streams.map(s => {
                 const behaviorHints = { notWebReady: true };
                 if (s.headers && Object.keys(s.headers).length) {
                     behaviorHints.proxyHeaders = { request: s.headers };
@@ -343,11 +334,6 @@ const server = http.createServer((req, res) => {
 
     const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const parts = parsedUrl.pathname.split('/').filter(Boolean);
-    const baseUrl = `http://${req.headers.host || `localhost:${PORT}`}`;
-
-    if (parsedUrl.pathname === '/proxy') {
-        return handleProxyRequest(req, res, parsedUrl.searchParams);
-    }
 
     if (parts.length === 0) {
         const ip = getLocalIp();
@@ -399,7 +385,7 @@ const server = http.createServer((req, res) => {
         if (type !== 'movie' && type !== 'series') {
             return sendJson(res, 200, { streams: [] });
         }
-        return buildStreamResponse(profileId, type, id, baseUrl).then(body => sendJson(res, 200, body));
+        return buildStreamResponse(profileId, type, id).then(body => sendJson(res, 200, body));
     }
 
     return notFound(res);

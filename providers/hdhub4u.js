@@ -898,28 +898,24 @@ function getStreams(tmdbId, mediaType = "movie", season = null, episode = null) 
           provider: "hdhub4u"
         };
       });
-      const qualityOrder = { "4K": 4, "1080p": 2, "720p": 1, "480p": 0, "Unknown": -2 };
       // HubCloud's "10Gbps" links resolve to a video-downloads.googleusercontent.com
       // Google Drive URL that (confirmed live) doesn't support HTTP Range
       // requests at all - a ranged request gets the full multi-GB file back,
-      // 200 not 206 - which breaks players that need random access to even
-      // start (ExoPlayer/Android TV confirmed). ZipDisk/Pixeldrain links from
-      // the same page were confirmed to properly return 206/Content-Range,
-      // so bias those ahead at the same quality tier instead of letting
-      // whichever button happened to appear first in the page decide - the
-      // Google Drive link stays available, just no longer picked first.
-      // Seekability is checked BEFORE quality, not just as a tiebreaker
-      // within the same tier - a working 480p stream is more useful than a
-      // higher-quality one that fails to even start on a strict player, so a
-      // non-seekable link should never outrank a seekable one regardless of
-      // resolution (mirrors how lib/aggregate.js ranks the cross-provider
-      // [PREFERRED] pick for the same reason).
+      // 200 not 206. A proxy that fakes Range support by discarding leading
+      // bytes was tried (lib/rangeProxy.js) before concluding that doesn't
+      // actually help: a request for a range near the end of a real movie
+      // file - which many MKVs need immediately for their seek index - took
+      // over 4 minutes over a Pi's real upload bandwidth, far past any
+      // player's timeout. So these are dropped here entirely rather than
+      // just deprioritized, even when they're the only result for a given
+      // quality - the same exclusion lib/aggregate.js applies for any other
+      // provider's Google Drive links, kept here too since this file can
+      // also be installed directly as its own standalone Nuvio plugin
+      // without ever going through aggregate.js.
       const isNonSeekable = (url) => typeof url === "string" && url.includes("googleusercontent.com");
-      return streams.sort((a, b) => {
-        const bySeekable = (isNonSeekable(a.url) ? 1 : 0) - (isNonSeekable(b.url) ? 1 : 0);
-        if (bySeekable !== 0) return bySeekable;
-        return (qualityOrder[b.quality] || -3) - (qualityOrder[a.quality] || -3);
-      });
+      const playableStreams = streams.filter((s) => !isNonSeekable(s.url));
+      const qualityOrder = { "4K": 4, "1080p": 2, "720p": 1, "480p": 0, "Unknown": -2 };
+      return playableStreams.sort((a, b) => (qualityOrder[b.quality] || -3) - (qualityOrder[a.quality] || -3));
     } catch (error) {
       console.error(`[HDHub4u] Scraping error: ${error.message}`);
       return [];

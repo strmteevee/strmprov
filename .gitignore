@@ -1,0 +1,5 @@
+node_modules/
+test-results.log
+data/profiles/*.json
+.env
+.env.local

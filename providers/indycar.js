@@ -59,6 +59,21 @@ function fetchHtml(path) {
     });
 }
 
+// Confirmed live: crawling 18 race-weekend pages concurrently can have some
+// of them fail transiently (a specific network's DNS/timeouts/rate-limiting
+// - reproduced on one deployment where most of the 18 failed, and the
+// resulting mostly-empty crawl got cached as if it were a full, successful
+// one, silently dropping the catalog from 13 Extended Race Highlights to 3).
+// A couple of retries with a short backoff recovers most transient failures
+// before they ever reach the caller.
+function fetchHtmlWithRetries(path, attemptsLeft = 2) {
+    return fetchHtml(path).catch((err) => {
+        if (attemptsLeft <= 0) throw err;
+        return new Promise((resolve) => setTimeout(resolve, 1000))
+            .then(() => fetchHtmlWithRetries(path, attemptsLeft - 1));
+    });
+}
+
 // Every video path is /videos/<year>/<month>/<DD>-<slug...> - reading the
 // date straight from the URL is far more reliable than the page's own
 // displayed date, which (confirmed live) is sometimes relative ("2 DAYS
@@ -107,22 +122,31 @@ function getRaceWeekendPaths() {
     });
 }
 
+// Returns both the videos found and how many of the race-weekend pages
+// failed even after retries, so the caller can decide whether this crawl is
+// trustworthy enough to actually replace a previous good result with (see
+// getAllVideos below) - the crawl itself always resolves, using whatever
+// pages did succeed, rather than failing outright over a handful of bad ones.
 function crawlAllVideos() {
     return getRaceWeekendPaths().then((paths) => Promise.all(paths.map((path) =>
-        fetchHtml(path).then(extractVideoCards).catch((err) => {
-            console.error(`[IndyCar] Failed to fetch ${path}: ${err.message}`);
-            return [];
+        fetchHtmlWithRetries(path).then(extractVideoCards).catch((err) => {
+            console.error(`[IndyCar] Failed to fetch ${path} after retries: ${err.message}`);
+            return null;
         })
     ))).then((lists) => {
+        const failedCount = lists.filter((l) => l === null).length;
+        if (failedCount > 0) {
+            console.warn(`[IndyCar] ${failedCount}/${lists.length} race-weekend page(s) failed to fetch this crawl`);
+        }
         const seen = new Set();
         const all = [];
-        for (const video of lists.flat()) {
+        for (const video of lists.filter(Boolean).flat()) {
             if (seen.has(video.id)) continue;
             seen.add(video.id);
             all.push(video);
         }
         all.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-        return all;
+        return { videos: all, failedCount, totalPages: lists.length };
     });
 }
 
@@ -136,19 +160,38 @@ let cache = { videos: null, timestamp: 0 };
 // back immediately, while a fresh crawl runs in the background for the NEXT
 // request. Same pattern addon-server.js's buildCatalog already uses for the
 // AI "For You" catalog.
+// A crawl where more than half the pages failed (even after retries) isn't
+// trustworthy enough to replace an existing cache with - confirmed live on
+// one deployment that a bad network condition made most of the 18 requests
+// fail, and the resulting near-empty result got cached as if it were
+// complete, silently dropping the catalog from 13 Extended Race Highlights
+// to 3 with no visible error. A cold start (no cache at all yet) still uses
+// whatever a partial crawl found, since something is better than nothing
+// when there's no earlier good result to fall back on.
+function isTrustworthy(failedCount, totalPages) {
+    return failedCount <= totalPages / 2;
+}
+
 function getAllVideos() {
     const now = Date.now();
     if (cache.videos && now - cache.timestamp < CACHE_TTL_MS) {
         return Promise.resolve(cache.videos);
     }
     if (cache.videos) {
-        crawlAllVideos().then((videos) => {
+        crawlAllVideos().then(({ videos, failedCount, totalPages }) => {
+            if (!isTrustworthy(failedCount, totalPages)) {
+                console.warn(`[IndyCar] Background refresh too incomplete (${failedCount}/${totalPages} pages failed) - keeping the previous cache instead of replacing it`);
+                return;
+            }
             cache = { videos, timestamp: Date.now() };
             console.log(`[IndyCar] Refreshed ${videos.length} highlight video(s) in the background`);
         }).catch((err) => console.error(`[IndyCar] Background refresh failed: ${err.message}`));
         return Promise.resolve(cache.videos);
     }
-    return crawlAllVideos().then((videos) => {
+    return crawlAllVideos().then(({ videos, failedCount, totalPages }) => {
+        if (failedCount > 0) {
+            console.warn(`[IndyCar] Initial crawl was incomplete (${failedCount}/${totalPages} pages failed) - caching what was found anyway since there's no earlier result to fall back on`);
+        }
         cache = { videos, timestamp: now };
         console.log(`[IndyCar] Crawled ${videos.length} highlight video(s)`);
         return videos;

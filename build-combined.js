@@ -20,12 +20,16 @@ const path = require('path');
 
 const PROVIDERS_DIR = path.join(__dirname, 'providers');
 const OUTPUT_PATH = path.join(PROVIDERS_DIR, 'allsources.js');
+const MANIFEST_PATH = path.join(__dirname, 'manifest.json');
 
 // id: manifest id / filename (providers/<id>.js)
 // varName: JS identifier for this source's IIFE result (must be a valid
 //   identifier - several ids aren't: "4khdhub" starts with a digit,
 //   "anime-dekho"/"kickassanime" would need dashes stripped anyway)
 // name: display name used in logging and the `source` field on streams
+// external: true for sources that relay another Stremio addon via the
+//   shared providers/external-addon.js factory instead of having their own
+//   provider file - see buildSourceBlocks() below for how these are inlined.
 const SOURCES = [
   { id: 'peachify', varName: 'Peachify', name: 'Peachify' },
   { id: 'vidrock', varName: 'Vidrock', name: 'Vidrock' },
@@ -36,8 +40,8 @@ const SOURCES = [
   { id: 'vixsrc', varName: 'VixSrc', name: 'Vixsrc' },
   { id: 'vidlink', varName: 'VidLink', name: 'Vidlink' },
   { id: 'castle', varName: 'Castle', name: 'Castle' },
-  { id: 'hdhub4u', varName: 'HdHub4u', name: 'HDHub4u' },
-  { id: 'penguplay', varName: 'PenguPlay', name: 'PenguPlay' },
+  { id: 'hdhub4u', varName: 'HdHub4u', name: 'HDHub4u', external: true },
+  { id: 'penguplay', varName: 'PenguPlay', name: 'PenguPlay', external: true },
   { id: 'movieblast', varName: 'MovieBlast', name: 'MovieBlast' },
   { id: 'anime-dekho', varName: 'AnimeDekho', name: 'AnimeDekho' },
   { id: 'kickassanime', varName: 'KickassAnime', name: 'KickassAnime' },
@@ -72,13 +76,43 @@ function stripExport(content) {
   return { body: content.slice(0, lineStart).trimEnd(), exportedName };
 }
 
+// Sources that relay another addon (providers/external-addon.js, driven by
+// manifest.json's per-entry `config`) share ONE inlined copy of that file
+// regardless of how many such sources exist, wrapped in a factory IIFE - the
+// config itself is read out of manifest.json at generation time (the same
+// file lib/aggregate.js reads server-side) and baked into the generated
+// output as a literal object, since the standalone plugin has no filesystem
+// access to manifest.json at runtime. This keeps manifest.json - editable
+// from the admin UI - as the single place these are configured; re-running
+// `node build-combined.js` after an edit picks up the new value.
+function buildExternalAddonFactoryBlock() {
+  const filePath = path.join(PROVIDERS_DIR, 'external-addon.js');
+  const content = fs.readFileSync(filePath, 'utf8');
+  const { body } = stripExport(content);
+  return `const ExternalAddonFactory = (function () {\n${body}\n  return { createProvider };\n})();\n`;
+}
+
 function buildSourceBlocks() {
-  return SOURCES.map(src => {
+  const hasExternal = SOURCES.some(src => src.external);
+  const manifest = hasExternal ? JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8')) : null;
+  const blocks = [];
+  if (hasExternal) blocks.push(buildExternalAddonFactoryBlock());
+
+  for (const src of SOURCES) {
+    if (src.external) {
+      const entry = manifest.scrapers.find(s => s.id === src.id);
+      if (!entry || !entry.config) {
+        throw new Error(`build-combined.js: manifest.json has no config for external source "${src.id}"`);
+      }
+      blocks.push(`const ${src.varName}Source = ExternalAddonFactory.createProvider(${JSON.stringify(entry.config)});\n`);
+      continue;
+    }
     const filePath = path.join(PROVIDERS_DIR, `${src.id}.js`);
     const content = fs.readFileSync(filePath, 'utf8');
     const { body, exportedName } = stripExport(content);
-    return `const ${src.varName}Source = (function () {\n${body}\n  return { getStreams: ${exportedName} };\n})();\n`;
-  }).join('\n');
+    blocks.push(`const ${src.varName}Source = (function () {\n${body}\n  return { getStreams: ${exportedName} };\n})();\n`);
+  }
+  return blocks.join('\n');
 }
 
 const HEADER = `// AllSources - combines every scraper in this repo into one Nuvio plugin.

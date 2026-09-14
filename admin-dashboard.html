@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>strmprov admin</title>
+<style>
+  :root {
+    --bg: #0f1420;
+    --panel: #161d2e;
+    --panel-border: #253049;
+    --text: #e6ebf5;
+    --muted: #8b96ad;
+    --accent: #5b8def;
+    --accent-dim: #2a3a5c;
+    --good: #4caf7d;
+    --bad: #e5636b;
+    --warn: #d9a441;
+    --mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  header {
+    padding: 20px 28px;
+    border-bottom: 1px solid var(--panel-border);
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+  }
+  header h1 { font-size: 18px; margin: 0; }
+  header span { color: var(--muted); font-size: 13px; }
+  main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 24px 28px 80px;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+  }
+  section.panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 20px 22px;
+  }
+  section.panel > h2 {
+    margin: 0 0 4px;
+    font-size: 15px;
+  }
+  section.panel > p.desc {
+    margin: 0 0 16px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--panel-border); font-size: 13px; vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; }
+  tr:last-child td { border-bottom: none; }
+  .muted { color: var(--muted); }
+  .mono { font-family: var(--mono); font-size: 12px; }
+  button {
+    background: var(--accent-dim);
+    color: var(--text);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { background: transparent; border-color: var(--bad); color: var(--bad); }
+  button.danger:disabled, button:disabled { opacity: 0.35; cursor: not-allowed; }
+  button.small { padding: 3px 9px; font-size: 12px; }
+  input[type="text"], input[type="number"], textarea, select {
+    background: #0c111c;
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 6px 9px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  input[type="number"] { width: 80px; }
+  .switch {
+    position: relative;
+    display: inline-block;
+    width: 36px;
+    height: 20px;
+    cursor: pointer;
+  }
+  .switch input { display: none; }
+  .switch .track {
+    position: absolute; inset: 0;
+    background: var(--panel-border);
+    border-radius: 999px;
+    transition: background 0.15s;
+  }
+  .switch .thumb {
+    position: absolute; top: 2px; left: 2px;
+    width: 16px; height: 16px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 0.15s;
+  }
+  .switch input:checked + .track { background: var(--good); }
+  .switch input:checked + .track .thumb { transform: translateX(16px); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .grid-form { display: grid; grid-template-columns: 140px 1fr; gap: 10px 14px; align-items: center; max-width: 560px; }
+  .grid-form label { color: var(--muted); font-size: 13px; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+  .tabs button { border-radius: 6px 6px 0 0; }
+  .tabs button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .points-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin-bottom: 16px; }
+  .points-grid .item { display: flex; justify-content: space-between; align-items: center; gap: 8px; background: #0c111c; border: 1px solid var(--panel-border); border-radius: 6px; padding: 6px 10px; }
+  .points-grid .item label { font-size: 12px; color: var(--muted); }
+  .points-grid .item input { width: 60px; }
+  .field-row { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 16px; }
+  .field-row .field { display: flex; flex-direction: column; gap: 4px; }
+  .field-row .field label { font-size: 12px; color: var(--muted); }
+  .stream-item { border: 1px solid var(--panel-border); border-radius: 6px; padding: 10px 12px; margin-bottom: 8px; }
+  .stream-item.preferred { border-color: var(--good); background: rgba(76,175,125,0.08); }
+  .stream-item .name { font-weight: 600; }
+  .stream-item .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .badge { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .badge.good { background: rgba(76,175,125,0.18); color: var(--good); }
+  .badge.warn { background: rgba(217,164,65,0.18); color: var(--warn); }
+  .toast {
+    position: fixed; bottom: 20px; right: 20px;
+    background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 8px; padding: 10px 16px; font-size: 13px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s;
+    pointer-events: none; max-width: 400px;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.error { border-color: var(--bad); color: var(--bad); }
+  .toast.ok { border-color: var(--good); color: var(--good); }
+  details.add-form { margin-top: 14px; }
+  details.add-form summary { cursor: pointer; color: var(--accent); font-size: 13px; }
+  details.add-form .grid-form { margin-top: 12px; }
+  pre.output { background: #0c111c; border: 1px solid var(--panel-border); border-radius: 6px; padding: 10px; font-size: 12px; overflow-x: auto; max-height: 200px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>strmprov admin</h1>
+  <span>providers · ranking · profiles · live test</span>
+</header>
+
+<main>
+
+  <section class="panel" id="providers-panel">
+    <h2>Providers</h2>
+    <p class="desc">Enable/disable sources, and add, edit, or remove external-addon relays (providers that just relay another Stremio addon's own results).</p>
+    <table>
+      <thead><tr><th>On</th><th>Provider</th><th>Description</th><th></th></tr></thead>
+      <tbody id="providers-body"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
+    </table>
+    <details class="add-form">
+      <summary>+ Add an external-addon manifest</summary>
+      <div class="grid-form">
+        <label>id</label><input type="text" id="add-id" placeholder="e.g. mynewaddon" />
+        <label>Display name</label><input type="text" id="add-name" placeholder="e.g. MyNewAddon" />
+        <label>Description</label><input type="text" id="add-description" placeholder="optional" />
+        <label>Addon base URL</label><input type="text" id="add-base-url" placeholder="https://example.com or https://example.com/&lt;encoded-config&gt;" />
+        <label>Config JSON</label><input type="text" id="add-config-json" placeholder='optional, e.g. {"auth_token":"..."}' />
+        <label>Name prefix</label><input type="text" id="add-name-prefix" placeholder='optional, e.g. "MyAddon "' />
+        <label></label><button class="primary" id="add-submit">Add manifest</button>
+      </div>
+    </details>
+  </section>
+
+  <section class="panel" id="ranking-panel">
+    <h2>Stream ranking</h2>
+    <p class="desc">CloudStream-style scoring: a stream's score is its provider's points plus its quality's points. A score of 11+ confidently wins the <span class="mono">[PREFERRED]</span> tag; if nothing reaches that, the single highest-scoring stream still gets it.</p>
+    <div class="tabs">
+      <button class="tab-btn active" data-type="movie">Movie</button>
+      <button class="tab-btn" data-type="series">Series</button>
+    </div>
+    <div id="ranking-body">Loading…</div>
+    <div class="row" style="margin-top:14px;">
+      <button class="primary" id="ranking-save">Save ranking</button>
+      <button id="rebuild-combined">Rebuild allsources.js</button>
+    </div>
+  </section>
+
+  <section class="panel" id="profiles-panel">
+    <h2>Profiles</h2>
+    <p class="desc">Each profile's "For You" recommendations are built from its own watch history plus an optional base viewing profile - a short taste description used on its own for a profile with no watch history yet, and alongside history once it has some. Reset clears history and cached recommendations, not the base profile.</p>
+    <table>
+      <thead><tr><th>Profile</th><th>Watched</th><th>Base viewing profile</th><th>Last watched</th><th></th></tr></thead>
+      <tbody id="profiles-body"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+    </table>
+  </section>
+
+  <section class="panel" id="test-panel">
+    <h2>Live test</h2>
+    <p class="desc">Runs the real aggregate pipeline (every enabled provider, current ranking config) for a TMDB id and shows the results, including which one wins <span class="mono">[PREFERRED]</span> and why.</p>
+    <div class="field-row">
+      <div class="field"><label>TMDB id</label><input type="text" id="test-tmdb" placeholder="e.g. 118340" style="width:120px;" /></div>
+      <div class="field"><label>Type</label>
+        <select id="test-type"><option value="movie">movie</option><option value="tv">tv</option></select>
+      </div>
+      <div class="field" id="test-season-field" style="display:none;"><label>Season</label><input type="number" id="test-season" style="width:70px;" /></div>
+      <div class="field" id="test-episode-field" style="display:none;"><label>Episode</label><input type="number" id="test-episode" style="width:70px;" /></div>
+      <div class="field"><label>&nbsp;</label><button class="primary" id="test-run">Run test</button></div>
+    </div>
+    <div id="test-summary" class="muted" style="margin-bottom:10px;"></div>
+    <div id="test-results"></div>
+  </section>
+
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let providersCache = [];
+let rankingCache = null;
+let rankingTab = 'movie';
+
+function toast(msg, kind) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast show' + (kind ? ' ' + kind : '');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { el.className = 'toast'; }, 3200);
+}
+
+function api(method, url, body) {
+  return fetch(url, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined
+  }).then(async res => {
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    return data;
+  });
+}
+
+// ---- Providers ----
+
+function renderProviders() {
+  const body = document.getElementById('providers-body');
+  if (providersCache.length === 0) {
+    body.innerHTML = '<tr><td colspan="4" class="muted">No providers found.</td></tr>';
+    return;
+  }
+  body.innerHTML = providersCache.map(p => {
+    const canEdit = p.isExternalAddon;
+    const canDelete = p.isExternalAddon && !p.isProtected;
+    return `<tr>
+      <td>
+        <label class="switch">
+          <input type="checkbox" ${p.enabled ? 'checked' : ''} onchange="toggleProvider('${p.id}')" />
+          <span class="track"><span class="thumb"></span></span>
+        </label>
+      </td>
+      <td><strong>${escapeHtml(p.name)}</strong><div class="muted mono">${escapeHtml(p.id)}</div></td>
+      <td class="muted">${escapeHtml(p.description || '')}</td>
+      <td>
+        ${canEdit ? `<button class="small" onclick="openEdit('${p.id}')">Edit</button>` : ''}
+        ${canDelete ? `<button class="small danger" onclick="deleteProvider('${p.id}')">Delete</button>` : ''}
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function loadProviders() {
+  return api('GET', '/api/providers').then(data => {
+    providersCache = data.providers;
+    renderProviders();
+    renderRankingProviderList();
+  });
+}
+
+window.toggleProvider = function (id) {
+  api('POST', `/api/providers/${encodeURIComponent(id)}/toggle`)
+    .then(() => { toast(`${id}: toggled`, 'ok'); loadProviders(); })
+    .catch(e => { toast(e.message, 'error'); loadProviders(); });
+};
+
+window.deleteProvider = function (id) {
+  if (!confirm(`Delete provider "${id}"? This can't be undone from here.`)) return;
+  api('DELETE', `/api/providers/${encodeURIComponent(id)}`)
+    .then(() => { toast(`${id}: deleted`, 'ok'); loadProviders(); })
+    .catch(e => toast(e.message, 'error'));
+};
+
+window.openEdit = function (id) {
+  const p = providersCache.find(x => x.id === id);
+  if (!p) return;
+  const cfg = p.config || {};
+  const name = prompt('Display name', p.name);
+  if (name === null) return;
+  const addonBaseUrl = prompt('Addon base URL', cfg.addonBaseUrl || '');
+  if (addonBaseUrl === null) return;
+  const configJsonStr = prompt('Config JSON (blank for none)', cfg.configJson ? JSON.stringify(cfg.configJson) : '');
+  if (configJsonStr === null) return;
+  const namePrefix = prompt('Name prefix (blank for none)', cfg.namePrefix || '');
+  if (namePrefix === null) return;
+  let configJson;
+  try { configJson = configJsonStr.trim() ? JSON.parse(configJsonStr) : null; }
+  catch (e) { return toast('Config JSON is not valid JSON', 'error'); }
+  api('PUT', `/api/providers/external/${encodeURIComponent(id)}`, { name, addonBaseUrl, configJson, namePrefix })
+    .then(() => { toast(`${id}: updated`, 'ok'); loadProviders(); })
+    .catch(e => toast(e.message, 'error'));
+};
+
+document.getElementById('add-submit').addEventListener('click', () => {
+  const id = document.getElementById('add-id').value.trim();
+  const name = document.getElementById('add-name').value.trim();
+  const description = document.getElementById('add-description').value.trim();
+  const addonBaseUrl = document.getElementById('add-base-url').value.trim();
+  const configJsonStr = document.getElementById('add-config-json').value.trim();
+  const namePrefix = document.getElementById('add-name-prefix').value.trim();
+  let configJson = null;
+  if (configJsonStr) {
+    try { configJson = JSON.parse(configJsonStr); }
+    catch (e) { return toast('Config JSON is not valid JSON', 'error'); }
+  }
+  api('POST', '/api/providers/external', { id, name, description, addonBaseUrl, configJson, namePrefix })
+    .then(() => {
+      toast(`${id}: added`, 'ok');
+      ['add-id','add-name','add-description','add-base-url','add-config-json','add-name-prefix'].forEach(fid => document.getElementById(fid).value = '');
+      loadProviders();
+    })
+    .catch(e => toast(e.message, 'error'));
+});
+
+// ---- Ranking ----
+
+function renderRankingProviderList() {
+  if (rankingCache) renderRanking();
+}
+
+function renderRanking() {
+  if (!rankingCache) return;
+  const tc = rankingCache[rankingTab] || { providerPoints: {}, qualityPoints: {}, threshold: 11, maxSizeGB: 30 };
+  const providerIds = providersCache.map(p => p.id);
+  const qualities = ['4K', '1080p', '720p', '480p', 'Unknown'];
+
+  const providerInputs = providerIds.map(id => `
+    <div class="item">
+      <label>${escapeHtml(id)}</label>
+      <input type="number" data-provider="${escapeHtml(id)}" value="${tc.providerPoints[id] || 0}" />
+    </div>`).join('');
+
+  const qualityInputs = qualities.map(q => `
+    <div class="item">
+      <label>${q}</label>
+      <input type="number" data-quality="${q}" value="${tc.qualityPoints[q] || 0}" />
+    </div>`).join('');
+
+  const minQualityField = rankingTab === 'movie'
+    ? `<div class="field"><label>Min quality</label>
+        <select id="rank-min-quality">
+          ${['4K','1080p','720p','480p'].map(q => `<option value="${q}" ${tc.minQuality === q ? 'selected' : ''}>${q}</option>`).join('')}
+        </select>
+      </div>`
+    : '';
+
+  document.getElementById('ranking-body').innerHTML = `
+    <div class="muted" style="margin-bottom:6px; font-size:12px;">Provider points</div>
+    <div class="points-grid">${providerInputs}</div>
+    <div class="muted" style="margin-bottom:6px; font-size:12px;">Quality points</div>
+    <div class="points-grid">${qualityInputs}</div>
+    <div class="field-row">
+      <div class="field"><label>Threshold</label><input type="number" id="rank-threshold" value="${tc.threshold}" /></div>
+      ${minQualityField}
+      <div class="field"><label>Max size (GB)</label><input type="number" id="rank-max-size" value="${tc.maxSizeGB}" /></div>
+    </div>
+  `;
+}
+
+function collectRankingTab() {
+  const providerPoints = {};
+  document.querySelectorAll('#ranking-body [data-provider]').forEach(el => {
+    providerPoints[el.dataset.provider] = Number(el.value) || 0;
+  });
+  const qualityPoints = {};
+  document.querySelectorAll('#ranking-body [data-quality]').forEach(el => {
+    qualityPoints[el.dataset.quality] = Number(el.value) || 0;
+  });
+  const threshold = Number(document.getElementById('rank-threshold').value) || 0;
+  const maxSizeGB = Number(document.getElementById('rank-max-size').value) || 0;
+  const result = { providerPoints, qualityPoints, threshold, maxSizeGB };
+  if (rankingTab === 'movie') {
+    const minEl = document.getElementById('rank-min-quality');
+    if (minEl) result.minQuality = minEl.value;
+  }
+  return result;
+}
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (rankingCache) rankingCache[rankingTab] = collectRankingTab();
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    rankingTab = btn.dataset.type;
+    renderRanking();
+  });
+});
+
+document.getElementById('ranking-save').addEventListener('click', () => {
+  rankingCache[rankingTab] = collectRankingTab();
+  api('POST', '/api/ranking', rankingCache)
+    .then(data => { rankingCache = data; toast('Ranking saved', 'ok'); })
+    .catch(e => toast(e.message, 'error'));
+});
+
+document.getElementById('rebuild-combined').addEventListener('click', (e) => {
+  e.target.disabled = true;
+  e.target.textContent = 'Rebuilding…';
+  api('POST', '/api/rebuild-combined')
+    .then(data => { toast('allsources.js rebuilt', 'ok'); })
+    .catch(err => toast(err.message, 'error'))
+    .then(() => { e.target.disabled = false; e.target.textContent = 'Rebuild allsources.js'; });
+});
+
+function loadRanking() {
+  return api('GET', '/api/ranking').then(data => {
+    rankingCache = data;
+    renderRanking();
+  });
+}
+
+// ---- Profiles ----
+
+function renderProfiles(profiles) {
+  const body = document.getElementById('profiles-body');
+  if (profiles.length === 0) {
+    body.innerHTML = '<tr><td colspan="5" class="muted">No profile data yet.</td></tr>';
+    return;
+  }
+  const INLINE_TITLE_COUNT = 6;
+  body.innerHTML = profiles.map(p => {
+    const titles = p.titles || [];
+    const shown = titles.slice(0, INLINE_TITLE_COUNT).map(escapeHtml).join(', ');
+    const remaining = titles.length - INLINE_TITLE_COUNT;
+    const full = titles.map(escapeHtml).join('\n');
+    const pid = escapeHtml(p.profileId);
+    return `
+    <tr>
+      <td class="mono">${pid}</td>
+      <td title="${full}">
+        ${titles.length ? shown : '<span class="muted">—</span>'}
+        ${remaining > 0 ? `<span class="muted"> +${remaining} more</span>` : ''}
+        ${titles.length ? `<div class="muted" style="font-size:11px;">${p.historyCount} total</div>` : ''}
+      </td>
+      <td>
+        <textarea data-base-profile="${pid}" rows="2" style="width:220px; resize:vertical;" placeholder="e.g. loves gritty sci-fi and slow-burn horror, not into rom-coms">${escapeHtml(p.baseProfile || '')}</textarea>
+        <div><button class="small" onclick="saveBaseProfile('${pid}')">Save</button></div>
+      </td>
+      <td class="muted">${p.lastWatchedAt ? new Date(p.lastWatchedAt).toLocaleString() : '—'}</td>
+      <td><button class="small danger" onclick="resetProfile('${pid}')">Reset</button></td>
+    </tr>`;
+  }).join('');
+}
+
+window.saveBaseProfile = function (id) {
+  const el = document.querySelector(`[data-base-profile="${id}"]`);
+  api('POST', `/api/profiles/${encodeURIComponent(id)}/base`, { text: el.value })
+    .then(() => toast(`Profile ${id}: base viewing profile saved`, 'ok'))
+    .catch(e => toast(e.message, 'error'));
+};
+
+window.resetProfile = function (id) {
+  if (!confirm(`Reset all watch history and cached recommendations for profile "${id}"?`)) return;
+  api('POST', `/api/profiles/${encodeURIComponent(id)}/reset`)
+    .then(() => { toast(`Profile ${id} reset`, 'ok'); loadProfiles(); })
+    .catch(e => toast(e.message, 'error'));
+};
+
+function loadProfiles() {
+  return api('GET', '/api/profiles').then(data => renderProfiles(data.profiles));
+}
+
+// ---- Test ----
+
+document.getElementById('test-type').addEventListener('change', (e) => {
+  const isTv = e.target.value === 'tv';
+  document.getElementById('test-season-field').style.display = isTv ? '' : 'none';
+  document.getElementById('test-episode-field').style.display = isTv ? '' : 'none';
+});
+
+document.getElementById('test-run').addEventListener('click', () => {
+  const tmdbId = document.getElementById('test-tmdb').value.trim();
+  const mediaType = document.getElementById('test-type').value;
+  const season = document.getElementById('test-season').value;
+  const episode = document.getElementById('test-episode').value;
+  if (!tmdbId) return toast('Enter a TMDB id', 'error');
+
+  const summary = document.getElementById('test-summary');
+  const results = document.getElementById('test-results');
+  summary.textContent = 'Running…';
+  results.innerHTML = '';
+
+  api('POST', '/api/test', { tmdbId, mediaType, season, episode })
+    .then(data => {
+      summary.textContent = `${data.streams.length} stream(s) in ${data.totalMs}ms`;
+      results.innerHTML = data.streams.map(s => `
+        <div class="stream-item ${s.isPreferred ? 'preferred' : ''}">
+          <div class="name">${s.isPreferred ? '' : ''}${escapeHtml(s.name)}</div>
+          <div class="meta">
+            ${escapeHtml(s.quality || 'Unknown')} ${s.size ? '· ' + escapeHtml(s.size) : ''}
+            ${s.score !== undefined ? `· score ${s.score}` : ''}
+            ${s.isPreferred ? `<span class="badge ${s.lowConfidence ? 'warn' : 'good'}">${s.lowConfidence ? 'preferred (low confidence)' : 'preferred'}</span>` : ''}
+          </div>
+        </div>`).join('') || '<p class="muted">No streams returned.</p>';
+    })
+    .catch(e => { summary.textContent = ''; results.innerHTML = `<p class="muted">${escapeHtml(e.message)}</p>`; });
+});
+
+function escapeHtml(str) {
+  return String(str == null ? '' : str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+Promise.all([loadProviders(), loadRanking(), loadProfiles()]).catch(e => toast(e.message, 'error'));
+</script>
+
+</body>
+</html>

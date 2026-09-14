@@ -287,14 +287,19 @@
     {
       "id": "hdhub4u",
       "name": "HDHub4u",
-      "description": "Direct links from HDHub4u with high-speed download support",
+      "description": "Relays an external HDHub4u Stremio addon instead of scraping the site directly - see providers/external-addon.js.",
       "version": "1.3.1",
       "author": "Nuvio Team",
       "supportedTypes": [
         "movie",
         "tv"
       ],
-      "filename": "providers/hdhub4u.js",
+      "filename": "providers/external-addon.js",
+      "config": {
+        "name": "HDHub4u",
+        "addonBaseUrl": "https://hdhub.thevolecitor.qzz.io/eyJ0b3Jib3giOiJ1bnNldCIsInF1YWxpdGllcyI6IjEwODBwLDcyMHAiLCJzb3J0IjoiZGVzYyIsImNhdGFsb2dzIjoiIn0",
+        "namePrefix": "HDHub4u "
+      },
       "enabled": true,
       "formats": [
         "mkv",
@@ -309,14 +314,22 @@
     {
       "id": "penguplay",
       "name": "PenguPlay",
-      "description": "Relays the PenguPlay Stremio addon, itself a multi-source aggregator (4KHDHub, MovieBox, VegaMovies, HDHub4u, VidLink, VidFast, 2Peckle and others).",
+      "description": "Relays the PenguPlay Stremio addon, itself a multi-source aggregator (4KHDHub, MovieBox, VegaMovies, HDHub4u, VidLink, VidFast, 2Peckle and others) - see providers/external-addon.js.",
       "version": "1.0.0",
       "author": "Nuvio Team",
       "supportedTypes": [
         "movie",
         "tv"
       ],
-      "filename": "providers/penguplay.js",
+      "filename": "providers/external-addon.js",
+      "config": {
+        "name": "PenguPlay",
+        "addonBaseUrl": "https://pengu.uk",
+        "configJson": {
+          "auth_token": "CwgTS317M83kEQR4ErRaW_IOI0hJIU00Y91Umm97ZC0",
+          "disable_direct": true
+        }
+      },
       "enabled": true,
       "formats": [
         "mkv",

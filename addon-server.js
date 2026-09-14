@@ -138,8 +138,8 @@ function buildTmdbCatalog(seeds, mediaType, type, watchedIds) {
     });
 }
 
-function buildAiCatalog(seeds, mediaType, watchedIds) {
-    return gemini.getAiRecommendations(seeds, mediaType, tmdb, watchedIds).then(resolved => {
+function buildAiCatalog(seeds, mediaType, watchedIds, baseProfile) {
+    return gemini.getAiRecommendations(seeds, mediaType, tmdb, watchedIds, baseProfile).then(resolved => {
         if (!resolved || resolved.length === 0) return null;
         const seen = new Set();
         const items = [];
@@ -158,8 +158,8 @@ function buildAiCatalog(seeds, mediaType, watchedIds) {
 // taste can easily not have 30 AI-resolvable matches on its own). The TMDB
 // top-up only ever uses same-type seeds - its endpoints structurally can't
 // recommend a different media type than the seed, unlike the AI path.
-function regenerateCatalog(profileId, type, mediaType, aiSeeds, tmdbSeeds, watchedIds, cacheKey, seedFingerprint) {
-    return buildAiCatalog(aiSeeds, mediaType, watchedIds)
+function regenerateCatalog(profileId, type, mediaType, aiSeeds, tmdbSeeds, watchedIds, cacheKey, seedFingerprint, baseProfile) {
+    return buildAiCatalog(aiSeeds, mediaType, watchedIds, baseProfile)
         .then(items => ({ items: items || [], source: items ? 'gemini' : 'none' }))
         .then(({ items, source }) => {
             // Targets CATALOG_MAX_ITEMS here, not CATALOG_MIN_ITEMS - some
@@ -200,11 +200,13 @@ function buildCatalog(profileId, type) {
     const mediaType = type === 'series' ? 'tv' : 'movie';
     const fullHistory = profileStore.getHistory(profileId);
     const sameTypeHistory = fullHistory.filter(h => h.mediaType === mediaType);
+    const baseProfile = profileStore.getBaseProfile(profileId);
 
-    if (fullHistory.length === 0) {
-        // Nothing watched yet on this profile at all - nothing to seed
-        // recommendations from in either type. An empty catalog (rather
-        // than a guess) is the honest result here.
+    if (fullHistory.length === 0 && !baseProfile) {
+        // Nothing watched yet on this profile, and no admin-set taste
+        // description either - genuinely nothing to seed recommendations
+        // from. An empty catalog (rather than a guess) is the honest result
+        // here.
         return Promise.resolve([]);
     }
 
@@ -220,7 +222,11 @@ function buildCatalog(profileId, type) {
     const aiSeeds = (sameTypeHistory.length > 0 ? sameTypeHistory : fullHistory).slice(0, CATALOG_SEED_COUNT);
     const tmdbSeeds = sameTypeHistory.slice(0, CATALOG_SEED_COUNT);
     const cacheKey = `ai-${type}`;
-    const seedFingerprint = aiSeeds.map(s => s.tmdbId).join(',');
+    // Includes baseProfile so editing the taste description from the admin
+    // UI invalidates the cache immediately instead of waiting up to a day -
+    // otherwise a profile with no watch history at all would never see its
+    // seed fingerprint change (aiSeeds stays empty either way).
+    const seedFingerprint = `${aiSeeds.map(s => s.tmdbId).join(',')}|${baseProfile}`;
 
     const cached = profileStore.getCache(profileId, cacheKey);
     const isFresh = cached && cached.seedFingerprint === seedFingerprint && Date.now() - cached.generatedAt < AI_CACHE_TTL_MS;
@@ -229,18 +235,18 @@ function buildCatalog(profileId, type) {
         return Promise.resolve(cached.metas);
     }
     if (cached) {
-        // Stale (a new watch changed the seed set, or the TTL passed) -
-        // serve what's cached right now instead of making this request
-        // wait on a fresh Gemini + TMDB round trip, and refresh it in the
-        // background so the NEXT request gets the updated list.
-        regenerateCatalog(profileId, type, mediaType, aiSeeds, tmdbSeeds, watchedIds, cacheKey, seedFingerprint)
+        // Stale (a new watch or a base-profile edit changed the seed set, or
+        // the TTL passed) - serve what's cached right now instead of making
+        // this request wait on a fresh Gemini + TMDB round trip, and refresh
+        // it in the background so the NEXT request gets the updated list.
+        regenerateCatalog(profileId, type, mediaType, aiSeeds, tmdbSeeds, watchedIds, cacheKey, seedFingerprint, baseProfile)
             .catch(err => console.error(`[addon-server] Background catalog refresh failed: ${err.message}`));
         return Promise.resolve(cached.metas);
     }
 
     // No cache at all yet for this profile+type - this one request has no
     // choice but to wait for the real thing.
-    return regenerateCatalog(profileId, type, mediaType, aiSeeds, tmdbSeeds, watchedIds, cacheKey, seedFingerprint);
+    return regenerateCatalog(profileId, type, mediaType, aiSeeds, tmdbSeeds, watchedIds, cacheKey, seedFingerprint, baseProfile);
 }
 
 // IndyCar videos have no TMDB entry, no watch history, and no personalization

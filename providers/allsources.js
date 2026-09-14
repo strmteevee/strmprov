@@ -13,6 +13,134 @@
 // named internals.
 "use strict";
 
+const ExternalAddonFactory = (function () {
+// Generic, config-driven relay for an external Stremio-protocol addon -
+// the single implementation behind every "just relay another addon's own
+// results" provider in this repo (hdhub4u, penguplay, and anything added
+// later through the admin UI), instead of a hand-written copy per addon.
+//
+// Exports createProvider(config), not a bare getStreams - lib/aggregate.js's
+// loadProvider() calls createProvider(entry.config) for any manifest entry
+// that points its filename here, so one file can back many differently
+// configured providers at once. See admin-server.js for how a manifest
+// entry's config gets created/edited.
+//
+// config shape: { addonBaseUrl: string, configJson?: object, tmdbApiKey?: string, namePrefix?: string }
+// - addonBaseUrl: the addon's own base URL (e.g. "https://pengu.uk"). Some
+//   addons bake their whole config into this URL already (hdhub4u) and need
+//   nothing else; others expect a URL-encoded JSON config path segment
+//   appended after the base (penguplay's auth_token/disable_direct).
+// - configJson: when present, JSON-encoded and appended as that path
+//   segment. Omit/null for addons that don't use one.
+// - tmdbApiKey: optional override; every provider in this repo already
+//   shares one publicly-used TMDB key, reused here by default so most
+//   configs don't need to specify it.
+// - namePrefix: prepended to each returned stream's own name. Some addons'
+//   stream names are already self-branded (PenguPlay's "🐧 PenguPlay ...")
+//   and don't need one; others (HDHub4u's) aren't, so this repo has
+//   historically added "HDHub4u " itself - kept configurable rather than
+//   hardcoded so either style works without new code.
+const DEFAULT_TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+const TMDB_BASE_URL = "https://api.themoviedb.org/3";
+
+function getImdbId(tmdbId, mediaType, tmdbApiKey) {
+  const endpoint = mediaType === "tv" ? "tv" : "movie";
+  const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${tmdbApiKey}&append_to_response=external_ids`;
+  return fetch(url, { headers: { "Accept": "application/json" } })
+    .then((res) => {
+      if (!res.ok) throw new Error(`TMDB API error: ${res.status}`);
+      return res.json();
+    })
+    .then((data) => (data.external_ids && data.external_ids.imdb_id) || null);
+}
+
+function parseQuality(name) {
+  const text = name || "";
+  if (/\b4k\b|2160/i.test(text)) return "4K";
+  const m = text.match(/(\d{3,4})p/i);
+  return m ? `${m[1]}p` : "Unknown";
+}
+
+function parseSize(description) {
+  // Descriptions sometimes also carry a bitrate line ("~55.9 Mbps") - a
+  // plain /(GB|MB)/i match grabs "Mb" out of "Mbps" instead of a real size
+  // line, since both start with the same two letters. A word boundary after
+  // the unit rules that out: "Mbps" has no boundary between "b" and "p".
+  const m = (description || "").match(/([\d.]+)\s*(GB|MB)\b/i);
+  return m ? `${m[1]} ${m[2].toUpperCase()}` : undefined;
+}
+
+// Confirmed live (while building this repo's own hdhub4u/penguplay relays):
+// "HubCloud"-style gateway links (hubcloud.cx/.ist/.dad) need their own
+// multi-hop resolution before it's known whether they land on a real file or
+// a non-seekable Google Drive link / dead Telegram-bot redirect. Not worth
+// reproducing that chain for a third-party addon we don't control, so these
+// are skipped; already-direct links (PixelDrain, R2, etc.) pass through.
+function isUsableStream(s) {
+  if (!s.url) return false;
+  try {
+    return !new URL(s.url).hostname.includes("hubcloud");
+  } catch (e) {
+    return false;
+  }
+}
+
+function createProvider(config) {
+  const addonBaseUrl = (config && config.addonBaseUrl || "").replace(/\/+$/, "");
+  const configJson = config && config.configJson;
+  const tmdbApiKey = (config && config.tmdbApiKey) || DEFAULT_TMDB_API_KEY;
+  const providerLabel = (config && config.name) || "ExternalAddon";
+  const namePrefix = (config && config.namePrefix) || "";
+  const configSegment = configJson ? `/${encodeURIComponent(JSON.stringify(configJson))}` : "";
+
+  function getStreams(tmdbId, mediaType = "movie", season = null, episode = null) {
+    console.log(`[${providerLabel}] Fetching streams for TMDB: ${tmdbId}, Type: ${mediaType}`);
+    return getImdbId(tmdbId, mediaType, tmdbApiKey).then((imdbId) => {
+      if (!imdbId) {
+        console.log(`[${providerLabel}] No IMDb id found for this TMDB id`);
+        return [];
+      }
+      const type = mediaType === "tv" ? "series" : "movie";
+      if (type === "series" && (!season || !episode)) return [];
+      const id = type === "series" ? `${imdbId}:${season}:${episode}` : imdbId;
+
+      return fetch(`${addonBaseUrl}${configSegment}/stream/${type}/${id}.json`, { headers: { "User-Agent": "Mozilla/5.0" } })
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.json();
+        })
+        .then((data) => {
+          const raw = Array.isArray(data.streams) ? data.streams : [];
+          const seenUrls = new Set();
+          const streams = [];
+          for (const s of raw) {
+            if (!isUsableStream(s) || seenUrls.has(s.url)) continue;
+            seenUrls.add(s.url);
+            const rawName = (s.name || "").replace(/\n/g, " ").trim();
+            const name = `${namePrefix}${rawName}`.trim();
+            const description = (s.description || "").replace(/\n/g, " ").trim();
+            streams.push({
+              name,
+              title: description,
+              url: s.url,
+              quality: parseQuality(name),
+              size: parseSize(description)
+            });
+          }
+          console.log(`[${providerLabel}] Got ${streams.length} usable stream(s)`);
+          return streams;
+        });
+    }).catch((err) => {
+      console.error(`[${providerLabel}] Error: ${err.message}`);
+      return [];
+    });
+  }
+
+  return { getStreams };
+}
+  return { createProvider };
+})();
+
 const PeachifySource = (function () {
 // Peachify scraper for Nuvio Local Scrapers
 //
@@ -2936,232 +3064,9 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return { getStreams: getStreams };
 })();
 
-const HdHub4uSource = (function () {
-// hdhub4u - now relays an external, community-maintained Stremio addon
-// instead of scraping HDHub4u's own site directly. That scraper needed
-// repeated fixes as the site's own redirect/gateway chain kept changing
-// (see git history), so per instruction this stops maintaining a duplicate
-// of that work and instead merges this addon's own results into the
-// aggregate the same way every other provider here already does - nothing
-// else in lib/aggregate.js or manifest.json needs to change for that, since
-// this file still just exports the same getStreams(tmdbId, mediaType,
-// season, episode) shape as every other provider.
-//
-// The external addon expects a real IMDb id, not a TMDB id (confirmed live:
-// `tmdb:<id>` requests intermittently hung/failed, while `tt<id>` requests
-// resolved reliably in 1-2s) - converting TMDB -> IMDb is done inline here,
-// the same way castle.js/streamflix.js/etc already do it, rather than
-// importing lib/tmdb.js, so this file stays self-contained like every other
-// provider (some of which are also installed as standalone Nuvio plugins,
-// where cross-file requires aren't available at all).
-const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-const TMDB_BASE_URL = "https://api.themoviedb.org/3";
-const EXTERNAL_ADDON_BASE = "https://hdhub.thevolecitor.qzz.io/eyJ0b3Jib3giOiJ1bnNldCIsInF1YWxpdGllcyI6IjEwODBwLDcyMHAiLCJzb3J0IjoiZGVzYyIsImNhdGFsb2dzIjoiIn0";
+const HdHub4uSource = ExternalAddonFactory.createProvider({"name":"HDHub4u","addonBaseUrl":"https://hdhub.thevolecitor.qzz.io/eyJ0b3Jib3giOiJ1bnNldCIsInF1YWxpdGllcyI6IjEwODBwLDcyMHAiLCJzb3J0IjoiZGVzYyIsImNhdGFsb2dzIjoiIn0","namePrefix":"HDHub4u "});
 
-function getImdbId(tmdbId, mediaType) {
-  const endpoint = mediaType === "tv" ? "tv" : "movie";
-  const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}&append_to_response=external_ids`;
-  return fetch(url, { headers: { "Accept": "application/json" } })
-    .then((res) => {
-      if (!res.ok) throw new Error(`TMDB API error: ${res.status}`);
-      return res.json();
-    })
-    .then((data) => (data.external_ids && data.external_ids.imdb_id) || null);
-}
-
-function parseQuality(name) {
-  const m = (name || "").match(/(\d{3,4})p/i);
-  return m ? `${m[1]}p` : "Unknown";
-}
-
-function formatBytes(bytes) {
-  if (!bytes) return undefined;
-  const gb = bytes / 1024 ** 3;
-  if (gb >= 1) return `${gb.toFixed(2)} GB`;
-  return `${(bytes / 1024 ** 2).toFixed(0)} MB`;
-}
-
-// The addon's raw response mixes real streams in with promo entries
-// ("Donation needed", "Join the Discord server" - identifiable by having no
-// `url`, only an `externalUrl`) and, among the real ones, "HubCloud" gateway
-// links (hubcloud.cx/.ist/.dad) whose id token needs its own multi-hop
-// resolution before it's known whether it lands on a real file or - as
-// found repeatedly while building this repo's own HDHub4u scraper - a
-// non-seekable Google Drive link or even a dead Telegram-bot redirect.
-// Resolving that chain for a third-party addon we don't control isn't worth
-// reproducing here, so those are skipped; pixeldrain/R2/other already-direct
-// links pass through as-is.
-function isUsableStream(s) {
-  if (!s.url) return false;
-  try {
-    return !new URL(s.url).hostname.includes("hubcloud");
-  } catch (e) {
-    return false;
-  }
-}
-
-function getStreams(tmdbId, mediaType = "movie", season = null, episode = null) {
-  console.log(`[HDHub4u] Fetching streams (external addon) for TMDB: ${tmdbId}, Type: ${mediaType}`);
-  return getImdbId(tmdbId, mediaType).then((imdbId) => {
-    if (!imdbId) {
-      console.log("[HDHub4u] No IMDb id found for this TMDB id");
-      return [];
-    }
-    const type = mediaType === "tv" ? "series" : "movie";
-    if (type === "series" && (!season || !episode)) return [];
-    const id = type === "series" ? `${imdbId}:${season}:${episode}` : imdbId;
-
-    return fetch(`${EXTERNAL_ADDON_BASE}/stream/${type}/${id}.json`, { headers: { "User-Agent": "Mozilla/5.0" } })
-      .then((res) => {
-        if (!res.ok) throw new Error(`External addon HTTP ${res.status}`);
-        return res.json();
-      })
-      .then((data) => {
-        const raw = Array.isArray(data.streams) ? data.streams : [];
-        const seenUrls = new Set();
-        const streams = [];
-        for (const s of raw) {
-          if (!isUsableStream(s) || seenUrls.has(s.url)) continue;
-          seenUrls.add(s.url);
-          streams.push({
-            name: `HDHub4u ${(s.name || "").replace(/\n/g, " ").trim()}`.trim(),
-            title: (s.description || "").replace(/\n/g, " ").trim(),
-            url: s.url,
-            quality: parseQuality(s.name),
-            size: formatBytes(s.behaviorHints && s.behaviorHints.videoSize),
-            provider: "hdhub4u"
-          });
-        }
-        console.log(`[HDHub4u] Got ${streams.length} usable stream(s) from external addon`);
-        return streams;
-      });
-  }).catch((err) => {
-    console.error(`[HDHub4u] Error: ${err.message}`);
-    return [];
-  });
-}
-  return { getStreams: getStreams };
-})();
-
-const PenguPlaySource = (function () {
-// penguplay - relays the PenguPlay Stremio addon instead of scraping any
-// site directly. PenguPlay is itself a multi-source aggregator (4KHDHub,
-// MovieBox, VegaMovies, HDHub4u, VidLink, VidFast, 2Peckle and others,
-// selectable via its own config), so this merges its combined results into
-// this repo's aggregate the same way providers/hdhub4u.js relays its own
-// external addon - convert our TMDB id to the IMDb id it expects, call its
-// /stream endpoint, and map the results into this repo's normal stream
-// shape. Nothing else needs to change for that: this still just exports the
-// same getStreams(tmdbId, mediaType, season, episode) shape as every other
-// provider.
-//
-// disable_direct:true is added to the given auth_token's config - PenguPlay
-// documents this itself as "Hide non-seekable streams", and confirmed live:
-// without it, results include the same kind of unresolved HubCloud-style
-// gateway links this repo's own scrapers have repeatedly found to be
-// non-seekable Google Drive links or dead redirects; with it on, every
-// remaining stream tested (PixelDrain, 2Peckle's own CDN) properly returned
-// 206/Content-Range on a ranged request.
-const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-const TMDB_BASE_URL = "https://api.themoviedb.org/3";
-const AUTH_TOKEN = "CwgTS317M83kEQR4ErRaW_IOI0hJIU00Y91Umm97ZC0";
-const ADDON_BASE = "https://pengu.uk";
-
-function getConfigPath() {
-  const config = { auth_token: AUTH_TOKEN, disable_direct: true };
-  return encodeURIComponent(JSON.stringify(config));
-}
-
-function getImdbId(tmdbId, mediaType) {
-  const endpoint = mediaType === "tv" ? "tv" : "movie";
-  const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}&append_to_response=external_ids`;
-  return fetch(url, { headers: { "Accept": "application/json" } })
-    .then((res) => {
-      if (!res.ok) throw new Error(`TMDB API error: ${res.status}`);
-      return res.json();
-    })
-    .then((data) => (data.external_ids && data.external_ids.imdb_id) || null);
-}
-
-function parseQuality(name) {
-  const text = name || "";
-  if (/\b4k\b|2160/i.test(text)) return "4K";
-  const m = text.match(/(\d{3,4})p/i);
-  return m ? `${m[1]}p` : "Unknown";
-}
-
-function parseSize(description) {
-  // The description also carries a bitrate line ("~55.9 Mbps") - a plain
-  // /(GB|MB)/i match grabs "Mb" out of "Mbps" instead of the real "💾 47.24
-  // GB" size line that follows it, since both start with the same two
-  // letters. Requiring a word boundary after the unit rules that out: "Mbps"
-  // has no boundary between "b" and "p", so it no longer matches there.
-  const m = (description || "").match(/([\d.]+)\s*(GB|MB)\b/i);
-  return m ? `${m[1]} ${m[2].toUpperCase()}` : undefined;
-}
-
-// Backstop for whatever disable_direct doesn't catch - same reasoning as
-// providers/hdhub4u.js's isUsableStream: a HubCloud-style gateway link needs
-// its own multi-hop resolution before it's known whether it lands on a real
-// file or a non-seekable/dead one, which isn't worth reproducing here for a
-// third-party addon we don't control. lib/aggregate.js's own
-// googleusercontent.com filter still applies on top of this regardless.
-function isUsableStream(s) {
-  if (!s.url) return false;
-  try {
-    return !new URL(s.url).hostname.includes("hubcloud");
-  } catch (e) {
-    return false;
-  }
-}
-
-function getStreams(tmdbId, mediaType = "movie", season = null, episode = null) {
-  console.log(`[PenguPlay] Fetching streams for TMDB: ${tmdbId}, Type: ${mediaType}`);
-  return getImdbId(tmdbId, mediaType).then((imdbId) => {
-    if (!imdbId) {
-      console.log("[PenguPlay] No IMDb id found for this TMDB id");
-      return [];
-    }
-    const type = mediaType === "tv" ? "series" : "movie";
-    if (type === "series" && (!season || !episode)) return [];
-    const id = type === "series" ? `${imdbId}:${season}:${episode}` : imdbId;
-
-    return fetch(`${ADDON_BASE}/${getConfigPath()}/stream/${type}/${id}.json`, { headers: { "User-Agent": "Mozilla/5.0" } })
-      .then((res) => {
-        if (!res.ok) throw new Error(`PenguPlay HTTP ${res.status}`);
-        return res.json();
-      })
-      .then((data) => {
-        const raw = Array.isArray(data.streams) ? data.streams : [];
-        const seenUrls = new Set();
-        const streams = [];
-        for (const s of raw) {
-          if (!isUsableStream(s) || seenUrls.has(s.url)) continue;
-          seenUrls.add(s.url);
-          const name = (s.name || "").replace(/\n/g, " ").trim();
-          const description = (s.description || "").replace(/\n/g, " ").trim();
-          streams.push({
-            // The source name already carries its own "PenguPlay" branding
-            // (e.g. "🐧 PenguPlay ❄️ 4K • 2Peckle") - prefixing our own
-            // would just double it up.
-            name,
-            title: description,
-            url: s.url,
-            quality: parseQuality(name),
-            size: parseSize(description),
-            provider: "penguplay"
-          });
-        }
-        console.log(`[PenguPlay] Got ${streams.length} usable stream(s)`);
-        return streams;
-      });
-  }).catch((err) => {
-    console.error(`[PenguPlay] Error: ${err.message}`);
-    return [];
-  });
-}
-  return { getStreams: getStreams };
-})();
+const PenguPlaySource = ExternalAddonFactory.createProvider({"name":"PenguPlay","addonBaseUrl":"https://pengu.uk","configJson":{"auth_token":"CwgTS317M83kEQR4ErRaW_IOI0hJIU00Y91Umm97ZC0","disable_direct":true}});
 
 const MovieBlastSource = (function () {
 /**

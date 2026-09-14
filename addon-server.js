@@ -76,7 +76,15 @@ function buildManifest(profileId) {
         name: 'StrmProv',
         description: `Self-hosted multi-source streaming addon (profile ${profileId}) with a personalized "For You" catalog based on this profile's own watch history.`,
         logo: 'https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png',
-        resources: ['catalog', 'stream'],
+        // 'meta' is scoped to indycar: ids specifically, not declared
+        // broadly - normal movies/series use real "tt" ids, which Cinemeta
+        // (Nuvio's default metadata provider) already resolves fine. IndyCar
+        // videos use a custom id scheme Cinemeta has no way to recognize, so
+        // without this, opening one from the catalog got stuck: Nuvio's
+        // normal flow fetches an item's meta before its stream, nothing
+        // installed could answer that for an indycar: id, and it never
+        // reached /stream at all. Confirmed live as the actual cause.
+        resources: ['catalog', 'stream', { name: 'meta', types: ['movie'], idPrefixes: ['indycar:'] }],
         types: ['movie', 'series'],
         catalogs: [
             { type: 'movie', id: 'strmprov-foryou-movie', name: 'For You' },
@@ -249,19 +257,37 @@ function buildCatalog(profileId, type) {
     return regenerateCatalog(profileId, type, mediaType, aiSeeds, tmdbSeeds, watchedIds, cacheKey, seedFingerprint, baseProfile);
 }
 
-// IndyCar videos have no TMDB entry, no watch history, and no personalization
-// - this is a plain, static catalog, unlike "For You" above. `releaseInfo`
-// uses the video's own date (read from its URL, not its displayed text - see
-// providers/indycar.js for why) so the client can still show/sort by date.
-function buildIndycarCatalog(genre) {
-    return indycar.listVideos(genre || null).then((videos) => videos.map((v) => ({
+// Shared by the catalog and meta builders below - a Stremio Meta Object is
+// a superset of a catalog preview item, so one mapping covers both.
+function indycarVideoToMeta(v) {
+    return {
         id: v.id,
         type: 'movie',
         name: v.title,
         poster: v.poster,
         description: v.description,
         releaseInfo: v.timestamp ? new Date(v.timestamp).toISOString().substring(0, 10) : undefined
-    })));
+    };
+}
+
+// IndyCar videos have no TMDB entry, no watch history, and no personalization
+// - this is a plain, static catalog, unlike "For You" above. `releaseInfo`
+// uses the video's own date (read from its URL, not its displayed text - see
+// providers/indycar.js for why) so the client can still show/sort by date.
+function buildIndycarCatalog(genre) {
+    return indycar.listVideos(genre || null).then((videos) => videos.map(indycarVideoToMeta));
+}
+
+// Cinemeta (Nuvio's default metadata provider) only resolves real "tt" ids -
+// it has no way to answer a meta lookup for our own indycar: id scheme. This
+// is what closes that gap (see the manifest's scoped `meta` resource entry
+// above): re-lists videos (cheap after the first call - providers/indycar.js
+// caches the crawl for an hour) and returns the one whose id matches.
+function buildIndycarMeta(id) {
+    return indycar.listVideos(null).then((videos) => {
+        const video = videos.find((v) => v.id === id);
+        return video ? indycarVideoToMeta(video) : null;
+    });
 }
 
 // IndyCar's "Full Race Replay" videos resolve to a YouTube `ytId` instead of
@@ -393,6 +419,15 @@ const server = http.createServer((req, res) => {
             return buildIndycarCatalog(extra.get('genre')).then(metas => sendJson(res, 200, { metas }));
         }
         return sendJson(res, 200, { metas: [] });
+    }
+
+    if (resource === 'meta' && parts.length >= 5) {
+        const type = parts[3];
+        const id = decodeURIComponent(parts[4]).replace(/\.json$/, '');
+        if (id.startsWith('indycar:') && type === 'movie') {
+            return buildIndycarMeta(id).then(meta => sendJson(res, 200, { meta }));
+        }
+        return sendJson(res, 200, { meta: null });
     }
 
     if (resource === 'stream' && parts.length >= 5) {

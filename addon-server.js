@@ -92,14 +92,11 @@ function buildManifest(profileId) {
             {
                 type: 'movie',
                 id: 'indycar-videos',
-                name: 'IndyCar Videos',
-                // Not every Stremio-protocol client is guaranteed to render
-                // a genre-filter UI for a catalog's `extra` (this repo has
-                // hit exactly that kind of documented-vs-actual gap with
-                // Nuvio before) - so genre stays optional here, and leaving
-                // it unset returns every category merged, newest first, as
-                // the always-useful default rather than an empty catalog.
-                extra: [{ name: 'genre', options: indycar.CATEGORIES, isRequired: false }]
+                name: 'IndyCar Extended Highlights'
+                // By request: only "Extended Race Highlights" now, across
+                // every race, newest first - no genre filter needed since
+                // there's only the one category left. See
+                // buildIndycarCatalog below for the fixed filter.
             }
         ],
         idPrefixes: ['tt', 'indycar:'],
@@ -274,8 +271,10 @@ function indycarVideoToMeta(v) {
 // - this is a plain, static catalog, unlike "For You" above. `releaseInfo`
 // uses the video's own date (read from its URL, not its displayed text - see
 // providers/indycar.js for why) so the client can still show/sort by date.
-function buildIndycarCatalog(genre) {
-    return indycar.listVideos(genre || null).then((videos) => videos.map(indycarVideoToMeta));
+// By request: only "Extended Race Highlights", across every race - listVideos()
+// already returns newest-first (see providers/indycar.js's crawlAllVideos).
+function buildIndycarCatalog() {
+    return indycar.listVideos('Extended Race Highlights').then((videos) => videos.map(indycarVideoToMeta));
 }
 
 // Cinemeta (Nuvio's default metadata provider) only resolves real "tt" ids -
@@ -407,16 +406,12 @@ const server = http.createServer((req, res) => {
     if (resource === 'catalog' && parts.length >= 5) {
         const type = parts[3];
         const id = parts[4].replace(/\.json$/, '');
-        // Extra catalog params (genre, search, skip, ...) arrive as an extra
-        // path segment when present: /catalog/:type/:id/name=value.json
-        const extraRaw = parts.length >= 6 ? decodeURIComponent(parts[5].replace(/\.json$/, '')) : '';
-        const extra = new URLSearchParams(extraRaw);
 
         if (id === `strmprov-foryou-${type}` && (type === 'movie' || type === 'series')) {
             return buildCatalog(profileId, type).then(metas => sendJson(res, 200, { metas }));
         }
         if (id === 'indycar-videos' && type === 'movie') {
-            return buildIndycarCatalog(extra.get('genre')).then(metas => sendJson(res, 200, { metas }));
+            return buildIndycarCatalog().then(metas => sendJson(res, 200, { metas }));
         }
         return sendJson(res, 200, { metas: [] });
     }

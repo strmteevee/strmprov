@@ -147,6 +147,28 @@
   details.add-form summary { cursor: pointer; color: var(--accent); font-size: 13px; }
   details.add-form .grid-form { margin-top: 12px; }
   pre.output { background: #0c111c; border: 1px solid var(--panel-border); border-radius: 6px; padding: 10px; font-size: 12px; overflow-x: auto; max-height: 200px; }
+  .link-btn { background: none; border: none; color: var(--accent); padding: 0; font-size: 12px; cursor: pointer; text-decoration: underline; }
+  .modal-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.55);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 100;
+  }
+  .modal-backdrop[hidden] { display: none; }
+  .modal {
+    background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 10px; padding: 20px 22px;
+    width: min(520px, 90vw); max-height: 80vh;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .modal header { padding: 0; border: none; display: flex; align-items: center; justify-content: space-between; }
+  .modal header h3 { margin: 0; font-size: 15px; }
+  .modal header button { padding: 3px 9px; }
+  .modal-list { overflow-y: auto; }
+  .modal-list ol { margin: 0; padding-left: 20px; }
+  .modal-list li { padding: 4px 0; border-bottom: 1px solid var(--panel-border); }
+  .modal-list li:last-child { border-bottom: none; }
+  .modal-list li .when { color: var(--muted); font-size: 11px; margin-left: 6px; }
 </style>
 </head>
 <body>
@@ -221,6 +243,16 @@
 </main>
 
 <div class="toast" id="toast"></div>
+
+<div class="modal-backdrop" id="history-modal-backdrop" hidden onclick="if (event.target === this) closeHistoryModal()">
+  <div class="modal">
+    <header>
+      <h3 id="history-modal-title">Watch history</h3>
+      <button onclick="closeHistoryModal()">Close</button>
+    </header>
+    <div class="modal-list" id="history-modal-list"></div>
+  </div>
+</div>
 
 <script>
 let providersCache = [];
@@ -447,15 +479,14 @@ function renderProfiles(profiles) {
     const titles = p.titles || [];
     const shown = titles.slice(0, INLINE_TITLE_COUNT).map(escapeHtml).join(', ');
     const remaining = titles.length - INLINE_TITLE_COUNT;
-    const full = titles.map(escapeHtml).join('\n');
     const pid = escapeHtml(p.profileId);
     return `
     <tr>
       <td class="mono">${pid}</td>
-      <td title="${full}">
+      <td>
         ${titles.length ? shown : '<span class="muted">—</span>'}
         ${remaining > 0 ? `<span class="muted"> +${remaining} more</span>` : ''}
-        ${titles.length ? `<div class="muted" style="font-size:11px;">${p.historyCount} total</div>` : ''}
+        ${titles.length ? `<div><button class="link-btn" onclick="openHistoryModal('${pid}')">View all ${p.historyCount}</button></div>` : ''}
       </td>
       <td>
         <textarea data-base-profile="${pid}" rows="2" style="width:220px; resize:vertical;" placeholder="e.g. loves gritty sci-fi and slow-burn horror, not into rom-coms">${escapeHtml(p.baseProfile || '')}</textarea>
@@ -466,6 +497,37 @@ function renderProfiles(profiles) {
     </tr>`;
   }).join('');
 }
+
+window.openHistoryModal = function (id) {
+  const backdrop = document.getElementById('history-modal-backdrop');
+  const list = document.getElementById('history-modal-list');
+  document.getElementById('history-modal-title').textContent = `Profile ${id} - watch history`;
+  list.innerHTML = '<p class="muted">Loading…</p>';
+  backdrop.hidden = false;
+  api('GET', `/api/profiles/${encodeURIComponent(id)}/history`)
+    .then(data => {
+      const history = data.history || [];
+      if (history.length === 0) {
+        list.innerHTML = '<p class="muted">No watch history.</p>';
+        return;
+      }
+      list.innerHTML = '<ol>' + history.map(h => `
+        <li>
+          ${escapeHtml(h.title || 'Unknown')}${h.year ? ` (${escapeHtml(String(h.year))})` : ''}
+          <span class="muted">${h.mediaType === 'tv' ? 'series' : 'movie'}</span>
+          <span class="when">${h.watchedAt ? new Date(h.watchedAt).toLocaleString() : ''}</span>
+        </li>`).join('') + '</ol>';
+    })
+    .catch(e => { list.innerHTML = `<p class="muted">${escapeHtml(e.message)}</p>`; });
+};
+
+window.closeHistoryModal = function () {
+  document.getElementById('history-modal-backdrop').hidden = true;
+};
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeHistoryModal();
+});
 
 window.saveBaseProfile = function (id) {
   const el = document.querySelector(`[data-base-profile="${id}"]`);

@@ -128,9 +128,24 @@ function crawlAllVideos() {
 
 let cache = { videos: null, timestamp: 0 };
 
+// Stale-while-revalidate: crawling 18 race-weekend pages takes ~9-10s, which
+// was making the catalog itself feel slow to open every time the 1-hour
+// cache expired. Only the very first request after the server starts (when
+// there's no cache at all yet) still has to wait for that; every later
+// request - even once the cache has gone stale - gets the last-known list
+// back immediately, while a fresh crawl runs in the background for the NEXT
+// request. Same pattern addon-server.js's buildCatalog already uses for the
+// AI "For You" catalog.
 function getAllVideos() {
     const now = Date.now();
     if (cache.videos && now - cache.timestamp < CACHE_TTL_MS) {
+        return Promise.resolve(cache.videos);
+    }
+    if (cache.videos) {
+        crawlAllVideos().then((videos) => {
+            cache = { videos, timestamp: Date.now() };
+            console.log(`[IndyCar] Refreshed ${videos.length} highlight video(s) in the background`);
+        }).catch((err) => console.error(`[IndyCar] Background refresh failed: ${err.message}`));
         return Promise.resolve(cache.videos);
     }
     return crawlAllVideos().then((videos) => {

@@ -85,7 +85,11 @@ function dateFromPath(path) {
     return Date.UTC(Number(year), Number(month) - 1, Number(day));
 }
 
-function extractVideoCards(html) {
+// raceNumber is this video's originating race weekend's 1-indexed position
+// within its own season's schedule (see getRaceWeekendPathsForYear) - every
+// video card on that weekend's page shares the same one, since they're all
+// videos FROM that one race.
+function extractVideoCards(html, raceNumber) {
     const $ = cheerio.load(html);
     const videos = [];
     $('a.news-video-card').each((i, el) => {
@@ -101,6 +105,7 @@ function extractVideoCards(html) {
             path,
             title,
             category,
+            raceNumber,
             poster: imgSrc.startsWith('http') ? imgSrc : `${BASE_URL}${imgSrc}`,
             description: $(el).find('.news-video-card-teaser').text().trim(),
             timestamp: dateFromPath(path)
@@ -109,16 +114,59 @@ function extractVideoCards(html) {
     return videos;
 }
 
-function getRaceWeekendPaths() {
-    return fetchHtml('/Schedule').then((html) => {
+// Race weekends are discovered from the year-scoped schedule view
+// (indycar.com/Schedule?year=<Y>), not the bare /Schedule page - confirmed
+// live that the bare page silently defaults to whatever season is
+// current/upcoming (2026 as of writing) and never lists a prior season's
+// races at all, so every one of last season's race weekends - and all of
+// their videos - was invisible to this scraper no matter how well the rest
+// of the crawl worked. The last 2 calendar years covers the
+// currently-airing season plus the most recently completed one, by request.
+const SEASONS_TO_CRAWL = 2;
+
+// Returns [{ path, raceNumber }] for one season. raceNumber is NOT derived
+// from the schedule page's own link order - confirmed live that the raw
+// HTML lists event cards in some internal/carousel order that isn't
+// chronological at all (season-opener St. Petersburg showed up 4th in the
+// markup, not 1st). Every COMPLETED race's card instead embeds its real,
+// INDYCAR-assigned season race number in its winner-image filename -
+// confirmed live for both 2025 and 2026 - e.g.
+// ".../WinnerImages/IndyCar/2025/06-500-Palou.jpg" is race 6 of the 2025
+// season (the Indy 500). A race with no winner image yet (not yet run) has
+// no highlights video anyway, so a null raceNumber there never surfaces.
+function getRaceWeekendPathsForYear(year) {
+    return fetchHtmlWithRetries(`/Schedule?year=${year}`).then((html) => {
         const $ = cheerio.load(html);
-        const paths = new Set();
-        $('a').each((i, el) => {
+        const byPath = new Map();
+        $('a.event-card-link').each((i, el) => {
             const href = $(el).attr('href') || '';
             const m = href.match(/^\/Schedule\/(\d{4})\/([^/?#]+)/i);
-            if (m) paths.add(`/Schedule/${m[1]}/${m[2]}`);
+            if (!m) return;
+            const path = `/Schedule/${m[1]}/${m[2]}`;
+            if (byPath.has(path)) return;
+            const imgSrc = $(el).find('img').filter((j, img) => /WinnerImages\/IndyCar\//.test($(img).attr('src') || '')).first().attr('src') || '';
+            const numMatch = imgSrc.match(/WinnerImages\/IndyCar\/\d{4}\/(\d+)-/);
+            byPath.set(path, numMatch ? parseInt(numMatch[1], 10) : null);
         });
-        return Array.from(paths);
+        return Array.from(byPath, ([path, raceNumber]) => ({ path, raceNumber }));
+    }).catch((err) => {
+        console.error(`[IndyCar] Failed to fetch ${year} schedule after retries: ${err.message}`);
+        return [];
+    });
+}
+
+function getRaceWeekendPaths() {
+    const currentYear = new Date().getFullYear();
+    const years = Array.from({ length: SEASONS_TO_CRAWL }, (_, i) => currentYear - i);
+    return Promise.all(years.map(getRaceWeekendPathsForYear)).then((lists) => {
+        const seen = new Set();
+        const all = [];
+        for (const entry of lists.flat()) {
+            if (seen.has(entry.path)) continue;
+            seen.add(entry.path);
+            all.push(entry);
+        }
+        return all;
     });
 }
 
@@ -128,8 +176,8 @@ function getRaceWeekendPaths() {
 // getAllVideos below) - the crawl itself always resolves, using whatever
 // pages did succeed, rather than failing outright over a handful of bad ones.
 function crawlAllVideos() {
-    return getRaceWeekendPaths().then((paths) => Promise.all(paths.map((path) =>
-        fetchHtmlWithRetries(path).then(extractVideoCards).catch((err) => {
+    return getRaceWeekendPaths().then((entries) => Promise.all(entries.map(({ path, raceNumber }) =>
+        fetchHtmlWithRetries(path).then((html) => extractVideoCards(html, raceNumber)).catch((err) => {
             console.error(`[IndyCar] Failed to fetch ${path} after retries: ${err.message}`);
             return null;
         })

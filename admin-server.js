@@ -239,6 +239,65 @@ function handleSetBaseProfile(id, body, res) {
     sendJson(res, 200, { profileId: id, baseProfile: profileStore.getBaseProfile(id) });
 }
 
+// ---- API keys (.env) ----
+//
+// Every one of this server's optional API keys (GEMINI_API_KEY,
+// SUBDL_API_KEY, OPENSUBTITLES_API_KEY) lives in .env, which is gitignored
+// and never touched by a git pull/deploy - up to now the only way to set one
+// on a remote box (the Pi) was scp'ing the file over by hand. This lets the
+// admin UI read/write it directly instead, since admin-server.js already
+// runs on whichever machine actually needs the key.
+
+const ENV_PATH = path.join(ROOT_DIR, '.env');
+const MANAGED_ENV_KEYS = ['GEMINI_API_KEY', 'SUBDL_API_KEY', 'OPENSUBTITLES_API_KEY'];
+
+function readEnvFile() {
+    const values = {};
+    try {
+        const raw = fs.readFileSync(ENV_PATH, 'utf8');
+        for (const line of raw.split('\n')) {
+            const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
+            if (m) values[m[1]] = m[2];
+        }
+    } catch (e) { /* no .env file yet - every key just reads as unset */ }
+    return values;
+}
+
+// Rewrites the managed keys first (in a fixed order, so repeat saves don't
+// reshuffle the file), then anything else the file already had that this
+// panel doesn't know about - so a key set by hand for some other purpose
+// isn't silently dropped just because this UI never mentions it.
+function writeEnvFile(updates) {
+    const current = readEnvFile();
+    const merged = Object.assign({}, current, updates);
+    const lines = MANAGED_ENV_KEYS.map(key => `${key}=${merged[key] || ''}`);
+    for (const key of Object.keys(merged)) {
+        if (!MANAGED_ENV_KEYS.includes(key)) lines.push(`${key}=${merged[key]}`);
+    }
+    fs.writeFileSync(ENV_PATH, lines.join('\n') + '\n');
+    // Updates this already-running admin-server process's own env too, so
+    // its "configured" status (see the Subtitles panel) reflects a save
+    // immediately - addon-server.js is a separate process and still needs
+    // an actual restart to pick up a changed key for real subtitle/AI calls.
+    for (const key of MANAGED_ENV_KEYS) {
+        if (updates[key] !== undefined) process.env[key] = updates[key];
+    }
+}
+
+function handleGetEnvKeys(res) {
+    const current = readEnvFile();
+    sendJson(res, 200, { keys: MANAGED_ENV_KEYS.map(key => ({ key, value: current[key] || '' })) });
+}
+
+function handleSetEnvKeys(body, res) {
+    const updates = {};
+    for (const key of MANAGED_ENV_KEYS) {
+        if (typeof body[key] === 'string') updates[key] = body[key].trim();
+    }
+    writeEnvFile(updates);
+    handleGetEnvKeys(res);
+}
+
 // ---- Subtitles ----
 
 function writeSubtitlesConfig(config) {
@@ -349,6 +408,13 @@ const server = http.createServer((req, res) => {
     // /api/profiles/:id/base
     if (parts[0] === 'api' && parts[1] === 'profiles' && parts.length === 4 && parts[3] === 'base' && req.method === 'POST') {
         return readBody(req).then(body => handleSetBaseProfile(decodeURIComponent(parts[2]), body, res)).catch(e => sendJson(res, 400, { error: e.message }));
+    }
+    // /api/env
+    if (parts[0] === 'api' && parts[1] === 'env' && req.method === 'GET') {
+        return handleGetEnvKeys(res);
+    }
+    if (parts[0] === 'api' && parts[1] === 'env' && req.method === 'POST') {
+        return readBody(req).then(body => handleSetEnvKeys(body, res)).catch(e => sendJson(res, 400, { error: e.message }));
     }
     // /api/subtitles-config
     if (parts[0] === 'api' && parts[1] === 'subtitles-config' && req.method === 'GET') {

@@ -175,10 +175,19 @@
 
 <header>
   <h1>strmprov admin</h1>
-  <span>providers · ranking · profiles · subtitles · live test</span>
+  <span>api keys · providers · ranking · profiles · subtitles · live test</span>
 </header>
 
 <main>
+
+  <section class="panel" id="env-panel">
+    <h2>API keys</h2>
+    <p class="desc">Stored in this server's own <span class="mono">.env</span> file - saving here writes it directly, so there's no more copying the file over by hand on a remote box. Each key is optional; leave one blank to disable whatever depends on it. <strong>Restart addon-server.js (and this admin server) after saving</strong> for a changed key to actually take effect - each only reads <span class="mono">.env</span> once, at startup.</p>
+    <div id="env-body" class="grid-form" style="max-width:640px;"></div>
+    <div class="row" style="margin-top:14px;">
+      <button class="primary" id="env-save">Save API keys</button>
+    </div>
+  </section>
 
   <section class="panel" id="providers-panel">
     <h2>Providers</h2>
@@ -289,6 +298,33 @@ function api(method, url, body) {
     return data;
   });
 }
+
+// ---- API keys ----
+
+const ENV_KEY_LABELS = {
+  GEMINI_API_KEY: 'Gemini (AI recommendations)',
+  SUBDL_API_KEY: 'SubDL (subtitles)',
+  OPENSUBTITLES_API_KEY: 'OpenSubtitles (subtitles)'
+};
+
+function renderEnvKeys(keys) {
+  document.getElementById('env-body').innerHTML = keys.map(({ key, value }) => `
+    <label for="env-${key}">${escapeHtml(ENV_KEY_LABELS[key] || key)}</label>
+    <input type="text" class="mono" id="env-${key}" data-env-key="${key}" value="${escapeHtml(value)}" placeholder="not set" />
+  `).join('');
+}
+
+function loadEnvKeys() {
+  return api('GET', '/api/env').then(data => renderEnvKeys(data.keys));
+}
+
+document.getElementById('env-save').addEventListener('click', () => {
+  const body = {};
+  document.querySelectorAll('#env-body [data-env-key]').forEach(el => { body[el.dataset.envKey] = el.value; });
+  api('POST', '/api/env', body)
+    .then(() => { toast('API keys saved - restart the servers to apply', 'ok'); loadSubtitlesConfig(); })
+    .catch(e => toast(e.message, 'error'));
+});
 
 // ---- Providers ----
 
@@ -630,7 +666,7 @@ function escapeHtml(str) {
   return String(str == null ? '' : str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-Promise.all([loadProviders(), loadRanking(), loadProfiles(), loadSubtitlesConfig()]).catch(e => toast(e.message, 'error'));
+Promise.all([loadEnvKeys(), loadProviders(), loadRanking(), loadProfiles(), loadSubtitlesConfig()]).catch(e => toast(e.message, 'error'));
 </script>
 
 </body>

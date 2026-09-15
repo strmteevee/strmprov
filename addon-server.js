@@ -41,6 +41,7 @@ const profileStore = require('./lib/profileStore');
 const gemini = require('./lib/gemini');
 const subtitles = require('./lib/subtitles');
 const indycar = require('./providers/indycar');
+const f1 = require('./providers/f1');
 
 const PORT = 3100;
 const CATALOG_SEED_COUNT = 10;
@@ -77,21 +78,22 @@ function buildManifest(profileId) {
         name: 'StrmProv',
         description: `Self-hosted multi-source streaming addon (profile ${profileId}) with a personalized "For You" catalog based on this profile's own watch history.`,
         logo: 'https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png',
-        // 'meta' is scoped to indycar: ids specifically, not declared
+        // 'meta' is scoped to indycar:/f1: ids specifically, not declared
         // broadly - normal movies/series use real "tt" ids, which Cinemeta
         // (Nuvio's default metadata provider) already resolves fine. IndyCar
-        // videos use a custom id scheme Cinemeta has no way to recognize, so
-        // without this, opening one from the catalog got stuck: Nuvio's
-        // normal flow fetches an item's meta before its stream, nothing
-        // installed could answer that for an indycar: id, and it never
-        // reached /stream at all. Confirmed live as the actual cause.
+        // and F1/F2/F3/Academy videos use custom id schemes Cinemeta has no
+        // way to recognize, so without this, opening one from the catalog
+        // got stuck: Nuvio's normal flow fetches an item's meta before its
+        // stream, nothing installed could answer that for those ids, and it
+        // never reached /stream at all. Confirmed live as the actual cause
+        // (for indycar: originally, and the same fix reused for f1:).
         resources: [
             'catalog', 'stream',
-            { name: 'meta', types: ['movie'], idPrefixes: ['indycar:'] },
-            // Scoped to real tt-id content only - IndyCar's own custom id
-            // scheme has no subtitle concept, and Cinemeta already handles
-            // meta for those ids, so there's nothing for this resource to
-            // add there.
+            { name: 'meta', types: ['movie'], idPrefixes: ['indycar:', 'f1:'] },
+            // Scoped to real tt-id content only - neither IndyCar's nor
+            // F1/F2/F3/Academy's own custom id schemes have a subtitle
+            // concept, and Cinemeta already handles meta for those ids, so
+            // there's nothing for this resource to add there.
             { name: 'subtitles', types: ['movie', 'series'], idPrefixes: ['tt'] }
         ],
         types: ['movie', 'series'],
@@ -106,9 +108,16 @@ function buildManifest(profileId) {
                 // every race, newest first - no genre filter needed since
                 // there's only the one category left. See
                 // buildIndycarCatalog below for the fixed filter.
-            }
+            },
+            // Separate catalogs per series, by request - each backed by the
+            // same providers/f1.js crawl, filtered to that one series (see
+            // buildF1Catalog below).
+            { type: 'movie', id: 'f1-highlights', name: 'F1 Race Highlights' },
+            { type: 'movie', id: 'f2-highlights', name: 'F2 Race Highlights' },
+            { type: 'movie', id: 'f3-highlights', name: 'F3 Race Highlights' },
+            { type: 'movie', id: 'f1academy-highlights', name: 'F1 Academy Highlights' }
         ],
-        idPrefixes: ['tt', 'indycar:'],
+        idPrefixes: ['tt', 'indycar:', 'f1:'],
         behaviorHints: { configurable: false, configurationRequired: false }
     };
 }
@@ -269,7 +278,12 @@ function indycarVideoToMeta(v) {
     return {
         id: v.id,
         type: 'movie',
-        name: v.title,
+        // v.raceNumber is that race's 1-indexed position in its own
+        // season's schedule (see providers/indycar.js) - shown here so the
+        // catalog/hero title reads e.g. "Race 5: Extended Race
+        // Highlights: ...", making it clear where a race falls in the
+        // season without having to open it first.
+        name: v.raceNumber ? `Race ${v.raceNumber}: ${v.title}` : v.title,
         poster: v.poster,
         description: v.description,
         releaseInfo: v.timestamp ? new Date(v.timestamp).toISOString().substring(0, 10) : undefined
@@ -313,6 +327,46 @@ function buildIndycarStreamResponse(id) {
         })
     })).catch((err) => {
         console.error(`[addon-server] IndyCar stream error for ${id}: ${err.message}`);
+        return { streams: [] };
+    });
+}
+
+// Shared by the catalog and meta builders below, same shape as
+// indycarVideoToMeta - a Stremio Meta Object is a superset of a catalog
+// preview item.
+function f1VideoToMeta(v) {
+    return {
+        id: v.id,
+        type: 'movie',
+        name: v.title,
+        poster: v.poster,
+        description: v.description,
+        releaseInfo: v.timestamp ? new Date(v.timestamp).toISOString().substring(0, 10) : undefined
+    };
+}
+
+// series: 'f1' | 'f2' | 'f3' | 'academy' - one separate catalog each, by
+// request. providers/f1.js's listVideos() already returns newest-first.
+function buildF1Catalog(series) {
+    return f1.listVideos(series).then((videos) => videos.map(f1VideoToMeta));
+}
+
+// Same reasoning as buildIndycarMeta above - Cinemeta has no way to resolve
+// our own f1: id scheme, so this closes that gap for the manifest's scoped
+// `meta` resource entry.
+function buildF1Meta(id) {
+    return f1.listVideos(null).then((videos) => {
+        const video = videos.find((v) => v.id === id);
+        return video ? f1VideoToMeta(video) : null;
+    });
+}
+
+function buildF1StreamResponse(id) {
+    const videoId = id.slice('f1:'.length);
+    return f1.getVideoStreams(videoId).then((streams) => ({
+        streams: streams.map((s) => ({ name: s.name || 'F1', title: s.quality || '', url: s.url }))
+    })).catch((err) => {
+        console.error(`[addon-server] F1 stream error for ${id}: ${err.message}`);
         return { streams: [] };
     });
 }
@@ -484,6 +538,10 @@ const server = http.createServer((req, res) => {
         if (id === 'indycar-videos' && type === 'movie') {
             return buildIndycarCatalog().then(metas => sendJson(res, 200, { metas }));
         }
+        const f1CatalogSeries = { 'f1-highlights': 'f1', 'f2-highlights': 'f2', 'f3-highlights': 'f3', 'f1academy-highlights': 'academy' }[id];
+        if (f1CatalogSeries && type === 'movie') {
+            return buildF1Catalog(f1CatalogSeries).then(metas => sendJson(res, 200, { metas }));
+        }
         return sendJson(res, 200, { metas: [] });
     }
 
@@ -492,6 +550,9 @@ const server = http.createServer((req, res) => {
         const id = decodeURIComponent(parts[4]).replace(/\.json$/, '');
         if (id.startsWith('indycar:') && type === 'movie') {
             return buildIndycarMeta(id).then(meta => sendJson(res, 200, { meta }));
+        }
+        if (id.startsWith('f1:') && type === 'movie') {
+            return buildF1Meta(id).then(meta => sendJson(res, 200, { meta }));
         }
         return sendJson(res, 200, { meta: null });
     }
@@ -512,6 +573,9 @@ const server = http.createServer((req, res) => {
         const id = idWithExt.replace(/\.json$/, '');
         if (id.startsWith('indycar:')) {
             return buildIndycarStreamResponse(id).then(body => sendJson(res, 200, body));
+        }
+        if (id.startsWith('f1:')) {
+            return buildF1StreamResponse(id).then(body => sendJson(res, 200, body));
         }
         if (type !== 'movie' && type !== 'series') {
             return sendJson(res, 200, { streams: [] });

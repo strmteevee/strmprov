@@ -36,9 +36,22 @@ const CACHE_TTL_MS = 1000 * 60 * 60;
 // "race highlights" as a literal substring ("Extended RACE HIGHLIGHTS: ..."),
 // so it must be matched before the plain "Race Highlights" category or every
 // extended-highlights video would also get bucketed as a regular one.
+//
+// The site also publishes "Extended Highlights" (no "Race") for practice and
+// qualifying sessions - e.g. "Extended Highlights: 2025 Indianapolis 500 -
+// Practice Day 7" or "... Fast Friday Practice" - which the bare
+// "extended highlights" substring check used to also catch, flooding the
+// catalog with non-race sessions (confirmed live: 8 extra practice-day
+// entries for a single Indy 500 weekend alone). Excluding anything
+// mentioning "practice" or "qualifying" keeps this to actual race highlights
+// only, by request.
 const CATEGORY_MATCHERS = [
     { name: 'Qualifying Highlights', test: (t) => t.includes('qualifying highlights') },
-    { name: 'Extended Race Highlights', test: (t) => t.includes('extended race highlights') || t.includes('extended highlights') },
+    {
+        name: 'Extended Race Highlights',
+        test: (t) => (t.includes('extended race highlights') || t.includes('extended highlights'))
+            && !t.includes('practice') && !t.includes('qualifying')
+    },
     { name: 'Full Race Replay', test: (t) => t.includes('full race') },
     { name: 'Race Highlights', test: (t) => t.includes('race highlights') }
 ];
@@ -74,12 +87,20 @@ function fetchHtmlWithRetries(path, attemptsLeft = 2) {
     });
 }
 
-// Every video path is /videos/<year>/<month>/<DD>-<slug...> - reading the
-// date straight from the URL is far more reliable than the page's own
-// displayed date, which (confirmed live) is sometimes relative ("2 DAYS
-// AGO") and sometimes absolute ("JUN 14, 2026") on the very same page.
+// Every video path is /videos/<year>/<month>/<month-again>-<DD>-<slug...> -
+// confirmed live the month is duplicated right before the real day (e.g.
+// ".../2026/08/08-09-extended-race-highlights-...-portland" is August 9, not
+// August 8). Reading the second number as the day is what actually matches
+// the real race dates; capturing the first (redundant) one instead collapsed
+// every race in a month down to one identical date, leaving same-month races
+// in whatever arbitrary order the schedule page's own markup happened to
+// list them rather than true chronological order - confirmed live as the
+// cause of races showing up out of order. Reading the date from the URL at
+// all (rather than the page's own displayed date) is still worthwhile: that
+// display text is sometimes relative ("2 DAYS AGO") and sometimes absolute
+// ("JUN 14, 2026") on the very same page.
 function dateFromPath(path) {
-    const m = path.match(/^\/videos\/(\d{4})\/(\d{2})\/(\d{2})-/);
+    const m = path.match(/^\/videos\/(\d{4})\/(\d{2})\/\d{2}-(\d{2})-/);
     if (!m) return null;
     const [, year, month, day] = m;
     return Date.UTC(Number(year), Number(month) - 1, Number(day));

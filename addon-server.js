@@ -383,7 +383,7 @@ function mergeSubtitles(embedded, extra) {
         const key = `${(s.lang || '').toLowerCase()}|${s.url}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        merged.push({ url: s.url, lang: s.lang });
+        merged.push({ url: s.url, lang: s.lang, language: s.lang, name: s.name });
     }
     return merged;
 }
@@ -440,14 +440,30 @@ function buildStreamResponse(profileId, type, rawId) {
                     // extract subtitle tracks tied to this exact stream's own
                     // file - a better match than a generic lookup, since it's
                     // guaranteed to be the subtitle that ships with this
-                    // specific release. Stremio's protocol names the field
-                    // `lang`, but every provider except kickassanime.js calls
-                    // it `language`.
+                    // specific release. Every provider except kickassanime.js
+                    // calls the language field `language` rather than `lang`.
+                    // Nuvio itself (see DOCUMENTATION.md's "Subtitle Support")
+                    // shows a subtitle's own `name` field as its selector
+                    // label, not `lang`/`language` - confirmed live that
+                    // omitting `name` made every subtitle show up with the
+                    // same generic fallback label instead of its actual
+                    // language, so it's set here too. Providers vary in
+                    // whether their own `lang`/`language` value is a short
+                    // code ("en") or already a full word ("English") -
+                    // lib/subtitles.js's languageName() only recognizes short
+                    // codes, so a longer value is assumed already-readable
+                    // and just capitalized instead.
                     let embedded = [];
                     if (Array.isArray(s.subtitles) && s.subtitles.length) {
                         embedded = s.subtitles
                             .filter(sub => sub && sub.url)
-                            .map(sub => ({ url: sub.url, lang: sub.lang || sub.language || 'unknown' }));
+                            .map(sub => {
+                                const lang = sub.lang || sub.language || 'unknown';
+                                const name = lang.length <= 3
+                                    ? subtitles.languageName(lang)
+                                    : lang.charAt(0).toUpperCase() + lang.slice(1);
+                                return { url: sub.url, lang, language: lang, name };
+                            });
                     }
                     const combined = s === preferred ? mergeSubtitles(embedded, extraSubs) : embedded;
                     if (combined.length) stream.subtitles = combined;
@@ -478,7 +494,7 @@ function buildSubtitlesResponse(type, rawId) {
     }
 
     return subtitles.getSubtitles({ imdbId, mediaType, season, episode })
-        .then(subs => ({ subtitles: subs.map(s => ({ url: s.url, lang: s.lang })) }))
+        .then(subs => ({ subtitles: subs.map(s => ({ url: s.url, lang: s.lang, language: s.lang, name: s.name })) }))
         .catch(err => {
             console.error(`[addon-server] subtitles error for ${imdbId}: ${err.message}`);
             return { subtitles: [] };

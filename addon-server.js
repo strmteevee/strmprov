@@ -74,7 +74,11 @@ function sendJson(res, status, body) {
 function buildManifest(profileId) {
     return {
         id: `com.strmprov.addon.profile${profileId}`,
-        version: '1.0.0',
+        // Bumped whenever the manifest's own shape changes (new catalogs,
+        // resources, etc.) - some Stremio-protocol clients key their cached
+        // manifest/catalog data on this and won't notice new catalogs on an
+        // existing install (even after a reinstall) unless it changes.
+        version: '1.1.0',
         name: 'StrmProv',
         description: `Self-hosted multi-source streaming addon (profile ${profileId}) with a personalized "For You" catalog based on this profile's own watch history.`,
         logo: 'https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png',

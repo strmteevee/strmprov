@@ -256,7 +256,12 @@ function getVideoStreams(videoId) {
     }).then((data) => {
         const sources = Array.isArray(data.sources) ? data.sources : [];
         return sources
-            .filter((s) => s.src)
+            // Brightcove lists an http:// and an https:// copy of every
+            // rendition - confirmed live these are otherwise identical, and
+            // https is the safer choice (some Android/ExoPlayer setups block
+            // plain-http "cleartext" playback outright), so the http:// copy
+            // is dropped rather than shown as a separate, redundant option.
+            .filter((s) => s.src && s.src.startsWith('https://'))
             .map((s) => {
                 if (s.type === 'application/x-mpegURL') {
                     return { name: 'F1', quality: 'Auto (HLS)', url: s.src };

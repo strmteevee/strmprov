@@ -320,11 +320,30 @@ function buildIndycarMeta(id) {
 // a direct `url` (see providers/indycar.js's getVideoStreams for why) - the
 // Stremio stream protocol supports both shapes, so this just passes through
 // whichever one a given video actually produced.
+// The one "Auto (HLS)" rendition JW Player offers adapts to the viewer's
+// real bandwidth mid-playback, unlike the other, fixed-resolution
+// renditions offered alongside it - marking it [PREFERRED] steers Nuvio to
+// default to it, matching the convention lib/aggregate.js already uses for
+// regular movie/series streams.
+function withPreferredHls(streams, fallbackName) {
+    // Only the first HLS match gets tagged - F1's Brightcove response lists
+    // both an http:// and an https:// copy of the same "Auto (HLS)" manifest
+    // as separate entries, and tagging both would put two [PREFERRED]
+    // streams in the same list instead of the usual convention of exactly one.
+    let tagged = false;
+    return streams.map((s) => {
+        const isPreferred = !tagged && s.quality === 'Auto (HLS)';
+        if (isPreferred) tagged = true;
+        const name = s.name || fallbackName;
+        return Object.assign({}, s, { name: isPreferred ? `[PREFERRED] ${name}` : name });
+    });
+}
+
 function buildIndycarStreamResponse(id) {
     const videoPath = `/videos/${id.slice('indycar:'.length)}`;
     return indycar.getVideoStreams(videoPath).then((streams) => ({
-        streams: streams.map((s) => {
-            const stream = { name: s.name || 'IndyCar', title: s.quality || '' };
+        streams: withPreferredHls(streams, 'IndyCar').map((s) => {
+            const stream = { name: s.name, title: s.quality || '' };
             if (s.ytId) stream.ytId = s.ytId;
             else stream.url = s.url;
             return stream;
@@ -368,7 +387,7 @@ function buildF1Meta(id) {
 function buildF1StreamResponse(id) {
     const videoId = id.slice('f1:'.length);
     return f1.getVideoStreams(videoId).then((streams) => ({
-        streams: streams.map((s) => ({ name: s.name || 'F1', title: s.quality || '', url: s.url }))
+        streams: withPreferredHls(streams, 'F1').map((s) => ({ name: s.name, title: s.quality || '', url: s.url }))
     })).catch((err) => {
         console.error(`[addon-server] F1 stream error for ${id}: ${err.message}`);
         return { streams: [] };

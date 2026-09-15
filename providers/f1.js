@@ -192,6 +192,14 @@ function isTrustworthy(failedPages, pagesFetched) {
 }
 
 let cache = { videos: null, timestamp: 0 };
+// Shares one in-flight cold-start crawl across every caller that arrives
+// before it finishes, instead of each starting its own separate crawl -
+// confirmed live this actually happens: addon-server.js now warms this
+// cache at startup (see its server.listen callback), and a real request
+// from Nuvio can easily land while that warm-up crawl is still running.
+// Without this, that request would kick off a second, fully redundant
+// ~12-second crawl of its own rather than just waiting on the first one.
+let inFlightColdStart = null;
 
 // Stale-while-revalidate, identical policy to providers/indycar.js's
 // getAllVideos: a fresh crawl still means a couple dozen real HTTP requests
@@ -214,17 +222,22 @@ function getAllVideos() {
         }).catch((err) => console.error(`[F1] Background refresh failed: ${err.message}`));
         return Promise.resolve(cache.videos);
     }
-    return crawlHighlights().then(({ videos, failedPages, pagesFetched }) => {
-        if (failedPages > 0) {
-            console.warn(`[F1] Initial crawl was incomplete (${failedPages}/${pagesFetched} pages failed) - caching what was found anyway since there's no earlier result to fall back on`);
-        }
-        cache = { videos, timestamp: now };
-        console.log(`[F1] Crawled ${videos.length} highlight video(s) across ${pagesFetched} page(s)`);
-        return videos;
-    }).catch((err) => {
-        console.error(`[F1] Crawl failed: ${err.message}`);
-        return cache.videos || [];
-    });
+    if (!inFlightColdStart) {
+        inFlightColdStart = crawlHighlights().then(({ videos, failedPages, pagesFetched }) => {
+            inFlightColdStart = null;
+            if (failedPages > 0) {
+                console.warn(`[F1] Initial crawl was incomplete (${failedPages}/${pagesFetched} pages failed) - caching what was found anyway since there's no earlier result to fall back on`);
+            }
+            cache = { videos, timestamp: now };
+            console.log(`[F1] Crawled ${videos.length} highlight video(s) across ${pagesFetched} page(s)`);
+            return videos;
+        }).catch((err) => {
+            inFlightColdStart = null;
+            console.error(`[F1] Crawl failed: ${err.message}`);
+            return cache.videos || [];
+        });
+    }
+    return inFlightColdStart;
 }
 
 // series: one of SERIES, or falsy to return every series merged (still

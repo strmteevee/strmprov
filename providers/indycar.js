@@ -220,6 +220,12 @@ function crawlAllVideos() {
 }
 
 let cache = { videos: null, timestamp: 0 };
+// Shares one in-flight cold-start crawl across every caller that arrives
+// before it finishes, instead of each starting its own separate crawl - see
+// providers/f1.js's identical inFlightColdStart for why this matters:
+// addon-server.js warms this cache at startup, and a real request from
+// Nuvio can land while that warm-up crawl is still running.
+let inFlightColdStart = null;
 
 // Stale-while-revalidate: crawling 18 race-weekend pages takes ~9-10s, which
 // was making the catalog itself feel slow to open every time the 1-hour
@@ -257,17 +263,22 @@ function getAllVideos() {
         }).catch((err) => console.error(`[IndyCar] Background refresh failed: ${err.message}`));
         return Promise.resolve(cache.videos);
     }
-    return crawlAllVideos().then(({ videos, failedCount, totalPages }) => {
-        if (failedCount > 0) {
-            console.warn(`[IndyCar] Initial crawl was incomplete (${failedCount}/${totalPages} pages failed) - caching what was found anyway since there's no earlier result to fall back on`);
-        }
-        cache = { videos, timestamp: now };
-        console.log(`[IndyCar] Crawled ${videos.length} highlight video(s)`);
-        return videos;
-    }).catch((err) => {
-        console.error(`[IndyCar] Crawl failed: ${err.message}`);
-        return cache.videos || [];
-    });
+    if (!inFlightColdStart) {
+        inFlightColdStart = crawlAllVideos().then(({ videos, failedCount, totalPages }) => {
+            inFlightColdStart = null;
+            if (failedCount > 0) {
+                console.warn(`[IndyCar] Initial crawl was incomplete (${failedCount}/${totalPages} pages failed) - caching what was found anyway since there's no earlier result to fall back on`);
+            }
+            cache = { videos, timestamp: now };
+            console.log(`[IndyCar] Crawled ${videos.length} highlight video(s)`);
+            return videos;
+        }).catch((err) => {
+            inFlightColdStart = null;
+            console.error(`[IndyCar] Crawl failed: ${err.message}`);
+            return cache.videos || [];
+        });
+    }
+    return inFlightColdStart;
 }
 
 // category: one of CATEGORIES, or falsy to return every category merged

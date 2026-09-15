@@ -613,4 +613,18 @@ server.listen(PORT, () => {
     [1, 2, 3, 4].forEach(n => console.log(`  http://${ip}:${PORT}/profile/${n}/manifest.json`));
     console.log('\nEach profile builds its own "For You" catalog from its own watch history once it has streamed a few titles.');
     console.log('Press Ctrl+C to stop\n');
+
+    // Both crawls' own stale-while-revalidate cache only blocks a request on
+    // a true cold start - the very first crawl after this process boots -
+    // and that first crawl takes several to a dozen-plus seconds even
+    // fetched concurrently. Confirmed live this was long enough that Nuvio's
+    // own catalog-fetch timeout gave up before it finished, so the F1
+    // catalogs existed and worked (a patient curl got a real answer) but
+    // never actually appeared in the app. Kicking both crawls off here,
+    // right at startup, means that cold start happens during server boot
+    // instead of during a real user's first request - by the time Nuvio
+    // gets around to asking for either catalog, the cache is normally
+    // already warm.
+    indycar.listVideos(null).catch((err) => console.error(`[addon-server] IndyCar cache warm-up failed: ${err.message}`));
+    f1.listVideos(null).catch((err) => console.error(`[addon-server] F1 cache warm-up failed: ${err.message}`));
 });

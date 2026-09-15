@@ -12,6 +12,8 @@
 // No authentication - meant for LAN-only use, same trust model as the other
 // two servers here.
 
+try { process.loadEnvFile('.env'); } catch (e) { /* no .env file - fine, subtitle keys are optional */ }
+
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -21,6 +23,7 @@ const { execFile } = require('child_process');
 
 const aggregate = require('./lib/aggregate');
 const profileStore = require('./lib/profileStore');
+const subtitles = require('./lib/subtitles');
 
 const PORT = 3200;
 const ROOT_DIR = __dirname;
@@ -236,6 +239,27 @@ function handleSetBaseProfile(id, body, res) {
     sendJson(res, 200, { profileId: id, baseProfile: profileStore.getBaseProfile(id) });
 }
 
+// ---- Subtitles ----
+
+function writeSubtitlesConfig(config) {
+    fs.mkdirSync(path.dirname(subtitles.SUBTITLES_CONFIG_PATH), { recursive: true });
+    fs.writeFileSync(subtitles.SUBTITLES_CONFIG_PATH, JSON.stringify(config, null, 2));
+}
+
+function handleGetSubtitlesConfig(res) {
+    sendJson(res, 200, Object.assign({}, subtitles.readSubtitlesConfig(), {
+        subDlConfigured: subtitles.isSubDlConfigured(),
+        openSubtitlesConfigured: subtitles.isOpenSubtitlesConfigured()
+    }));
+}
+
+function handleSetSubtitlesConfig(body, res) {
+    const firstLanguage = typeof body.firstLanguage === 'string' ? body.firstLanguage : '';
+    const secondLanguage = typeof body.secondLanguage === 'string' ? body.secondLanguage : '';
+    writeSubtitlesConfig({ firstLanguage, secondLanguage });
+    handleGetSubtitlesConfig(res);
+}
+
 // ---- Live test ----
 
 function handleTest(body, res) {
@@ -325,6 +349,13 @@ const server = http.createServer((req, res) => {
     // /api/profiles/:id/base
     if (parts[0] === 'api' && parts[1] === 'profiles' && parts.length === 4 && parts[3] === 'base' && req.method === 'POST') {
         return readBody(req).then(body => handleSetBaseProfile(decodeURIComponent(parts[2]), body, res)).catch(e => sendJson(res, 400, { error: e.message }));
+    }
+    // /api/subtitles-config
+    if (parts[0] === 'api' && parts[1] === 'subtitles-config' && req.method === 'GET') {
+        return handleGetSubtitlesConfig(res);
+    }
+    if (parts[0] === 'api' && parts[1] === 'subtitles-config' && req.method === 'POST') {
+        return readBody(req).then(body => handleSetSubtitlesConfig(body, res)).catch(e => sendJson(res, 400, { error: e.message }));
     }
     // /api/test
     if (parts[0] === 'api' && parts[1] === 'test' && req.method === 'POST') {

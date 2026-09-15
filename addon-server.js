@@ -39,6 +39,7 @@ const aggregate = require('./lib/aggregate');
 const tmdb = require('./lib/tmdb');
 const profileStore = require('./lib/profileStore');
 const gemini = require('./lib/gemini');
+const subtitles = require('./lib/subtitles');
 const indycar = require('./providers/indycar');
 
 const PORT = 3100;
@@ -84,7 +85,15 @@ function buildManifest(profileId) {
         // normal flow fetches an item's meta before its stream, nothing
         // installed could answer that for an indycar: id, and it never
         // reached /stream at all. Confirmed live as the actual cause.
-        resources: ['catalog', 'stream', { name: 'meta', types: ['movie'], idPrefixes: ['indycar:'] }],
+        resources: [
+            'catalog', 'stream',
+            { name: 'meta', types: ['movie'], idPrefixes: ['indycar:'] },
+            // Scoped to real tt-id content only - IndyCar's own custom id
+            // scheme has no subtitle concept, and Cinemeta already handles
+            // meta for those ids, so there's nothing for this resource to
+            // add there.
+            { name: 'subtitles', types: ['movie', 'series'], idPrefixes: ['tt'] }
+        ],
         types: ['movie', 'series'],
         catalogs: [
             { type: 'movie', id: 'strmprov-foryou-movie', name: 'For You' },
@@ -308,6 +317,23 @@ function buildIndycarStreamResponse(id) {
     });
 }
 
+// Merges the provider-embedded subtitles a stream already carries with the
+// (possibly hash-matched) results from lib/subtitles.js, deduping by
+// (lang, url) - the embedded ones are guaranteed to ship with this exact
+// release, so they're kept even when a broader-language extra result exists
+// for the same language.
+function mergeSubtitles(embedded, extra) {
+    const merged = embedded.slice();
+    const seen = new Set(merged.map(s => `${(s.lang || '').toLowerCase()}|${s.url}`));
+    for (const s of extra) {
+        const key = `${(s.lang || '').toLowerCase()}|${s.url}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push({ url: s.url, lang: s.lang });
+    }
+    return merged;
+}
+
 function buildStreamResponse(profileId, type, rawId) {
     const mediaType = type === 'series' ? 'tv' : 'movie';
     const [imdbId, seasonStr, episodeStr] = rawId.split(':');
@@ -326,38 +352,83 @@ function buildStreamResponse(profileId, type, rawId) {
         return aggregate.aggregateStreams(found.tmdbId, found.mediaType, season, episode).then(({ streams }) => {
             profileStore.recordWatch(profileId, { tmdbId: found.tmdbId, mediaType: found.mediaType, title: found.title, year: found.year });
 
-            const stremioStreams = streams.map(s => {
-                const behaviorHints = { notWebReady: true };
-                if (s.headers && Object.keys(s.headers).length) {
-                    behaviorHints.proxyHeaders = { request: s.headers };
-                }
-                const stream = {
-                    url: s.url,
-                    name: s.name || s.source || 'Stream',
-                    title: [s.quality, s.size].filter(Boolean).join(' | ') || s.title || '',
-                    behaviorHints
-                };
-                // Several providers (Castle, MovieBox, VidLink, ...) already
-                // extract subtitle tracks tied to this exact stream's own
-                // file - a better match than a generic hash-based lookup,
-                // since it's guaranteed to be the subtitle that ships with
-                // this specific release. This was being silently dropped
-                // here; Stremio's protocol names the field `lang`, but every
-                // provider except kickassanime.js calls it `language`.
-                if (Array.isArray(s.subtitles) && s.subtitles.length) {
-                    const subtitles = s.subtitles
-                        .filter(sub => sub && sub.url)
-                        .map(sub => ({ url: sub.url, lang: sub.lang || sub.language || 'unknown' }));
-                    if (subtitles.length) stream.subtitles = subtitles;
-                }
-                return stream;
+            // Only the [PREFERRED] stream (the one most likely to actually
+            // get played) gets a hash-matched subtitle lookup - hashing is a
+            // couple of Range requests against the real file, so doing it
+            // for every candidate would multiply that cost for no benefit.
+            const preferred = streams.find(s => s.isPreferred);
+            const extraSubsPromise = preferred
+                ? subtitles.getSubtitles({
+                    imdbId,
+                    mediaType,
+                    season,
+                    episode,
+                    videoUrl: preferred.url
+                }).catch(err => {
+                    console.error(`[addon-server] Subtitle lookup failed for ${imdbId}: ${err.message}`);
+                    return [];
+                })
+                : Promise.resolve([]);
+
+            return extraSubsPromise.then(extraSubs => {
+                const stremioStreams = streams.map(s => {
+                    const behaviorHints = { notWebReady: true };
+                    if (s.headers && Object.keys(s.headers).length) {
+                        behaviorHints.proxyHeaders = { request: s.headers };
+                    }
+                    const stream = {
+                        url: s.url,
+                        name: s.name || s.source || 'Stream',
+                        title: [s.quality, s.size].filter(Boolean).join(' | ') || s.title || '',
+                        behaviorHints
+                    };
+                    // Several providers (Castle, MovieBox, VidLink, ...) already
+                    // extract subtitle tracks tied to this exact stream's own
+                    // file - a better match than a generic lookup, since it's
+                    // guaranteed to be the subtitle that ships with this
+                    // specific release. Stremio's protocol names the field
+                    // `lang`, but every provider except kickassanime.js calls
+                    // it `language`.
+                    let embedded = [];
+                    if (Array.isArray(s.subtitles) && s.subtitles.length) {
+                        embedded = s.subtitles
+                            .filter(sub => sub && sub.url)
+                            .map(sub => ({ url: sub.url, lang: sub.lang || sub.language || 'unknown' }));
+                    }
+                    const combined = s === preferred ? mergeSubtitles(embedded, extraSubs) : embedded;
+                    if (combined.length) stream.subtitles = combined;
+                    return stream;
+                });
+                return { streams: stremioStreams };
             });
-            return { streams: stremioStreams };
         });
     }).catch(err => {
         console.error(`[addon-server] stream error for ${imdbId}: ${err.message}`);
         return { streams: [] };
     });
+}
+
+// Stremio requests the subtitles resource independently of any specific
+// stream, so there's nothing to hash yet here - this is SubDL +
+// non-hash-matched OpenSubtitles only, ordered by language preference. The
+// per-[PREFERRED]-stream call in buildStreamResponse above is what adds
+// hash-matching on top, once there's an actual file to hash.
+function buildSubtitlesResponse(type, rawId) {
+    const mediaType = type === 'series' ? 'tv' : 'movie';
+    const [imdbId, seasonStr, episodeStr] = rawId.split(':');
+    const season = seasonStr ? parseInt(seasonStr, 10) : null;
+    const episode = episodeStr ? parseInt(episodeStr, 10) : null;
+
+    if (mediaType === 'tv' && (!season || !episode)) {
+        return Promise.resolve({ subtitles: [] });
+    }
+
+    return subtitles.getSubtitles({ imdbId, mediaType, season, episode })
+        .then(subs => ({ subtitles: subs.map(s => ({ url: s.url, lang: s.lang })) }))
+        .catch(err => {
+            console.error(`[addon-server] subtitles error for ${imdbId}: ${err.message}`);
+            return { subtitles: [] };
+        });
 }
 
 function notFound(res) {
@@ -423,6 +494,16 @@ const server = http.createServer((req, res) => {
             return buildIndycarMeta(id).then(meta => sendJson(res, 200, { meta }));
         }
         return sendJson(res, 200, { meta: null });
+    }
+
+    if (resource === 'subtitles' && parts.length >= 5) {
+        const type = parts[3];
+        const idWithExt = decodeURIComponent(parts.slice(4).join('/'));
+        const id = idWithExt.replace(/\.json$/, '');
+        if (type !== 'movie' && type !== 'series') {
+            return sendJson(res, 200, { subtitles: [] });
+        }
+        return buildSubtitlesResponse(type, id).then(body => sendJson(res, 200, body));
     }
 
     if (resource === 'stream' && parts.length >= 5) {

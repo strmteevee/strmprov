@@ -175,7 +175,7 @@
 
 <header>
   <h1>strmprov admin</h1>
-  <span>providers · ranking · profiles · live test</span>
+  <span>providers · ranking · profiles · subtitles · live test</span>
 </header>
 
 <main>
@@ -222,6 +222,17 @@
       <thead><tr><th>Profile</th><th>Watched</th><th>Base viewing profile</th><th>Last watched</th><th></th></tr></thead>
       <tbody id="profiles-body"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
     </table>
+  </section>
+
+  <section class="panel" id="subtitles-panel">
+    <h2>Subtitles</h2>
+    <p class="desc">Looks up subtitles from OpenSubtitles (hash-matched to the exact file when possible) and SubDL (release-name matched, much higher free quota), ordered by these two preferred languages. Only the <span class="mono">[PREFERRED]</span> stream gets a hash-matched lookup; every other subtitle request uses language + release-name matching only.</p>
+    <div class="field-row">
+      <div class="field"><label>First language</label><select id="sub-lang-1"></select></div>
+      <div class="field"><label>Second language</label><select id="sub-lang-2"></select></div>
+      <div class="field"><label>&nbsp;</label><button class="primary" id="subtitles-save">Save</button></div>
+    </div>
+    <div class="muted" id="subtitles-status" style="font-size:12px;"></div>
   </section>
 
   <section class="panel" id="test-panel">
@@ -547,6 +558,38 @@ function loadProfiles() {
   return api('GET', '/api/profiles').then(data => renderProfiles(data.profiles));
 }
 
+// ---- Subtitles ----
+
+const SUBTITLE_LANGUAGES = [
+  ['', '(none)'], ['en', 'English'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'],
+  ['it', 'Italian'], ['pt', 'Portuguese'], ['nl', 'Dutch'], ['ru', 'Russian'], ['ja', 'Japanese'],
+  ['ko', 'Korean'], ['zh', 'Chinese'], ['ar', 'Arabic'], ['hi', 'Hindi'], ['tr', 'Turkish'],
+  ['pl', 'Polish'], ['sv', 'Swedish']
+];
+
+function populateLanguageSelect(id, value) {
+  document.getElementById(id).innerHTML = SUBTITLE_LANGUAGES
+    .map(([code, name]) => `<option value="${code}" ${code === (value || '') ? 'selected' : ''}>${name}</option>`)
+    .join('');
+}
+
+function loadSubtitlesConfig() {
+  return api('GET', '/api/subtitles-config').then(data => {
+    populateLanguageSelect('sub-lang-1', data.firstLanguage);
+    populateLanguageSelect('sub-lang-2', data.secondLanguage);
+    document.getElementById('subtitles-status').textContent =
+      `SubDL: ${data.subDlConfigured ? 'configured' : 'not configured'} · OpenSubtitles: ${data.openSubtitlesConfigured ? 'configured' : 'not configured'}`;
+  });
+}
+
+document.getElementById('subtitles-save').addEventListener('click', () => {
+  const firstLanguage = document.getElementById('sub-lang-1').value;
+  const secondLanguage = document.getElementById('sub-lang-2').value;
+  api('POST', '/api/subtitles-config', { firstLanguage, secondLanguage })
+    .then(() => toast('Subtitle languages saved', 'ok'))
+    .catch(e => toast(e.message, 'error'));
+});
+
 // ---- Test ----
 
 document.getElementById('test-type').addEventListener('change', (e) => {
@@ -587,7 +630,7 @@ function escapeHtml(str) {
   return String(str == null ? '' : str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-Promise.all([loadProviders(), loadRanking(), loadProfiles()]).catch(e => toast(e.message, 'error'));
+Promise.all([loadProviders(), loadRanking(), loadProfiles(), loadSubtitlesConfig()]).catch(e => toast(e.message, 'error'));
 </script>
 
 </body>

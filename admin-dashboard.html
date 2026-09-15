@@ -175,7 +175,7 @@
 
 <header>
   <h1>strmprov admin</h1>
-  <span>api keys · providers · ranking · profiles · subtitles · live test</span>
+  <span>api keys · providers · ranking · profiles · subtitles · live test · catalog test</span>
 </header>
 
 <main>
@@ -258,6 +258,21 @@
     </div>
     <div id="test-summary" class="muted" style="margin-bottom:10px;"></div>
     <div id="test-results"></div>
+  </section>
+
+  <section class="panel" id="catalog-test-panel">
+    <h2>Catalog test</h2>
+    <p class="desc">Fetches manifest.json and a chosen catalog directly from the running addon-server.js - the same thing Nuvio itself would see. Use this to check whether a catalog (e.g. one of the F1/F2/F3/Academy ones) actually exists on this server before assuming it's a Nuvio-side caching issue.</p>
+    <div class="field-row">
+      <div class="field"><label>Profile</label>
+        <select id="catalog-test-profile"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select>
+      </div>
+      <div class="field"><label>Catalog</label><select id="catalog-test-catalog" style="min-width:220px;"><option value="">Loading manifest…</option></select></div>
+      <div class="field"><label>&nbsp;</label><button class="primary" id="catalog-test-run">Run test</button></div>
+      <div class="field"><label>&nbsp;</label><button id="catalog-test-refresh-manifest">Reload manifest</button></div>
+    </div>
+    <div id="catalog-test-summary" class="muted" style="margin-bottom:10px;"></div>
+    <div id="catalog-test-results"></div>
   </section>
 
 </main>
@@ -662,11 +677,59 @@ document.getElementById('test-run').addEventListener('click', () => {
     .catch(e => { summary.textContent = ''; results.innerHTML = `<p class="muted">${escapeHtml(e.message)}</p>`; });
 });
 
+// ---- Catalog test ----
+
+function loadCatalogManifest() {
+  const profileId = document.getElementById('catalog-test-profile').value;
+  const select = document.getElementById('catalog-test-catalog');
+  select.innerHTML = '<option value="">Loading manifest…</option>';
+  return api('GET', `/api/catalog-test/manifest?profileId=${encodeURIComponent(profileId)}`)
+    .then(data => {
+      const catalogs = data.catalogs || [];
+      if (catalogs.length === 0) {
+        select.innerHTML = '<option value="">No catalogs in manifest</option>';
+        return;
+      }
+      select.innerHTML = catalogs.map(c => `<option value="${c.type}|${c.id}">${escapeHtml(c.name)} (${c.type})</option>`).join('');
+    })
+    .catch(e => {
+      select.innerHTML = '<option value="">Manifest unreachable</option>';
+      toast(e.message, 'error');
+    });
+}
+
+document.getElementById('catalog-test-profile').addEventListener('change', loadCatalogManifest);
+document.getElementById('catalog-test-refresh-manifest').addEventListener('click', () => loadCatalogManifest().then(() => toast('Manifest reloaded', 'ok')));
+
+document.getElementById('catalog-test-run').addEventListener('click', () => {
+  const profileId = document.getElementById('catalog-test-profile').value;
+  const selected = document.getElementById('catalog-test-catalog').value;
+  if (!selected) return toast('Pick a catalog first', 'error');
+  const [type, id] = selected.split('|');
+
+  const summary = document.getElementById('catalog-test-summary');
+  const results = document.getElementById('catalog-test-results');
+  summary.textContent = 'Running…';
+  results.innerHTML = '';
+
+  api('GET', `/api/catalog-test?profileId=${encodeURIComponent(profileId)}&type=${encodeURIComponent(type)}&id=${encodeURIComponent(id)}`)
+    .then(data => {
+      const metas = data.metas || [];
+      summary.textContent = `${metas.length} item(s) returned for "${id}" (${type})`;
+      results.innerHTML = metas.map(m => `
+        <div class="stream-item">
+          <div class="name">${escapeHtml(m.name || m.id)}</div>
+          <div class="meta">${escapeHtml(m.id)} ${m.releaseInfo ? '· ' + escapeHtml(m.releaseInfo) : ''}</div>
+        </div>`).join('') || '<p class="muted">No items returned - catalog exists but is empty.</p>';
+    })
+    .catch(e => { summary.textContent = ''; results.innerHTML = `<p class="muted">${escapeHtml(e.message)}</p>`; });
+});
+
 function escapeHtml(str) {
   return String(str == null ? '' : str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-Promise.all([loadEnvKeys(), loadProviders(), loadRanking(), loadProfiles(), loadSubtitlesConfig()]).catch(e => toast(e.message, 'error'));
+Promise.all([loadEnvKeys(), loadProviders(), loadRanking(), loadProfiles(), loadSubtitlesConfig(), loadCatalogManifest()]).catch(e => toast(e.message, 'error'));
 </script>
 
 </body>

@@ -334,6 +334,37 @@ function handleTest(body, res) {
         .catch(err => sendJson(res, 500, { error: err.message }));
 }
 
+// ---- Catalog test ----
+//
+// Hits the REAL, currently-running addon-server.js over HTTP (both servers
+// share the same box in the normal deployment) rather than re-implementing
+// catalog building here - this is what actually answers "does Nuvio see
+// this catalog", including surfacing a clear error if addon-server.js isn't
+// even running, which SSH'ing in to curl it by hand doesn't make any easier
+// but this panel does.
+
+const ADDON_SERVER_BASE = 'http://localhost:3100';
+
+function proxyAddonServerJson(url, res) {
+    fetch(url).then(async (addonRes) => {
+        const body = await addonRes.json().catch(() => null);
+        if (!addonRes.ok || !body) {
+            return sendJson(res, 502, { error: `addon-server responded with HTTP ${addonRes.status}` });
+        }
+        sendJson(res, 200, body);
+    }).catch((err) => {
+        sendJson(res, 502, { error: `Couldn't reach addon-server.js at ${ADDON_SERVER_BASE} - is it running? (${err.message})` });
+    });
+}
+
+function handleGetCatalogManifest(profileId, res) {
+    proxyAddonServerJson(`${ADDON_SERVER_BASE}/profile/${encodeURIComponent(profileId)}/manifest.json`, res);
+}
+
+function handleCatalogTest(profileId, type, id, res) {
+    proxyAddonServerJson(`${ADDON_SERVER_BASE}/profile/${encodeURIComponent(profileId)}/catalog/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`, res);
+}
+
 // ---- Dashboard HTML ----
 
 const DASHBOARD_HTML = fs.readFileSync(path.join(__dirname, 'admin-dashboard.html'), 'utf8');
@@ -426,6 +457,18 @@ const server = http.createServer((req, res) => {
     // /api/test
     if (parts[0] === 'api' && parts[1] === 'test' && req.method === 'POST') {
         return readBody(req).then(body => handleTest(body, res)).catch(e => sendJson(res, 400, { error: e.message }));
+    }
+    // /api/catalog-test/manifest?profileId=1
+    if (parts[0] === 'api' && parts[1] === 'catalog-test' && parts[2] === 'manifest' && req.method === 'GET') {
+        return handleGetCatalogManifest(parsedUrl.searchParams.get('profileId') || '1', res);
+    }
+    // /api/catalog-test?profileId=1&type=movie&id=f1-highlights
+    if (parts[0] === 'api' && parts[1] === 'catalog-test' && parts.length === 2 && req.method === 'GET') {
+        const profileId = parsedUrl.searchParams.get('profileId') || '1';
+        const type = parsedUrl.searchParams.get('type');
+        const id = parsedUrl.searchParams.get('id');
+        if (!type || !id) return sendJson(res, 400, { error: 'type and id are required' });
+        return handleCatalogTest(profileId, type, id, res);
     }
 
     sendJson(res, 404, { error: 'Not found' });

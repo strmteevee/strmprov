@@ -1,0 +1,1 @@
+scp .env shulst@strmprov.local:/home/shulst/services/strmprov/.env

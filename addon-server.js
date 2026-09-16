@@ -549,7 +549,19 @@ function notFound(res) {
 }
 
 const server = http.createServer((req, res) => {
+    const startedAt = Date.now();
     console.log(`${req.method} ${req.url}`);
+    // Logged separately from the request-received line above (which fires
+    // immediately) so the two can be matched up by URL in the logs panel to
+    // see how long THIS server actually took to answer a given request -
+    // confirmed live this project's own dev-machine timing doesn't
+    // necessarily reflect the Pi's real-world latency to third-party APIs
+    // (SubDL/OpenSubtitles for subtitles, TMDB, the many stream providers),
+    // so this is what actually answers "was the server slow enough to make
+    // Nuvio time out and retry" instead of guessing from a different machine.
+    res.on('finish', () => {
+        console.log(`  -> ${res.statusCode} ${req.url} (${Date.now() - startedAt}ms)`);
+    });
 
     if (req.method === 'OPTIONS') {
         res.writeHead(200, {

@@ -28,6 +28,16 @@ const { execFile } = require('child_process');
 const logBuffer = require('./lib/logBuffer');
 logBuffer.install();
 
+// Same reasoning as addon-server.js's own guard - without this, a single
+// unhandled error anywhere would kill this process too, silently wiping its
+// own log buffer along with it.
+process.on('uncaughtException', (err) => {
+    console.error(`[admin-server] uncaughtException (process kept alive): ${err && err.stack || err}`);
+});
+process.on('unhandledRejection', (reason) => {
+    console.error(`[admin-server] unhandledRejection (process kept alive): ${reason && reason.stack || reason}`);
+});
+
 const aggregate = require('./lib/aggregate');
 const profileStore = require('./lib/profileStore');
 const subtitles = require('./lib/subtitles');

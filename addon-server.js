@@ -42,6 +42,27 @@ const { URL } = require('url');
 const logBuffer = require('./lib/logBuffer');
 logBuffer.install();
 
+// There was no global crash guard anywhere in this codebase before this -
+// a single unhandled error in ANY of the ~15 independently-written provider
+// modules (several doing genuinely complex things: AES decryption, chained
+// multi-step API calls) would silently kill the whole Node process. That's
+// a real, structural risk distinct from anything about ranking/probing/
+// subtitles: it would explain a request just dying mid-flight from the
+// client's perspective (matching "starting stream" then nothing), and - if
+// a process manager restarts the server afterward - would also silently
+// wipe this process's in-memory log buffer, making the very history needed
+// to diagnose it disappear. It also naturally gets MORE likely with MORE
+// providers returning data for a given title, since more of their code
+// actually runs. Logging and surviving here (rather than crashing) turns an
+// invisible process death into a normal, visible error line in the exact
+// same server-logs panel this was already built for.
+process.on('uncaughtException', (err) => {
+    console.error(`[addon-server] uncaughtException (process kept alive): ${err && err.stack || err}`);
+});
+process.on('unhandledRejection', (reason) => {
+    console.error(`[addon-server] unhandledRejection (process kept alive): ${reason && reason.stack || reason}`);
+});
+
 const aggregate = require('./lib/aggregate');
 const tmdb = require('./lib/tmdb');
 const profileStore = require('./lib/profileStore');

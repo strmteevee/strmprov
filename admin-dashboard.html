@@ -147,6 +147,11 @@
   details.add-form summary { cursor: pointer; color: var(--accent); font-size: 13px; }
   details.add-form .grid-form { margin-top: 12px; }
   pre.output { background: #0c111c; border: 1px solid var(--panel-border); border-radius: 6px; padding: 10px; font-size: 12px; overflow-x: auto; max-height: 200px; }
+  .log-viewer { background: #0c111c; border: 1px solid var(--panel-border); border-radius: 6px; padding: 10px 12px; font-family: var(--mono); font-size: 12px; line-height: 1.6; overflow: auto; max-height: 480px; white-space: pre-wrap; word-break: break-all; }
+  .log-line { display: flex; gap: 8px; }
+  .log-line .log-time { color: var(--muted); flex-shrink: 0; }
+  .log-line.log-error .log-text { color: var(--bad); }
+  .log-line.log-warn .log-text { color: var(--warn); }
   .link-btn { background: none; border: none; color: var(--accent); padding: 0; font-size: 12px; cursor: pointer; text-decoration: underline; }
   .modal-backdrop {
     position: fixed; inset: 0;
@@ -175,7 +180,7 @@
 
 <header>
   <h1>strmprov admin</h1>
-  <span>api keys · providers · ranking · profiles · subtitles · live test · catalog test</span>
+  <span>api keys · providers · ranking · profiles · subtitles · live test · catalog test · logs</span>
 </header>
 
 <main>
@@ -273,6 +278,31 @@
     </div>
     <div id="catalog-test-summary" class="muted" style="margin-bottom:10px;"></div>
     <div id="catalog-test-results"></div>
+  </section>
+
+  <section class="panel" id="logs-panel">
+    <h2>Server logs</h2>
+    <p class="desc">This process's own console output, captured in memory - no SSH/pm2/journalctl needed. Reproduce an issue (e.g. autoplay loading the next episode), then check here for what the server actually did around that time.</p>
+    <div class="field-row">
+      <div class="field"><label>Source</label>
+        <select id="logs-source">
+          <option value="addon">addon-server.js</option>
+          <option value="admin">admin-server.js (this one)</option>
+        </select>
+      </div>
+      <div class="field"><label>Lines</label>
+        <select id="logs-limit">
+          <option value="100">100</option>
+          <option value="300" selected>300</option>
+          <option value="1000">1000</option>
+          <option value="2000">2000 (max)</option>
+        </select>
+      </div>
+      <div class="field"><label>&nbsp;</label><button class="primary" id="logs-refresh">Refresh</button></div>
+      <div class="field"><label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="logs-auto" /> Auto-refresh (5s)</label></div>
+    </div>
+    <div id="logs-summary" class="muted" style="margin-bottom:10px;"></div>
+    <div class="log-viewer" id="logs-body">Click Refresh to load.</div>
   </section>
 
 </main>
@@ -738,6 +768,45 @@ document.getElementById('catalog-test-run').addEventListener('click', () => {
         </div>`).join('') || '<p class="muted">No items returned - catalog exists but is empty.</p>';
     })
     .catch(e => { summary.textContent = ''; results.innerHTML = `<p class="muted">${escapeHtml(e.message)}</p>`; });
+});
+
+// ---- Server logs ----
+
+let logsAutoTimer = null;
+
+function loadLogs() {
+  const source = document.getElementById('logs-source').value;
+  const limit = document.getElementById('logs-limit').value;
+  const summary = document.getElementById('logs-summary');
+  const body = document.getElementById('logs-body');
+
+  return api('GET', `/api/logs?source=${encodeURIComponent(source)}&limit=${encodeURIComponent(limit)}`)
+    .then(data => {
+      const lines = data.lines || [];
+      const wasScrolledToBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 20;
+      summary.textContent = `${lines.length} line(s) from ${source === 'admin' ? 'admin-server.js' : 'addon-server.js'}`;
+      body.innerHTML = lines.map(l => `
+        <div class="log-line ${l.level === 'error' ? 'log-error' : l.level === 'warn' ? 'log-warn' : ''}">
+          <span class="log-time">${escapeHtml(l.time.replace('T', ' ').replace('Z', ''))}</span>
+          <span class="log-text">${escapeHtml(l.text)}</span>
+        </div>`).join('') || '<span class="muted">No log lines yet.</span>';
+      if (wasScrolledToBottom) body.scrollTop = body.scrollHeight;
+    })
+    .catch(e => {
+      summary.textContent = '';
+      body.innerHTML = `<span class="muted">${escapeHtml(e.message)}</span>`;
+    });
+}
+
+document.getElementById('logs-refresh').addEventListener('click', loadLogs);
+document.getElementById('logs-source').addEventListener('change', loadLogs);
+document.getElementById('logs-limit').addEventListener('change', loadLogs);
+document.getElementById('logs-auto').addEventListener('change', (e) => {
+  clearInterval(logsAutoTimer);
+  if (e.target.checked) {
+    loadLogs();
+    logsAutoTimer = setInterval(loadLogs, 5000);
+  }
 });
 
 function escapeHtml(str) {

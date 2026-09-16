@@ -35,6 +35,13 @@ const http = require('http');
 const os = require('os');
 const { URL } = require('url');
 
+// Installed before any other require() below so every console.log/error
+// from this point on - including from providers/ and lib/* - is captured
+// for the admin dashboard's server-logs panel, not just ones logged directly
+// in this file.
+const logBuffer = require('./lib/logBuffer');
+logBuffer.install();
+
 const aggregate = require('./lib/aggregate');
 const tmdb = require('./lib/tmdb');
 const profileStore = require('./lib/profileStore');
@@ -567,6 +574,15 @@ const server = http.createServer((req, res) => {
             '\n'
         );
         return;
+    }
+
+    // /logs?limit=200 - read by admin-server.js's own /api/logs proxy, same
+    // pattern as its existing catalog-test proxy - lets the admin dashboard
+    // show this process's own console output without SSH/pm2/journalctl
+    // access.
+    if (parts[0] === 'logs' && parts.length === 1) {
+        const limit = parseInt(parsedUrl.searchParams.get('limit'), 10) || 300;
+        return sendJson(res, 200, { lines: logBuffer.getLines(limit) });
     }
 
     // /profile/:profileId/...

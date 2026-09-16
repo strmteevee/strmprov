@@ -21,6 +21,13 @@ const os = require('os');
 const { URL } = require('url');
 const { execFile } = require('child_process');
 
+// Installed early so this process's own console output is captured too -
+// see lib/logBuffer.js. addon-server.js's own logs are read by proxying to
+// its /logs endpoint instead (see proxyAddonServerJson below), since that's
+// a separate process this one has no direct access to.
+const logBuffer = require('./lib/logBuffer');
+logBuffer.install();
+
 const aggregate = require('./lib/aggregate');
 const profileStore = require('./lib/profileStore');
 const subtitles = require('./lib/subtitles');
@@ -365,6 +372,20 @@ function handleCatalogTest(profileId, type, id, res) {
     proxyAddonServerJson(`${ADDON_SERVER_BASE}/profile/${encodeURIComponent(profileId)}/catalog/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`, res);
 }
 
+// ---- Server logs ----
+//
+// "admin" reads this process's own in-memory buffer directly; "addon" proxies
+// to addon-server.js's own /logs endpoint over HTTP, same reasoning as the
+// catalog-test proxy above - it's a separate process, this is the only way
+// to see what it actually did (e.g. around a real autoplay-next failure)
+// without SSH/pm2/journalctl access.
+function handleGetLogs(source, limit, res) {
+    if (source === 'admin') {
+        return sendJson(res, 200, { lines: logBuffer.getLines(limit) });
+    }
+    proxyAddonServerJson(`${ADDON_SERVER_BASE}/logs?limit=${limit}`, res);
+}
+
 // ---- Dashboard HTML ----
 
 const DASHBOARD_HTML = fs.readFileSync(path.join(__dirname, 'admin-dashboard.html'), 'utf8');
@@ -469,6 +490,12 @@ const server = http.createServer((req, res) => {
         const id = parsedUrl.searchParams.get('id');
         if (!type || !id) return sendJson(res, 400, { error: 'type and id are required' });
         return handleCatalogTest(profileId, type, id, res);
+    }
+    // /api/logs?source=addon|admin&limit=300
+    if (parts[0] === 'api' && parts[1] === 'logs' && req.method === 'GET') {
+        const source = parsedUrl.searchParams.get('source') === 'admin' ? 'admin' : 'addon';
+        const limit = parseInt(parsedUrl.searchParams.get('limit'), 10) || 300;
+        return handleGetLogs(source, limit, res);
     }
 
     sendJson(res, 404, { error: 'Not found' });

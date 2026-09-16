@@ -422,6 +422,23 @@ function buildF1StreamResponse(id) {
     });
 }
 
+// Merges the provider-embedded subtitles a stream already carries with the
+// (possibly hash-matched) results from lib/subtitles.js, deduping by
+// (lang, url) - the embedded ones are guaranteed to ship with this exact
+// release, so they're kept even when a broader-language extra result exists
+// for the same language.
+function mergeSubtitles(embedded, extra) {
+    const merged = embedded.slice();
+    const seen = new Set(merged.map(s => `${(s.lang || '').toLowerCase()}|${s.url}`));
+    for (const s of extra) {
+        const key = `${(s.lang || '').toLowerCase()}|${s.url}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push({ url: s.url, lang: s.lang, language: s.lang, name: s.name });
+    }
+    return merged;
+}
+
 function buildStreamResponse(profileId, type, rawId) {
     const mediaType = type === 'series' ? 'tv' : 'movie';
     const [imdbId, seasonStr, episodeStr] = rawId.split(':');
@@ -440,81 +457,79 @@ function buildStreamResponse(profileId, type, rawId) {
         return aggregate.aggregateStreams(found.tmdbId, found.mediaType, season, episode).then(({ streams }) => {
             profileStore.recordWatch(profileId, { tmdbId: found.tmdbId, mediaType: found.mediaType, title: found.title, year: found.year });
 
-            // The hash-matched OpenSubtitles/SubDL lookup used to run here,
-            // against the [PREFERRED] stream's own URL, before the response
-            // was sent. Confirmed live via real Pi logs this added ~4.8s on
-            // top of the aggregate pipeline's own ~3.7s (two Range fetches
-            // against the real video file plus two subtitle-API round
-            // trips) - long enough that Nuvio's autoplay-next-episode flow
-            // gave up and reverted to the previous episode before the
-            // response ever arrived, even though the response itself was
-            // always going to succeed. Manual opens never showed this
-            // because a person just waits out a loading spinner; autoplay
-            // apparently doesn't wait nearly that long. Subtitles still
-            // work as well as before this feature existed - Nuvio already
-            // calls the separate /subtitles resource on its own (confirmed
-            // in the same logs, consistently under a second) - this only
-            // gives up the extra hash-matching precision bonus for
-            // whichever stream happens to be preferred, in exchange for
-            // getting the actual video streaming again at a normal speed.
             const preferred = streams.find(s => s.isPreferred);
             if (preferred) {
-                // Logged so a future incident can be matched against
-                // whether Nuvio's own subsequent /subtitles request for
-                // this same episode ever carries a videoHash= extra - that
-                // only appears once Nuvio has actually opened and read the
-                // real file being played, so its absence is direct evidence
-                // playback never actually started, distinct from this
-                // response simply being slow or empty. Confirmed live this
-                // is exactly what happened for one real failure: the
-                // /stream response here arrived fine, but no
-                // videoHash-bearing /subtitles request for that episode
-                // ever followed.
                 console.log(`[addon-server] [PREFERRED] pick for ${imdbId}:${season || ''}:${episode || ''} -> ${preferred.source} "${preferred.name}" score=${preferred.score} lowConfidence=${!!preferred.lowConfidence} url=${preferred.url}`);
             }
-            const stremioStreams = streams.map(s => {
-                const behaviorHints = { notWebReady: true };
-                if (s.headers && Object.keys(s.headers).length) {
-                    behaviorHints.proxyHeaders = { request: s.headers };
-                }
-                const stream = {
-                    url: s.url,
-                    name: s.name || s.source || 'Stream',
-                    title: [s.quality, s.size].filter(Boolean).join(' | ') || s.title || '',
-                    behaviorHints
-                };
-                // Several providers (Castle, MovieBox, VidLink, ...) already
-                // extract subtitle tracks tied to this exact stream's own
-                // file - a better match than a generic lookup, since it's
-                // guaranteed to be the subtitle that ships with this
-                // specific release. Every provider except kickassanime.js
-                // calls the language field `language` rather than `lang`.
-                // Nuvio itself (see DOCUMENTATION.md's "Subtitle Support")
-                // shows a subtitle's own `name` field as its selector
-                // label, not `lang`/`language` - confirmed live that
-                // omitting `name` made every subtitle show up with the
-                // same generic fallback label instead of its actual
-                // language, so it's set here too. Providers vary in
-                // whether their own `lang`/`language` value is a short
-                // code ("en") or already a full word ("English") -
-                // lib/subtitles.js's languageName() only recognizes short
-                // codes, so a longer value is assumed already-readable
-                // and just capitalized instead.
-                if (Array.isArray(s.subtitles) && s.subtitles.length) {
-                    const embedded = s.subtitles
-                        .filter(sub => sub && sub.url)
-                        .map(sub => {
-                            const lang = sub.lang || sub.language || 'unknown';
-                            const name = lang.length <= 3
-                                ? subtitles.languageName(lang)
-                                : lang.charAt(0).toUpperCase() + lang.slice(1);
-                            return { url: sub.url, lang, language: lang, name };
-                        });
-                    if (embedded.length) stream.subtitles = embedded;
-                }
-                return stream;
+
+            // Only the [PREFERRED] stream (the one most likely to actually
+            // get played) gets a hash-matched subtitle lookup - hashing is a
+            // couple of Range requests against the real file, so doing it
+            // for every candidate would multiply that cost for no benefit.
+            // This was removed for a while while chasing an autoplay-next-
+            // episode bug that turned out to be a Nuvio client-side issue
+            // (fixed in a later Nuvio update, confirmed live) - restored now
+            // that the actual cause is known to be unrelated to this.
+            const extraSubsPromise = preferred
+                ? subtitles.getSubtitles({
+                    imdbId,
+                    mediaType,
+                    season,
+                    episode,
+                    videoUrl: preferred.url
+                }).catch(err => {
+                    console.error(`[addon-server] Subtitle lookup failed for ${imdbId}: ${err.message}`);
+                    return [];
+                })
+                : Promise.resolve([]);
+
+            return extraSubsPromise.then(extraSubs => {
+                const stremioStreams = streams.map(s => {
+                    const behaviorHints = { notWebReady: true };
+                    if (s.headers && Object.keys(s.headers).length) {
+                        behaviorHints.proxyHeaders = { request: s.headers };
+                    }
+                    const stream = {
+                        url: s.url,
+                        name: s.name || s.source || 'Stream',
+                        title: [s.quality, s.size].filter(Boolean).join(' | ') || s.title || '',
+                        behaviorHints
+                    };
+                    // Several providers (Castle, MovieBox, VidLink, ...) already
+                    // extract subtitle tracks tied to this exact stream's own
+                    // file - a better match than a generic lookup, since it's
+                    // guaranteed to be the subtitle that ships with this
+                    // specific release. Every provider except kickassanime.js
+                    // calls the language field `language` rather than `lang`.
+                    // Nuvio itself (see DOCUMENTATION.md's "Subtitle Support")
+                    // shows a subtitle's own `name` field as its selector
+                    // label, not `lang`/`language` - confirmed live that
+                    // omitting `name` made every subtitle show up with the
+                    // same generic fallback label instead of its actual
+                    // language, so it's set here too. Providers vary in
+                    // whether their own `lang`/`language` value is a short
+                    // code ("en") or already a full word ("English") -
+                    // lib/subtitles.js's languageName() only recognizes short
+                    // codes, so a longer value is assumed already-readable
+                    // and just capitalized instead.
+                    let embedded = [];
+                    if (Array.isArray(s.subtitles) && s.subtitles.length) {
+                        embedded = s.subtitles
+                            .filter(sub => sub && sub.url)
+                            .map(sub => {
+                                const lang = sub.lang || sub.language || 'unknown';
+                                const name = lang.length <= 3
+                                    ? subtitles.languageName(lang)
+                                    : lang.charAt(0).toUpperCase() + lang.slice(1);
+                                return { url: sub.url, lang, language: lang, name };
+                            });
+                    }
+                    const combined = s === preferred ? mergeSubtitles(embedded, extraSubs) : embedded;
+                    if (combined.length) stream.subtitles = combined;
+                    return stream;
+                });
+                return { streams: stremioStreams };
             });
-            return { streams: stremioStreams };
         });
     }).catch(err => {
         console.error(`[addon-server] stream error for ${imdbId}: ${err.message}`);
@@ -522,12 +537,11 @@ function buildStreamResponse(profileId, type, rawId) {
     });
 }
 
-// Stremio requests this resource independently of /stream - this is the
-// ONLY place subtitles beyond a stream's own provider-embedded ones come
-// from now (see buildStreamResponse's own comment for why the hash-matched
-// per-[PREFERRED]-stream lookup that used to also run there was removed).
-// Never hash-matched, since there's no specific file url to hash here -
-// just SubDL + OpenSubtitles search results ordered by language preference.
+// Stremio requests this resource independently of any specific stream, so
+// there's nothing to hash yet here - this is SubDL + non-hash-matched
+// OpenSubtitles only, ordered by language preference. The
+// per-[PREFERRED]-stream call in buildStreamResponse above is what adds
+// hash-matching on top, once there's an actual file to hash.
 function buildSubtitlesResponse(type, rawId) {
     const mediaType = type === 'series' ? 'tv' : 'movie';
     const [imdbId, seasonStr, episodeStr] = rawId.split(':');
@@ -594,9 +608,15 @@ const server = http.createServer((req, res) => {
     // pattern as its existing catalog-test proxy - lets the admin dashboard
     // show this process's own console output without SSH/pm2/journalctl
     // access.
-    if (parts[0] === 'logs' && parts.length === 1) {
+    if (parts[0] === 'logs' && parts.length === 1 && req.method === 'GET') {
         const limit = parseInt(parsedUrl.searchParams.get('limit'), 10) || 300;
         return sendJson(res, 200, { lines: logBuffer.getLines(limit) });
+    }
+    // /logs/clear - the admin dashboard's manual "Clear logs" button, proxied
+    // the same way as the read above (see admin-server.js's handleClearLogs).
+    if (parts[0] === 'logs' && parts[1] === 'clear' && parts.length === 2 && req.method === 'POST') {
+        logBuffer.clear('manual (admin dashboard)');
+        return sendJson(res, 200, { cleared: true });
     }
 
     // /profile/:profileId/...

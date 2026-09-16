@@ -362,8 +362,8 @@ function handleTest(body, res) {
 
 const ADDON_SERVER_BASE = 'http://localhost:3100';
 
-function proxyAddonServerJson(url, res) {
-    fetch(url).then(async (addonRes) => {
+function proxyAddonServerJson(url, res, options) {
+    fetch(url, options).then(async (addonRes) => {
         const body = await addonRes.json().catch(() => null);
         if (!addonRes.ok || !body) {
             return sendJson(res, 502, { error: `addon-server responded with HTTP ${addonRes.status}` });
@@ -394,6 +394,14 @@ function handleGetLogs(source, limit, res) {
         return sendJson(res, 200, { lines: logBuffer.getLines(limit) });
     }
     proxyAddonServerJson(`${ADDON_SERVER_BASE}/logs?limit=${limit}`, res);
+}
+
+function handleClearLogs(source, res) {
+    if (source === 'admin') {
+        logBuffer.clear('manual (admin dashboard)');
+        return sendJson(res, 200, { cleared: true });
+    }
+    proxyAddonServerJson(`${ADDON_SERVER_BASE}/logs/clear`, res, { method: 'POST' });
 }
 
 // ---- Dashboard HTML ----
@@ -502,10 +510,15 @@ const server = http.createServer((req, res) => {
         return handleCatalogTest(profileId, type, id, res);
     }
     // /api/logs?source=addon|admin&limit=300
-    if (parts[0] === 'api' && parts[1] === 'logs' && req.method === 'GET') {
+    if (parts[0] === 'api' && parts[1] === 'logs' && parts.length === 2 && req.method === 'GET') {
         const source = parsedUrl.searchParams.get('source') === 'admin' ? 'admin' : 'addon';
         const limit = parseInt(parsedUrl.searchParams.get('limit'), 10) || 300;
         return handleGetLogs(source, limit, res);
+    }
+    // /api/logs/clear?source=addon|admin
+    if (parts[0] === 'api' && parts[1] === 'logs' && parts[2] === 'clear' && parts.length === 3 && req.method === 'POST') {
+        const source = parsedUrl.searchParams.get('source') === 'admin' ? 'admin' : 'addon';
+        return handleClearLogs(source, res);
     }
 
     sendJson(res, 404, { error: 'Not found' });

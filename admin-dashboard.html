@@ -282,7 +282,7 @@
 
   <section class="panel" id="logs-panel">
     <h2>Server logs</h2>
-    <p class="desc">This process's own console output, captured in memory - no SSH/pm2/journalctl needed. Reproduce an issue (e.g. autoplay loading the next episode), then check here for what the server actually did around that time.</p>
+    <p class="desc">This process's own console output, captured in memory - no SSH/pm2/journalctl needed. Reproduce an issue (e.g. autoplay loading the next episode), then check here for what the server actually did around that time. Clears itself automatically once a day so it never grows unbounded; "Clear logs" wipes it immediately.</p>
     <div class="field-row">
       <div class="field"><label>Source</label>
         <select id="logs-source">
@@ -299,6 +299,7 @@
         </select>
       </div>
       <div class="field"><label>&nbsp;</label><button class="primary" id="logs-refresh">Refresh</button></div>
+      <div class="field"><label>&nbsp;</label><button class="danger" id="logs-clear">Clear logs</button></div>
       <div class="field"><label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="logs-auto" /> Auto-refresh (5s)</label></div>
     </div>
     <div id="logs-summary" class="muted" style="margin-bottom:10px;"></div>
@@ -807,6 +808,15 @@ document.getElementById('logs-auto').addEventListener('change', (e) => {
     loadLogs();
     logsAutoTimer = setInterval(loadLogs, 5000);
   }
+});
+
+document.getElementById('logs-clear').addEventListener('click', () => {
+  const source = document.getElementById('logs-source').value;
+  const label = source === 'admin' ? 'admin-server.js' : 'addon-server.js';
+  if (!confirm(`Clear the captured logs for ${label}? This can't be undone.`)) return;
+  api('POST', `/api/logs/clear?source=${encodeURIComponent(source)}`)
+    .then(() => { toast('Logs cleared', 'ok'); loadLogs(); })
+    .catch(e => toast(e.message, 'error'));
 });
 
 function escapeHtml(str) {

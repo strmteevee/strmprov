@@ -207,8 +207,16 @@ function fetchPageUrl(name, year, isSeries) {
       return yearMatch;
     }).filter((_, el) => {
       const movieCardTitle = $(el).find(".movie-card-title").text().replace(/\[.*?]/g, "").trim();
-      const distance = levenshteinDistance(movieCardTitle.toLowerCase(), name.toLowerCase());
-      const match = distance < 5;
+      const normalizedCard = movieCardTitle.toLowerCase();
+      const normalizedName = name.toLowerCase();
+      const distance = levenshteinDistance(normalizedCard, normalizedName);
+      // Some cards append a franchise/collection label straight onto the
+      // title with no bracket or separator (e.g. "Guardians of the Galaxy
+      // Vol. 2  Marvel Phase 3"), which the year filter above has already
+      // narrowed down - a plain distance check rejects these since the
+      // added text pushes it well past the threshold, so also accept a
+      // clean prefix match.
+      const match = distance < 5 || normalizedCard.startsWith(normalizedName + " ") || normalizedCard === normalizedName;
       console.log(`[4KHDHub] Checking: "${movieCardTitle}" (Dist: ${distance}) vs "${name}"`);
       return match;
     }).map((_, el) => {

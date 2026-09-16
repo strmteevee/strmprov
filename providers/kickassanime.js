@@ -139,6 +139,18 @@ var HEADERS = {
   "Content-Type": "application/json",
   "x-origin": "kickass-anime.ru"
 };
+function searchKickassAnime(query) {
+  return fetch(`${BASE_URL}/api/fsearch`, {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ page: "1", query }),
+    skipSizeCheck: true
+  }).then((res) => res.json());
+}
+function findExactShowMatch(results, title) {
+  const norm = (title || "").toLowerCase().trim();
+  return (results || []).find((r) => (r.title_en || r.title || "").toLowerCase().trim() === norm) || null;
+}
 function getStreams(tmdbId, mediaType, season, episode) {
   return __async(this, null, function* () {
     try {
@@ -147,19 +159,30 @@ function getStreams(tmdbId, mediaType, season, episode) {
       const title = mediaInfo.title || mediaInfo.name;
       if (!title)
         return [];
-      const searchBody = JSON.stringify({ page: "1", query: title });
-      const searchResp = yield fetch(`${BASE_URL}/api/fsearch`, {
-        method: "POST",
-        headers: HEADERS,
-        body: searchBody,
-        skipSizeCheck: true
-      });
-      const searchData = yield searchResp.json();
-      if (!searchData || !searchData.result || searchData.result.length === 0)
-        return [];
-      const match = searchData.result.find(
-        (r) => (r.title_en || r.title || "").toLowerCase().includes(title.toLowerCase())
-      ) || searchData.result[0];
+      const searchData = yield searchKickassAnime(title);
+      let match = findExactShowMatch(searchData && searchData.result, title);
+      // kaa.lt indexes each season/arc/movie of a franchise as its own show
+      // entry, prefixed with the base name - a loose substring match against
+      // the full "Base: Subtitle" TMDB title (e.g. "Demon Slayer: Kimetsu no
+      // Yaiba") can match an unrelated arc/movie whose title happens to
+      // start with that same string (confirmed live: querying that exact
+      // title never even returns the base show, only its arcs/movies, one
+      // of which "includes" the query as a prefix). If nothing matched
+      // exactly, retry with just the part before the colon, which reliably
+      // surfaces the actual base entry as its own exact match.
+      if (!match && title.includes(":")) {
+        const baseTitle = title.split(":")[0].trim();
+        if (baseTitle && baseTitle.toLowerCase() !== title.toLowerCase()) {
+          const retryData = yield searchKickassAnime(baseTitle);
+          match = findExactShowMatch(retryData && retryData.result, baseTitle);
+        }
+      }
+      if (!match) {
+        const candidates = (searchData && searchData.result) || [];
+        match = candidates.find(
+          (r) => (r.title_en || r.title || "").toLowerCase().includes(title.toLowerCase())
+        ) || candidates[0];
+      }
       if (!match)
         return [];
       const showSlug = match.slug || match.watch_uri;

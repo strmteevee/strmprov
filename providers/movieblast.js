@@ -161,8 +161,18 @@ function findBestMatch(mediaInfo, searchResults) {
     let score = calculateTitleSimilarity(mediaInfo.title, result.name);
     if (mediaInfo.year && result.release_date) {
       const resultYear = parseInt(result.release_date.split("-")[0]);
-      if (mediaInfo.year === resultYear)
-        score += 0.2;
+      if (!isNaN(resultYear)) {
+        if (Math.abs(mediaInfo.year - resultYear) <= 1) {
+          score += 0.2;
+        } else {
+          // Word-overlap alone is unreliable for short titles (e.g. "Up"
+          // vs "Guns Up" share their only real word), so a known release
+          // year that's off by more than a year is treated as a hard
+          // disqualifier instead of just withholding the bonus - otherwise
+          // an unrelated same-word title can still clear the threshold.
+          continue;
+        }
+      }
     }
     if (score > bestScore && score > 0.4) {
       bestScore = score;

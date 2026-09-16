@@ -333,10 +333,12 @@ function findCastleMovieId(securityKey, tmdbInfo, mediaType) {
 
     let best = candidates.find((item) => (item.title || item.name || "").toLowerCase() === searchTitle);
     if (!best) {
-      best = candidates.find((item) => {
-        const itemTitle = (item.title || item.name || "").toLowerCase();
-        return itemTitle.startsWith(`${searchTitle}:`) || itemTitle.startsWith(`${searchTitle} `) || itemTitle === searchTitle;
-      });
+      // Only accept a "<title>: <subtitle>" style match here (e.g. a
+      // reboot/special named "X: The Reunion"). A bare startsWith(`${searchTitle} `)
+      // is too loose - it previously matched unrelated shows like "Friends from
+      // College" or "Friends and Family" when searching for "Friends", silently
+      // serving the wrong show's video.
+      best = candidates.find((item) => (item.title || item.name || "").toLowerCase().startsWith(`${searchTitle}:`));
     }
     if (!best) {
       throw new Error(`No matching ${mediaType === "tv" ? "TV show" : "movie"} found for "${tmdbInfo.title}"`);

@@ -178,12 +178,23 @@ function getStreams(tmdbId, mediaType, season, episode) {
       const seasonItems = $2("ul.seasons-lst li");
       let targetUrl = itemUrl;
       let mediaType2 = 1;
+      const epNum = episode || 1;
+      const wantSeason = season || 1;
       if (seasonItems.length > 0) {
         mediaType2 = 2;
+        // Despite the "seasons-lst" name, this list is actually flat and
+        // per-episode - each item is labeled "S{season}-E{episode}" with its
+        // own distinct episode deep link (confirmed live: One Piece's list
+        // has one entry per episode, e.g. "S1-E1".."S1-E25", not one per
+        // season). Matching on the season digit alone and letting later
+        // items keep overwriting targetUrl - the previous behavior - always
+        // ended up on that season's *last* episode, regardless of which
+        // episode was actually requested.
         seasonItems.each((_, el) => {
-          const seasonNum = $2(el).find("h3.title > span").text().match(/S(\d+)/)?.[1];
+          const label = $2(el).find("h3.title > span").text();
+          const m = label.match(/S(\d+)-E(\d+)/i);
           const href = $2(el).find("a").attr("href");
-          if (href && parseInt(seasonNum) === (season || 1)) {
+          if (href && m && parseInt(m[1], 10) === wantSeason && parseInt(m[2], 10) === epNum) {
             targetUrl = href;
           }
         });
@@ -193,7 +204,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
       const targetBodyClass = $3("body").attr("class") || "";
       const targetTermMatch = targetBodyClass.match(/(?:term|postid)-(\d+)/);
       const targetTerm = targetTermMatch?.[1] || term;
-      const epNum = episode || 1;
       // The 11 track indices are independent lookups (each just asks "does
       // track i exist for this title"), so probing them one at a time was
       // paying their full round-trip latency 11 times over for no reason -

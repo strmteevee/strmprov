@@ -307,6 +307,15 @@ function createStreamTitle(mediaInfo) {
   }
   return mediaInfo.year ? `${mediaInfo.title} (${mediaInfo.year})` : mediaInfo.title;
 }
+// The URLs built below point at Vidlink's actual CDN (bcdn.hakunaymatata.com
+// or similar), not vidlink.pro itself - confirmed live that this CDN returns
+// 429/428 when the request carries vidlink.pro's own Referer/User-Agent
+// (VIDLINK_HEADERS, used elsewhere in this file for the vidlink.pro API
+// calls that produce these URLs) but 200/206 with no headers at all. These
+// stream objects intentionally carry no `headers` field - Nuvio only
+// attaches proxyHeaders when a stream has one, so omitting it here sends the
+// plain request the CDN actually wants, both for this file's own validation
+// and for real playback.
 function processVidlinkResponse(data, mediaInfo) {
   const streams = [];
   try {
@@ -337,7 +346,6 @@ function processVidlinkResponse(data, mediaInfo) {
             url: qualityData.url,
             quality,
             size: "Unknown",
-            headers: VIDLINK_HEADERS,
             provider: "vidlink",
             subtitles
           });
@@ -367,7 +375,6 @@ function processVidlinkResponse(data, mediaInfo) {
         url: data.url,
         quality,
         size: "Unknown",
-        headers: VIDLINK_HEADERS,
         provider: "vidlink",
         subtitles
       });
@@ -381,7 +388,6 @@ function processVidlinkResponse(data, mediaInfo) {
             url: stream.url,
             quality,
             size: stream.size || "Unknown",
-            headers: VIDLINK_HEADERS,
             provider: "vidlink",
             subtitles
           });
@@ -397,7 +403,6 @@ function processVidlinkResponse(data, mediaInfo) {
             url: link.url,
             quality,
             size: link.size || "Unknown",
-            headers: VIDLINK_HEADERS,
             provider: "vidlink",
             subtitles
           });
@@ -417,7 +422,6 @@ function processVidlinkResponse(data, mediaInfo) {
               url: value,
               quality,
               size: "Unknown",
-              headers: VIDLINK_HEADERS,
               provider: "vidlink",
               subtitles
             });

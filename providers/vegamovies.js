@@ -88,6 +88,15 @@ function findBestMatch(hits, mediaInfo) {
   let bestScore = -1;
   for (const hit of hits) {
     const doc = hit.document;
+    // A post title carrying its own distinct release year that conflicts
+    // with the target's is a hard mismatch, not just a missed bonus below -
+    // otherwise a same-named but unrelated title (e.g. "The Office" (2005)
+    // vs. an unrelated 2024 remake also called "The Office") wins purely on
+    // word overlap, since short common titles overlap 100% either way.
+    const postYearMatch = doc.post_title.match(/\b(19|20)\d{2}\b/);
+    if (mediaInfo.year && postYearMatch && Math.abs(parseInt(postYearMatch[0], 10) - parseInt(mediaInfo.year, 10)) > 1) {
+      continue;
+    }
     const titleWords = normalize(doc.post_title).split(' ').filter(Boolean);
     const overlap = titleWords.filter(w => targetWords.has(w)).length;
     let score = targetWords.size ? overlap / targetWords.size : 0;
@@ -180,7 +189,12 @@ function extractSeriesTargets($, season) {
     const seasonMatch = text.match(/Season\s*(\d+)/i);
     if (!seasonMatch || parseInt(seasonMatch[1], 10) !== season) return;
     if (!/\d{3,4}\s*[pP]|4K/i.test(text)) return;
-    const listUrl = findLinkByText($, $(el).next(), /Episode Links/i);
+    // Most posts label the per-episode hub link "Episode Links", but some
+    // (e.g. older season-pack posts) skip that label and put the hub link
+    // directly under "G-Direct" instead - confirmed live that link's target
+    // page lists one "G-Direct [Instant]" link per episode either way, so
+    // it's the same kind of hub, just unlabeled.
+    const listUrl = findLinkByText($, $(el).next(), /Episode Links/i) || findLinkByText($, $(el).next(), /G-Direct/i);
     if (listUrl) targets.push({ qualityText: text, listUrl });
   });
   return targets;

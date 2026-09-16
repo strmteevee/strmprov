@@ -411,6 +411,17 @@ function mergeSubtitles(embedded, extra) {
     return merged;
 }
 
+// Temporary diagnostic switch: set DISABLE_STREAM_SUBTITLES=true in .env to
+// stop attaching any `subtitles` array to stream objects at all (neither
+// provider-embedded ones nor the extra OpenSubtitles/SubDL lookup), while
+// leaving the separate /subtitles resource untouched - isolates whether
+// autoplaying the next episode failing ("No valid varint length mask
+// found") is actually caused by subtitles being attached to the stream
+// object, as opposed to the stream-selection issues already fixed in
+// lib/aggregate.js's probeStream. Remove this once that's confirmed either
+// way - it's not meant to be a permanent setting.
+const STREAM_SUBTITLES_DISABLED = process.env.DISABLE_STREAM_SUBTITLES === 'true';
+
 function buildStreamResponse(profileId, type, rawId) {
     const mediaType = type === 'series' ? 'tv' : 'movie';
     const [imdbId, seasonStr, episodeStr] = rawId.split(':');
@@ -434,7 +445,7 @@ function buildStreamResponse(profileId, type, rawId) {
             // couple of Range requests against the real file, so doing it
             // for every candidate would multiply that cost for no benefit.
             const preferred = streams.find(s => s.isPreferred);
-            const extraSubsPromise = preferred
+            const extraSubsPromise = (preferred && !STREAM_SUBTITLES_DISABLED)
                 ? subtitles.getSubtitles({
                     imdbId,
                     mediaType,
@@ -488,7 +499,9 @@ function buildStreamResponse(profileId, type, rawId) {
                                 return { url: sub.url, lang, language: lang, name };
                             });
                     }
-                    const combined = s === preferred ? mergeSubtitles(embedded, extraSubs) : embedded;
+                    const combined = STREAM_SUBTITLES_DISABLED
+                        ? []
+                        : (s === preferred ? mergeSubtitles(embedded, extraSubs) : embedded);
                     if (combined.length) stream.subtitles = combined;
                     return stream;
                 });

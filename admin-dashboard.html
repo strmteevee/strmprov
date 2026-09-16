@@ -319,14 +319,27 @@ function api(method, url, body) {
 const ENV_KEY_LABELS = {
   GEMINI_API_KEY: 'Gemini (AI recommendations)',
   SUBDL_API_KEY: 'SubDL (subtitles)',
-  OPENSUBTITLES_API_KEY: 'OpenSubtitles (subtitles)'
+  OPENSUBTITLES_API_KEY: 'OpenSubtitles (subtitles)',
+  DISABLE_STREAM_SUBTITLES: 'Disable subtitles on stream objects (diagnostic)'
 };
+// Boolean on/off flags render as a toggle switch instead of a text field -
+// currently just the one temporary diagnostic switch (see addon-server.js's
+// STREAM_SUBTITLES_DISABLED) for isolating whether attaching a `subtitles`
+// array directly to a stream object is what breaks Nuvio's autoplay-next.
+const ENV_BOOLEAN_KEYS = new Set(['DISABLE_STREAM_SUBTITLES']);
 
 function renderEnvKeys(keys) {
-  document.getElementById('env-body').innerHTML = keys.map(({ key, value }) => `
-    <label for="env-${key}">${escapeHtml(ENV_KEY_LABELS[key] || key)}</label>
-    <input type="text" class="mono" id="env-${key}" data-env-key="${key}" value="${escapeHtml(value)}" placeholder="not set" />
-  `).join('');
+  document.getElementById('env-body').innerHTML = keys.map(({ key, value }) => {
+    const label = `<label for="env-${key}">${escapeHtml(ENV_KEY_LABELS[key] || key)}</label>`;
+    if (ENV_BOOLEAN_KEYS.has(key)) {
+      return `${label}
+        <label class="switch">
+          <input type="checkbox" id="env-${key}" data-env-key="${key}" data-env-bool="true" ${value === 'true' ? 'checked' : ''} />
+          <span class="track"><span class="thumb"></span></span>
+        </label>`;
+    }
+    return `${label}<input type="text" class="mono" id="env-${key}" data-env-key="${key}" value="${escapeHtml(value)}" placeholder="not set" />`;
+  }).join('');
 }
 
 function loadEnvKeys() {
@@ -335,7 +348,9 @@ function loadEnvKeys() {
 
 document.getElementById('env-save').addEventListener('click', () => {
   const body = {};
-  document.querySelectorAll('#env-body [data-env-key]').forEach(el => { body[el.dataset.envKey] = el.value; });
+  document.querySelectorAll('#env-body [data-env-key]').forEach(el => {
+    body[el.dataset.envKey] = el.dataset.envBool ? String(el.checked) : el.value;
+  });
   api('POST', '/api/env', body)
     .then(() => { toast('API keys saved - restart the servers to apply', 'ok'); loadSubtitlesConfig(); })
     .catch(e => toast(e.message, 'error'));

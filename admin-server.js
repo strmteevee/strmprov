@@ -249,7 +249,7 @@ function handleSetBaseProfile(id, body, res) {
 // runs on whichever machine actually needs the key.
 
 const ENV_PATH = path.join(ROOT_DIR, '.env');
-const MANAGED_ENV_KEYS = ['GEMINI_API_KEY', 'SUBDL_API_KEY', 'OPENSUBTITLES_API_KEY'];
+const MANAGED_ENV_KEYS = ['GEMINI_API_KEY', 'SUBDL_API_KEY', 'OPENSUBTITLES_API_KEY', 'DISABLE_STREAM_SUBTITLES'];
 
 function readEnvFile() {
     const values = {};

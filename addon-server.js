@@ -436,6 +436,21 @@ function buildStreamResponse(profileId, type, rawId) {
             // gives up the extra hash-matching precision bonus for
             // whichever stream happens to be preferred, in exchange for
             // getting the actual video streaming again at a normal speed.
+            const preferred = streams.find(s => s.isPreferred);
+            if (preferred) {
+                // Logged so a future incident can be matched against
+                // whether Nuvio's own subsequent /subtitles request for
+                // this same episode ever carries a videoHash= extra - that
+                // only appears once Nuvio has actually opened and read the
+                // real file being played, so its absence is direct evidence
+                // playback never actually started, distinct from this
+                // response simply being slow or empty. Confirmed live this
+                // is exactly what happened for one real failure: the
+                // /stream response here arrived fine, but no
+                // videoHash-bearing /subtitles request for that episode
+                // ever followed.
+                console.log(`[addon-server] [PREFERRED] pick for ${imdbId}:${season || ''}:${episode || ''} -> ${preferred.source} "${preferred.name}" score=${preferred.score} lowConfidence=${!!preferred.lowConfidence} url=${preferred.url}`);
+            }
             const stremioStreams = streams.map(s => {
                 const behaviorHints = { notWebReady: true };
                 if (s.headers && Object.keys(s.headers).length) {

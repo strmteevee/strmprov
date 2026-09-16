@@ -19,7 +19,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { URL } = require('url');
-const { execFile } = require('child_process');
+const { execFile, exec } = require('child_process');
 
 // Installed early so this process's own console output is captured too -
 // see lib/logBuffer.js. addon-server.js's own logs are read by proxying to
@@ -41,6 +41,7 @@ process.on('unhandledRejection', (reason) => {
 const aggregate = require('./lib/aggregate');
 const profileStore = require('./lib/profileStore');
 const subtitles = require('./lib/subtitles');
+const providerHealth = require('./lib/providerHealth');
 
 const PORT = 3200;
 const ROOT_DIR = __dirname;
@@ -196,6 +197,69 @@ function handleRebuildCombined(res) {
     });
 }
 
+// ---- Deploy ----
+//
+// "Pull latest & restart" - removes the "copy files over by hand, then SSH
+// in to restart" cycle that came up constantly this session. `git pull`
+// itself needs no configuration and is run with fixed args (execFile, no
+// shell) since there's nothing user-supplied in it. Actually restarting the
+// servers afterward is inherently specific to however this deployment
+// manages its processes (pm2, systemd, plain nohup, ...) - rather than
+// guessing at one, the exact command is something the admin sets once here
+// (e.g. "pm2 restart addon-server admin-server"), same LAN-only trust model
+// as every other admin-only setting in this file. Left blank, this just does
+// the pull and reports that a manual restart is still needed.
+
+const DEPLOY_CONFIG_PATH = path.join(ROOT_DIR, 'config', 'deploy.json');
+
+function readDeployConfig() {
+    try {
+        return JSON.parse(fs.readFileSync(DEPLOY_CONFIG_PATH, 'utf8'));
+    } catch (e) {
+        return { restartCommand: '' };
+    }
+}
+
+function writeDeployConfig(config) {
+    fs.mkdirSync(path.dirname(DEPLOY_CONFIG_PATH), { recursive: true });
+    fs.writeFileSync(DEPLOY_CONFIG_PATH, JSON.stringify(config, null, 2));
+}
+
+function handleGetDeployConfig(res) {
+    sendJson(res, 200, readDeployConfig());
+}
+
+function handleSetDeployConfig(body, res) {
+    const restartCommand = typeof body.restartCommand === 'string' ? body.restartCommand.trim() : '';
+    writeDeployConfig({ restartCommand });
+    sendJson(res, 200, { restartCommand });
+}
+
+// Runs the restart command a moment AFTER responding, not before - if it
+// restarts this very admin-server process (a very likely thing for it to
+// do), the HTTP response still needs time to actually reach the browser
+// first. exec (a real shell), not execFile, since a restart command
+// legitimately might need to run more than one thing (e.g. "pm2 restart
+// addon-server admin-server") - safe here specifically because this string
+// is never anything but what the admin themselves typed into this same
+// LAN-only panel, never anything from a request body field name or an
+// external source.
+function handlePullAndRestart(res) {
+    execFile('git', ['pull'], { cwd: ROOT_DIR, timeout: 60000 }, (err, stdout, stderr) => {
+        if (err) return sendJson(res, 500, { error: err.message, stdout, stderr });
+        const { restartCommand } = readDeployConfig();
+        sendJson(res, 200, { pullOutput: stdout.trim(), restarted: !!restartCommand });
+        if (restartCommand) {
+            setTimeout(() => {
+                exec(restartCommand, { cwd: ROOT_DIR, timeout: 30000 }, (restartErr, restartStdout, restartStderr) => {
+                    if (restartErr) console.error(`[admin-server] restart command failed: ${restartErr.message} ${restartStderr || ''}`);
+                    else console.log(`[admin-server] restart command output: ${restartStdout.trim()}`);
+                });
+            }, 500);
+        }
+    });
+}
+
 // ---- Ranking ----
 
 function handleGetRanking(res) {
@@ -336,6 +400,12 @@ function handleSetSubtitlesConfig(body, res) {
     handleGetSubtitlesConfig(res);
 }
 
+// ---- Provider health ----
+
+function handleGetProviderHealth(res) {
+    sendJson(res, 200, { rows: providerHealth.getHealth(), retentionDays: providerHealth.RETENTION_DAYS });
+}
+
 // ---- Live test ----
 
 function handleTest(body, res) {
@@ -456,12 +526,27 @@ const server = http.createServer((req, res) => {
     if (parts[0] === 'api' && parts[1] === 'rebuild-combined' && req.method === 'POST') {
         return handleRebuildCombined(res);
     }
+    // /api/deploy-config
+    if (parts[0] === 'api' && parts[1] === 'deploy-config' && req.method === 'GET') {
+        return handleGetDeployConfig(res);
+    }
+    if (parts[0] === 'api' && parts[1] === 'deploy-config' && req.method === 'POST') {
+        return readBody(req).then(body => handleSetDeployConfig(body, res)).catch(e => sendJson(res, 400, { error: e.message }));
+    }
+    // /api/deploy
+    if (parts[0] === 'api' && parts[1] === 'deploy' && req.method === 'POST') {
+        return handlePullAndRestart(res);
+    }
     // /api/ranking
     if (parts[0] === 'api' && parts[1] === 'ranking' && req.method === 'GET') {
         return handleGetRanking(res);
     }
     if (parts[0] === 'api' && parts[1] === 'ranking' && req.method === 'POST') {
         return readBody(req).then(body => handleSetRanking(body, res)).catch(e => sendJson(res, 400, { error: e.message }));
+    }
+    // /api/provider-health
+    if (parts[0] === 'api' && parts[1] === 'provider-health' && req.method === 'GET') {
+        return handleGetProviderHealth(res);
     }
     // /api/profiles
     if (parts[0] === 'api' && parts[1] === 'profiles' && parts.length === 2 && req.method === 'GET') {

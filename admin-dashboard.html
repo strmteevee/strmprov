@@ -132,6 +132,7 @@
   .badge { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; }
   .badge.good { background: rgba(76,175,125,0.18); color: var(--good); }
   .badge.warn { background: rgba(217,164,65,0.18); color: var(--warn); }
+  .badge.bad { background: rgba(229,99,107,0.18); color: var(--bad); }
   .toast {
     position: fixed; bottom: 20px; right: 20px;
     background: var(--panel); border: 1px solid var(--panel-border);
@@ -180,7 +181,7 @@
 
 <header>
   <h1>strmprov admin</h1>
-  <span>api keys · providers · ranking · profiles · subtitles · live test · catalog test · logs</span>
+  <span>api keys · deploy · providers · ranking · provider health · profiles · subtitles · live test · catalog test · logs</span>
 </header>
 
 <main>
@@ -192,6 +193,19 @@
     <div class="row" style="margin-top:14px;">
       <button class="primary" id="env-save">Save API keys</button>
     </div>
+  </section>
+
+  <section class="panel" id="deploy-panel">
+    <h2>Deploy</h2>
+    <p class="desc">Runs <span class="mono">git pull</span> in this server's own checkout, then - if set below - runs a restart command afterward. The restart command depends entirely on how you run these servers (pm2, systemd, plain node, ...) - set it once for your own setup; leave it blank to just pull and restart manually.</p>
+    <div class="field-row">
+      <div class="field" style="flex:1; min-width:260px;"><label>Restart command (optional)</label><input type="text" class="mono" id="deploy-restart-command" placeholder='e.g. pm2 restart addon-server admin-server' style="width:100%;" /></div>
+      <div class="field"><label>&nbsp;</label><button id="deploy-save-command">Save command</button></div>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <button class="primary" id="deploy-run">Pull latest &amp; restart</button>
+    </div>
+    <pre class="output" id="deploy-output" style="margin-top:10px; display:none;"></pre>
   </section>
 
   <section class="panel" id="providers-panel">
@@ -226,6 +240,18 @@
     <div class="row" style="margin-top:14px;">
       <button class="primary" id="ranking-save">Save ranking</button>
       <button id="rebuild-combined">Rebuild allsources.js</button>
+    </div>
+  </section>
+
+  <section class="panel" id="provider-health-panel">
+    <h2>Provider health</h2>
+    <p class="desc">Real success/empty/error counts from every live stream request, over the last <span id="health-retention">14</span> days - a provider stuck near 0% is chronically broken (wrong results, dead hosts, changed site structure) rather than just unlucky on one title. Sorted worst first.</p>
+    <table>
+      <thead><tr><th>Provider</th><th>Requests</th><th>Success</th><th>Empty</th><th>Error</th><th>Success rate</th><th>Last seen</th></tr></thead>
+      <tbody id="provider-health-body"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+    </table>
+    <div class="row" style="margin-top:14px;">
+      <button id="provider-health-refresh">Refresh</button>
     </div>
   </section>
 
@@ -385,6 +411,46 @@ document.getElementById('env-save').addEventListener('click', () => {
   api('POST', '/api/env', body)
     .then(() => { toast('API keys saved - restart the servers to apply', 'ok'); loadSubtitlesConfig(); })
     .catch(e => toast(e.message, 'error'));
+});
+
+// ---- Deploy ----
+
+function loadDeployConfig() {
+  return api('GET', '/api/deploy-config').then(data => {
+    document.getElementById('deploy-restart-command').value = data.restartCommand || '';
+  });
+}
+
+document.getElementById('deploy-save-command').addEventListener('click', () => {
+  const restartCommand = document.getElementById('deploy-restart-command').value;
+  api('POST', '/api/deploy-config', { restartCommand })
+    .then(() => toast('Restart command saved', 'ok'))
+    .catch(e => toast(e.message, 'error'));
+});
+
+document.getElementById('deploy-run').addEventListener('click', (e) => {
+  const hasRestart = document.getElementById('deploy-restart-command').value.trim().length > 0;
+  const confirmMsg = hasRestart
+    ? 'Pull the latest code and restart the servers now? Playback in progress may briefly interrupt.'
+    : 'Pull the latest code now? (No restart command is set, so a manual restart will still be needed.)';
+  if (!confirm(confirmMsg)) return;
+
+  const output = document.getElementById('deploy-output');
+  e.target.disabled = true;
+  e.target.textContent = 'Pulling…';
+  output.style.display = 'block';
+  output.textContent = 'Running git pull…';
+
+  api('POST', '/api/deploy')
+    .then(data => {
+      output.textContent = data.pullOutput || '(no output)';
+      toast(data.restarted ? 'Pulled - restarting…' : 'Pulled - no restart command set, restart manually', 'ok');
+    })
+    .catch(err => {
+      output.textContent = err.message;
+      toast(err.message, 'error');
+    })
+    .then(() => { e.target.disabled = false; e.target.textContent = 'Pull latest & restart'; });
 });
 
 // ---- Providers ----
@@ -573,6 +639,40 @@ function loadRanking() {
     renderRanking();
   });
 }
+
+// ---- Provider health ----
+
+function renderProviderHealth(rows) {
+  const body = document.getElementById('provider-health-body');
+  if (rows.length === 0) {
+    body.innerHTML = '<tr><td colspan="7" class="muted">No requests recorded yet - health data appears after real stream requests come in.</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map(r => {
+    const pct = r.successRate === null ? null : Math.round(r.successRate * 100);
+    const badgeClass = pct === null ? '' : pct >= 50 ? 'good' : pct >= 15 ? 'warn' : 'bad';
+    return `<tr>
+      <td class="mono">${escapeHtml(r.id)}</td>
+      <td>${r.requests}</td>
+      <td>${r.success}</td>
+      <td>${r.empty}</td>
+      <td>${r.error}</td>
+      <td>${pct === null ? '<span class="muted">—</span>' : `<span class="badge ${badgeClass}">${pct}%</span>`}</td>
+      <td class="muted">${escapeHtml(r.lastSeen || '—')}</td>
+    </tr>`;
+  }).join('');
+}
+
+function loadProviderHealth() {
+  return api('GET', '/api/provider-health').then(data => {
+    document.getElementById('health-retention').textContent = data.retentionDays;
+    renderProviderHealth(data.rows || []);
+  });
+}
+
+document.getElementById('provider-health-refresh').addEventListener('click', () => {
+  loadProviderHealth().catch(e => toast(e.message, 'error'));
+});
 
 // ---- Profiles ----
 
@@ -823,7 +923,7 @@ function escapeHtml(str) {
   return String(str == null ? '' : str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-Promise.all([loadEnvKeys(), loadProviders(), loadRanking(), loadProfiles(), loadSubtitlesConfig(), loadCatalogManifest()]).catch(e => toast(e.message, 'error'));
+Promise.all([loadEnvKeys(), loadDeployConfig(), loadProviders(), loadRanking(), loadProviderHealth(), loadProfiles(), loadSubtitlesConfig(), loadCatalogManifest()]).catch(e => toast(e.message, 'error'));
 </script>
 
 </body>

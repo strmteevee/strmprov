@@ -349,14 +349,14 @@ function api(method, url, body) {
 const ENV_KEY_LABELS = {
   GEMINI_API_KEY: 'Gemini (AI recommendations)',
   SUBDL_API_KEY: 'SubDL (subtitles)',
-  OPENSUBTITLES_API_KEY: 'OpenSubtitles (subtitles)',
-  DISABLE_STREAM_SUBTITLES: 'Disable subtitles on stream objects (diagnostic)'
+  OPENSUBTITLES_API_KEY: 'OpenSubtitles (subtitles)'
 };
-// Boolean on/off flags render as a toggle switch instead of a text field -
-// currently just the one temporary diagnostic switch (see addon-server.js's
-// STREAM_SUBTITLES_DISABLED) for isolating whether attaching a `subtitles`
-// array directly to a stream object is what breaks Nuvio's autoplay-next.
-const ENV_BOOLEAN_KEYS = new Set(['DISABLE_STREAM_SUBTITLES']);
+// Boolean on/off flags would render as a toggle switch instead of a text
+// field - none currently defined (the one temporary diagnostic switch this
+// held, for isolating a stream-object subtitles bug, is gone now that the
+// underlying feature that caused it was removed - see addon-server.js's
+// buildStreamResponse).
+const ENV_BOOLEAN_KEYS = new Set();
 
 function renderEnvKeys(keys) {
   document.getElementById('env-body').innerHTML = keys.map(({ key, value }) => {

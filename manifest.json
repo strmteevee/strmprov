@@ -160,15 +160,15 @@
     {
       "id": "uhdmovies",
       "name": "UHDMovies",
-      "description": "UHD Movies streaming with multiple resolution. Disabled: its only reachable delivery path (driveseed's \"Instant Download\") always terminates at a video-downloads.googleusercontent.com Google Drive link, which does not support HTTP Range requests at all (a ranged request gets back the full multi-GB file, 200 not 206). A proxy that fakes Range support by discarding leading bytes (lib/rangeProxy.js) was tried and briefly shipped, but confirmed live not to actually solve this: a request for a range near the end of a real movie file - which many MKVs need immediately for their seek index - took over 4 minutes over a Pi's real upload bandwidth, far past any player's timeout. The one alternative path (\"Resume Cloud\") is gated behind a real Cloudflare Turnstile challenge that isn't something to solve programmatically. Re-enable if the site adds a genuinely seekable delivery option.",
-      "version": "1.3.1",
+      "description": "UHD Movies streaming with multiple resolution. Its \"Instant Download\" path terminates at a video-downloads.googleusercontent.com Google Drive link; this used to never support HTTP Range at all, but re-verified live (2026-09-17) that's no longer uniformly true - some of these links now return a genuine 206 with fast end-of-file seeks (needed for many MKVs' seek index), though roughly half still silently ignore Range and hand back the full multi-GB file with a 200. lib/aggregate.js's dropUnplayable now live-probes each Google Drive link's actual Range support and only keeps the ones that pass, instead of the previous blanket domain-based drop. The other path (\"Resume Cloud\") is still gated behind a real Cloudflare Turnstile challenge and isn't used.",
+      "version": "1.4.0",
       "author": "Nuvio Team",
       "supportedTypes": [
         "movie",
         "tv"
       ],
       "filename": "providers/uhdmovies.js",
-      "enabled": false,
+      "enabled": true,
       "formats": [
         "mkv"
       ],

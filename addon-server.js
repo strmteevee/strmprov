@@ -70,6 +70,9 @@ const gemini = require('./lib/gemini');
 const subtitles = require('./lib/subtitles');
 const indycar = require('./providers/indycar');
 const f1 = require('./providers/f1');
+const usenetProvider = require('./providers/usenet');
+const usenetConfig = require('./lib/usenetConfig');
+const usenetSessions = require('./lib/usenet/sessionManager');
 
 const PORT = 3100;
 const CATALOG_SEED_COUNT = 10;
@@ -97,6 +100,72 @@ function sendJson(res, status, body) {
         'Access-Control-Allow-Headers': 'Content-Type'
     });
     res.end(JSON.stringify(body));
+}
+
+const USENET_MIME_TYPES = {
+    mkv: 'video/x-matroska', mp4: 'video/mp4', m4v: 'video/mp4', avi: 'video/x-msvideo',
+    mov: 'video/quicktime', webm: 'video/webm', ts: 'video/mp2t', m2ts: 'video/mp2t',
+    wmv: 'video/x-ms-wmv', flv: 'video/x-flv'
+};
+
+// Serves one Usenet stream live, segment by segment, straight from NNTP -
+// nothing is ever written to disk (see lib/usenet/streamSession.js's own
+// header comment for the full design). The token is opaque (see
+// providers/usenet.js's makeToken) and carries everything needed to
+// re-fetch the NZB; the session itself is kept alive across requests by
+// lib/usenet/sessionManager.js so ordinary forward playback reuses the same
+// NNTP connections instead of reconnecting per chunk.
+function handleUsenetStream(req, res, token, filenameFromUrl) {
+    const decoded = usenetProvider.decodeToken(token);
+    if (!decoded) return notFound(res);
+
+    const config = usenetConfig.readUsenetConfig();
+    if (!usenetConfig.isUsenetConfigured(config)) {
+        res.writeHead(503, { 'Content-Type': 'text/plain' });
+        res.end('No Usenet provider configured - add one in the admin panel\'s Usenet section first.');
+        return;
+    }
+
+    const range = req.headers.range;
+    const rangeMatch = range && /bytes=(\d*)-(\d*)/.exec(range);
+    const requestedStart = rangeMatch && rangeMatch[1] ? parseInt(rangeMatch[1], 10) : 0;
+
+    return usenetSessions.getSessionForRequest(token, decoded.n, config, requestedStart)
+        .then(session => {
+            const totalSize = session.totalSize;
+            const start = requestedStart;
+            const end = Math.min(rangeMatch && rangeMatch[2] ? parseInt(rangeMatch[2], 10) : totalSize - 1, totalSize - 1);
+
+            const ext = (filenameFromUrl || '').split('.').pop().toLowerCase();
+            const contentType = USENET_MIME_TYPES[ext] || 'video/x-matroska';
+
+            res.writeHead(206, {
+                'Content-Type': contentType,
+                'Content-Range': `bytes ${start}-${end}/${totalSize}`,
+                'Content-Length': end - start + 1,
+                'Accept-Ranges': 'bytes'
+            });
+
+            let destroyed = false;
+            res.on('close', () => { destroyed = true; });
+
+            const requestId = session.beginRequest();
+            return session.pipeRange(start, end, (chunk) => {
+                if (!destroyed) res.write(Buffer.from(chunk));
+            }, requestId).then(() => {
+                if (!destroyed) res.end();
+            });
+        })
+        .catch(err => {
+            console.error(`[addon-server] usenet stream error: ${err.message}`);
+            usenetSessions.dropSession(token);
+            if (!res.headersSent) {
+                res.writeHead(502, { 'Content-Type': 'text/plain' });
+                res.end(`Usenet stream error: ${err.message}`);
+            } else {
+                res.end();
+            }
+        });
 }
 
 function buildManifest(profileId) {
@@ -439,7 +508,7 @@ function mergeSubtitles(embedded, extra) {
     return merged;
 }
 
-function buildStreamResponse(profileId, type, rawId) {
+function buildStreamResponse(profileId, type, rawId, requestHost) {
     const mediaType = type === 'series' ? 'tv' : 'movie';
     const [imdbId, seasonStr, episodeStr] = rawId.split(':');
     const season = seasonStr ? parseInt(seasonStr, 10) : null;
@@ -489,8 +558,20 @@ function buildStreamResponse(profileId, type, rawId) {
                     if (s.headers && Object.keys(s.headers).length) {
                         behaviorHints.proxyHeaders = { request: s.headers };
                     }
+                    // The usenet provider has no way to know this server's
+                    // own externally-reachable address (unlike every other
+                    // provider, its "stream" isn't an external hotlink -
+                    // it's served by this same process), so it hands back a
+                    // placeholder token instead of a real url and the actual
+                    // absolute URL is built here, from the request's own
+                    // Host header (works regardless of LAN IP/port-forward
+                    // setup, same reasoning as the addon's own manifest URLs
+                    // elsewhere in this file).
+                    const url = s.usenetToken
+                        ? `http://${requestHost}/usenet/stream/${encodeURIComponent(s.usenetToken)}/${encodeURIComponent(s.usenetFilename || 'video.mkv')}`
+                        : s.url;
                     const stream = {
-                        url: s.url,
+                        url,
                         name: s.name || s.source || 'Stream',
                         title: [s.quality, s.size].filter(Boolean).join(' | ') || s.title || '',
                         behaviorHints
@@ -604,6 +685,15 @@ const server = http.createServer((req, res) => {
         return;
     }
 
+    // /usenet/stream/:token/:filename - see handleUsenetStream's own header
+    // comment. Not profile-scoped (the token is self-contained), and not
+    // JSON like everything else here since it serves actual video bytes.
+    if (parts[0] === 'usenet' && parts[1] === 'stream' && parts.length >= 4 && req.method === 'GET') {
+        const token = decodeURIComponent(parts[2]);
+        const filenameFromUrl = decodeURIComponent(parts.slice(3).join('/'));
+        return handleUsenetStream(req, res, token, filenameFromUrl);
+    }
+
     // /logs?limit=200 - read by admin-server.js's own /api/logs proxy, same
     // pattern as its existing catalog-test proxy - lets the admin dashboard
     // show this process's own console output without SSH/pm2/journalctl
@@ -682,7 +772,7 @@ const server = http.createServer((req, res) => {
         if (type !== 'movie' && type !== 'series') {
             return sendJson(res, 200, { streams: [] });
         }
-        return buildStreamResponse(profileId, type, id).then(body => sendJson(res, 200, body));
+        return buildStreamResponse(profileId, type, id, req.headers.host).then(body => sendJson(res, 200, body));
     }
 
     return notFound(res);

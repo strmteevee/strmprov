@@ -42,6 +42,8 @@ const aggregate = require('./lib/aggregate');
 const profileStore = require('./lib/profileStore');
 const subtitles = require('./lib/subtitles');
 const providerHealth = require('./lib/providerHealth');
+const usenetConfig = require('./lib/usenetConfig');
+const { NntpClient } = require('./lib/usenet/nntp');
 
 const PORT = 3200;
 const ROOT_DIR = __dirname;
@@ -400,6 +402,48 @@ function handleSetSubtitlesConfig(body, res) {
     handleGetSubtitlesConfig(res);
 }
 
+// ---- Usenet ----
+
+function handleGetUsenetConfig(res) {
+    const config = usenetConfig.readUsenetConfig();
+    sendJson(res, 200, Object.assign(usenetConfig.redactUsenetConfig(config), {
+        configured: usenetConfig.isUsenetConfigured(config)
+    }));
+}
+
+function handleSetUsenetConfig(body, res) {
+    const saved = usenetConfig.readUsenetConfig();
+    // Password field may arrive masked (unchanged) from the dashboard - fall
+    // back to the already-saved one so a save right after a page load
+    // doesn't blank out a real password the user isn't touching.
+    const password = (body.password && /^•+$/.test(body.password)) ? saved.password : body.password;
+    const config = usenetConfig.writeUsenetConfig(Object.assign({}, body, { password }));
+    handleGetUsenetConfig(res);
+}
+
+function handleTestUsenetConfig(body, res) {
+    const saved = usenetConfig.readUsenetConfig();
+    const config = {
+        host: body.host || saved.host,
+        port: parseInt(body.port, 10) || saved.port,
+        ssl: body.ssl !== undefined ? !!body.ssl : saved.ssl,
+        username: body.username || saved.username,
+        password: (body.password && !/^•+$/.test(body.password)) ? body.password : saved.password
+    };
+
+    const client = new NntpClient({ host: config.host, port: config.port, ssl: config.ssl, timeoutMs: 10000 });
+    client.connect()
+        .then(() => client.authinfo(config.username, config.password))
+        .then(() => {
+            client.quit();
+            sendJson(res, 200, { ok: true });
+        })
+        .catch(err => {
+            try { client.quit(); } catch (e) { /* ignore */ }
+            sendJson(res, 200, { ok: false, error: err.message });
+        });
+}
+
 // ---- Provider health ----
 
 function handleGetProviderHealth(res) {
@@ -577,6 +621,16 @@ const server = http.createServer((req, res) => {
     }
     if (parts[0] === 'api' && parts[1] === 'subtitles-config' && req.method === 'POST') {
         return readBody(req).then(body => handleSetSubtitlesConfig(body, res)).catch(e => sendJson(res, 400, { error: e.message }));
+    }
+    // /api/usenet-config
+    if (parts[0] === 'api' && parts[1] === 'usenet-config' && parts.length === 2 && req.method === 'GET') {
+        return handleGetUsenetConfig(res);
+    }
+    if (parts[0] === 'api' && parts[1] === 'usenet-config' && parts.length === 2 && req.method === 'POST') {
+        return readBody(req).then(body => handleSetUsenetConfig(body, res)).catch(e => sendJson(res, 400, { error: e.message }));
+    }
+    if (parts[0] === 'api' && parts[1] === 'usenet-config' && parts[2] === 'test' && req.method === 'POST') {
+        return readBody(req).then(body => handleTestUsenetConfig(body, res)).catch(e => sendJson(res, 400, { error: e.message }));
     }
     // /api/test
     if (parts[0] === 'api' && parts[1] === 'test' && req.method === 'POST') {

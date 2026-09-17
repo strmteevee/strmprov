@@ -487,6 +487,27 @@
         "en",
         "hi"
       ]
+    },
+    {
+      "id": "usenet",
+      "name": "Usenet",
+      "description": "Real-time progressive streaming from Usenet (NZBKing + Binsearch, no account needed for search) over your own NNTP provider's connection - configure it in the admin panel's Usenet section. Nothing is written to disk; segments are fetched, decoded, and served live as the player consumes them. Only tried as a last resort when every other provider comes up empty, since even a successful match here starts noticeably slower than an instant CDN link.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/usenet.js",
+      "enabled": true,
+      "formats": [
+        "mkv",
+        "mp4"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=nzbking.com&sz=128",
+      "contentLanguage": [
+        "en"
+      ]
     }
   ]
 }

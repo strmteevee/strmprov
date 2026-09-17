@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Usenet Search</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #262b36; --text: #e6e8ec;
+    --muted: #8b93a3; --accent: #4f8cff; --good: #2fbf71; --warn: #d98c2b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+  }
+  header { padding: 24px 32px 12px; }
+  header h1 { margin: 0 0 4px; font-size: 20px; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; max-width: 720px; }
+  form {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;
+    padding: 16px 32px; background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .field input, .field select {
+    background: #0f1115; border: 1px solid var(--border); color: var(--text);
+    padding: 8px 10px; border-radius: 6px; font-size: 14px; min-width: 90px;
+  }
+  #title { min-width: 260px; }
+  button[type=submit] {
+    background: var(--accent); color: #fff; border: none; padding: 9px 18px;
+    border-radius: 6px; font-size: 14px; cursor: pointer; font-weight: 600;
+  }
+  button[type=submit]:disabled { opacity: .5; cursor: default; }
+  .tv-only { display: none; }
+  .tv-only.show { display: flex; }
+  main { padding: 20px 32px 60px; }
+  #status { color: var(--muted); font-size: 13px; margin-bottom: 12px; min-height: 18px; }
+  #errors { margin-bottom: 12px; }
+  .error-banner {
+    background: #2a1c14; border: 1px solid #5a3a1f; color: var(--warn);
+    padding: 8px 12px; border-radius: 6px; font-size: 13px; margin-bottom: 6px;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--muted); font-weight: 600; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:hover td { background: #1b1f28; }
+  .filename { font-weight: 500; word-break: break-all; }
+  .badge {
+    display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 11px;
+    font-weight: 600; text-transform: uppercase;
+  }
+  .badge.ext { background: #1e2a3d; color: #7fb0ff; }
+  .badge.nzbking { background: #26331e; color: #a3d16a; }
+  .badge.binsearch { background: #332a1e; color: #d1a86a; }
+  .muted { color: var(--muted); }
+  a.nzb-link {
+    color: #fff; background: var(--good); text-decoration: none; padding: 5px 10px;
+    border-radius: 5px; font-size: 12px; font-weight: 600; white-space: nowrap;
+  }
+  a.details-link { color: var(--accent); text-decoration: none; font-size: 12px; margin-left: 8px; }
+  #empty { color: var(--muted); padding: 30px 0; text-align: center; }
+
+  header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+  header .intro { max-width: 720px; }
+  #settings-toggle {
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; white-space: nowrap;
+  }
+  #provider-panel {
+    display: none; background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: 16px 32px;
+  }
+  #provider-panel.show { display: block; }
+  #provider-panel .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+  #provider-panel .checkbox-field { flex-direction: row; align-items: center; gap: 6px; }
+  #provider-panel .checkbox-field input { min-width: auto; }
+  #provider-panel .actions { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
+  button.secondary {
+    background: #232838; color: var(--text); border: 1px solid var(--border);
+    padding: 8px 16px; border-radius: 6px; font-size: 13px; cursor: pointer;
+  }
+  button.secondary:disabled { opacity: .5; cursor: default; }
+  #provider-status { font-size: 13px; }
+  #provider-status.ok { color: var(--good); }
+  #provider-status.fail { color: #e05656; }
+  .play-btn {
+    background: var(--accent); color: #fff; border: none; padding: 5px 10px;
+    border-radius: 5px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap;
+  }
+  .play-btn:disabled { opacity: .4; cursor: default; }
+  .check-result { font-size: 12px; margin-left: 6px; }
+  .check-result.ok { color: var(--good); }
+  .check-result.fail { color: #e05656; }
+
+  #player-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7);
+    align-items: center; justify-content: center; z-index: 50;
+  }
+  #player-overlay.show { display: flex; }
+  #player-box {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    width: min(900px, 92vw); padding: 20px; position: relative;
+  }
+  #player-close {
+    position: absolute; top: 10px; right: 14px; background: none; border: none;
+    color: var(--muted); font-size: 20px; cursor: pointer;
+  }
+  #player-title { font-size: 14px; margin: 0 30px 14px 0; word-break: break-all; }
+  #player-progress-track {
+    background: #0f1115; border-radius: 6px; height: 10px; overflow: hidden; margin-bottom: 8px;
+  }
+  #player-progress-bar { background: var(--accent); height: 100%; width: 0%; transition: width .3s; }
+  #player-progress-label { font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+  #player-video { width: 100%; max-height: 70vh; display: none; background: #000; border-radius: 6px; }
+  #player-error { color: #e05656; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="intro">
+    <h1>Usenet Movie/Series Search</h1>
+    <p>
+      Searches free public Usenet indexers (NZBKing, Binsearch) and shows only releases that
+      look like a single, directly playable video file &mdash; compressed/split archives
+      (RAR, ZIP, 7z, numbered .NNN volumes) are filtered out. Playback downloads the file via
+      your own configured Usenet provider first, then plays it with the browser's built-in
+      video element &mdash; container/codec support depends on your browser (MP4/H.264 is the
+      safest bet; HEVC and some MKV audio tracks may not play natively).
+    </p>
+  </div>
+  <button id="settings-toggle" type="button">Provider Settings</button>
+</header>
+
+<div id="provider-panel">
+  <div class="row">
+    <div class="field">
+      <label for="p-host">Host</label>
+      <input id="p-host" type="text" placeholder="news.example.com" style="min-width:200px">
+    </div>
+    <div class="field">
+      <label for="p-port">Port</label>
+      <input id="p-port" type="number" style="min-width:80px" value="563">
+    </div>
+    <div class="field checkbox-field">
+      <input id="p-ssl" type="checkbox" checked>
+      <label for="p-ssl" style="text-transform:none;font-size:13px;">SSL</label>
+    </div>
+    <div class="field">
+      <label for="p-user">Username</label>
+      <input id="p-user" type="text" style="min-width:140px">
+    </div>
+    <div class="field">
+      <label for="p-pass">Password</label>
+      <input id="p-pass" type="password" style="min-width:140px">
+    </div>
+    <div class="field">
+      <label for="p-conn">Connections</label>
+      <input id="p-conn" type="number" min="1" max="20" value="4" style="min-width:70px">
+    </div>
+  </div>
+  <div class="actions">
+    <button class="secondary" id="p-save" type="button">Save</button>
+    <button class="secondary" id="p-test" type="button">Test Connection</button>
+    <span id="provider-status"></span>
+  </div>
+</div>
+
+<form id="search-form">
+  <div class="field">
+    <label for="title">Title</label>
+    <input id="title" name="title" type="text" placeholder="e.g. Inception" required>
+  </div>
+  <div class="field">
+    <label for="type">Type</label>
+    <select id="type" name="type">
+      <option value="movie">Movie</option>
+      <option value="tv">Series</option>
+    </select>
+  </div>
+  <div class="field" id="year-field">
+    <label for="year">Year</label>
+    <input id="year" name="year" type="text" placeholder="2010" style="min-width:70px">
+  </div>
+  <div class="field tv-only" id="season-field">
+    <label for="season">Season</label>
+    <input id="season" name="season" type="number" min="1" style="min-width:70px">
+  </div>
+  <div class="field tv-only" id="episode-field">
+    <label for="episode">Episode</label>
+    <input id="episode" name="episode" type="number" min="1" style="min-width:70px">
+  </div>
+  <button type="submit" id="submit-btn">Search</button>
+</form>
+
+<main>
+  <div id="status"></div>
+  <div id="errors"></div>
+  <table id="results-table" style="display:none">
+    <thead>
+      <tr>
+        <th>Filename</th>
+        <th>Size</th>
+        <th>Age</th>
+        <th>Source</th>
+        <th>Group(s)</th>
+        <th></th>
+        <th>Availability</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="results-body"></tbody>
+  </table>
+  <div id="empty" style="display:none">No playable (non-compressed) results found.</div>
+</main>
+
+<div id="player-overlay">
+  <div id="player-box">
+    <button id="player-close" type="button">&times;</button>
+    <p id="player-title"></p>
+    <div id="player-progress-track"><div id="player-progress-bar"></div></div>
+    <div id="player-progress-label"></div>
+    <div id="player-error"></div>
+    <video id="player-video" controls></video>
+  </div>
+</div>
+
+<script>
+const form = document.getElementById('search-form');
+const typeSelect = document.getElementById('type');
+const yearField = document.getElementById('year-field');
+const tvFields = document.querySelectorAll('.tv-only');
+const statusEl = document.getElementById('status');
+const errorsEl = document.getElementById('errors');
+const table = document.getElementById('results-table');
+const tbody = document.getElementById('results-body');
+const emptyEl = document.getElementById('empty');
+const submitBtn = document.getElementById('submit-btn');
+
+function updateTypeUI() {
+  const isTv = typeSelect.value === 'tv';
+  tvFields.forEach(el => el.classList.toggle('show', isTv));
+  yearField.style.display = isTv ? 'none' : '';
+}
+typeSelect.addEventListener('change', updateTypeUI);
+updateTypeUI();
+
+function escapeHtml(s) {
+  return (s || '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const title = document.getElementById('title').value.trim();
+  if (!title) return;
+
+  const params = new URLSearchParams({ title });
+  if (typeSelect.value === 'tv') {
+    const season = document.getElementById('season').value;
+    const episode = document.getElementById('episode').value;
+    if (season) params.set('season', season);
+    if (episode) params.set('episode', episode);
+  } else {
+    const year = document.getElementById('year').value.trim();
+    if (year) params.set('year', year);
+  }
+
+  submitBtn.disabled = true;
+  statusEl.textContent = 'Searching NZBKing + Binsearch...';
+  errorsEl.innerHTML = '';
+  table.style.display = 'none';
+  emptyEl.style.display = 'none';
+  tbody.innerHTML = '';
+
+  try {
+    const res = await fetch('/api/search?' + params.toString());
+    const data = await res.json();
+
+    if (!res.ok) {
+      statusEl.textContent = '';
+      errorsEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || 'Search failed')}</div>`;
+      return;
+    }
+
+    (data.errors || []).forEach(err => {
+      errorsEl.innerHTML += `<div class="error-banner">${escapeHtml(err.source)}: ${escapeHtml(err.message)}</div>`;
+    });
+
+    statusEl.textContent = `${data.results.length} playable result(s) for "${data.query}"`;
+
+    if (!data.results.length) {
+      emptyEl.style.display = '';
+      return;
+    }
+
+    table.style.display = '';
+    const rows = [];
+    data.results.forEach(r => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>
+          <div class="filename">${escapeHtml(r.filename)}</div>
+          <span class="badge ext">${escapeHtml(r.ext)}</span>
+        </td>
+        <td>${escapeHtml(r.size || '?')}</td>
+        <td class="muted">${escapeHtml(r.age || '')}</td>
+        <td><span class="badge ${escapeHtml(r.source)}">${escapeHtml(r.source)}</span></td>
+        <td class="muted">${escapeHtml(r.groups || '')}</td>
+        <td style="text-align:right; white-space:nowrap;">
+          <a class="nzb-link" href="${r.nzbUrl}" target="_blank" rel="noopener">NZB</a>
+          <a class="details-link" href="${r.detailsUrl}" target="_blank" rel="noopener">Details</a>
+        </td>
+        <td style="text-align:right; white-space:nowrap;">
+          <button class="secondary check-btn" type="button">Check</button>
+          <span class="check-result"></span>
+        </td>
+        <td style="text-align:right; white-space:nowrap;">
+          <button class="play-btn" type="button">Play</button>
+        </td>`;
+      tr.querySelector('.play-btn').addEventListener('click', () => playResult(r));
+      tr.querySelector('.check-btn').addEventListener('click', () => checkAvailabilityFor(r, tr));
+      tbody.appendChild(tr);
+      rows.push({ r, tr });
+    });
+
+    if (providerConfigured) {
+      autoCheckAvailability(rows);
+    } else {
+      statusEl.textContent += ' (configure a Usenet provider to auto-filter unavailable results)';
+    }
+  } catch (err) {
+    errorsEl.innerHTML = `<div class="error-banner">${escapeHtml(err.message)}</div>`;
+  } finally {
+    submitBtn.disabled = false;
+    if (!statusEl.textContent) statusEl.textContent = '';
+  }
+});
+
+// ---- Provider settings ----
+const settingsToggle = document.getElementById('settings-toggle');
+const providerPanel = document.getElementById('provider-panel');
+const pHost = document.getElementById('p-host');
+const pPort = document.getElementById('p-port');
+const pSsl = document.getElementById('p-ssl');
+const pUser = document.getElementById('p-user');
+const pPass = document.getElementById('p-pass');
+const pConn = document.getElementById('p-conn');
+const pSave = document.getElementById('p-save');
+const pTest = document.getElementById('p-test');
+const providerStatus = document.getElementById('provider-status');
+
+settingsToggle.addEventListener('click', () => providerPanel.classList.toggle('show'));
+
+let providerConfigured = false;
+
+async function loadProvider() {
+  const res = await fetch('/api/provider');
+  const config = await res.json();
+  pHost.value = config.host || '';
+  pPort.value = config.port || 563;
+  pSsl.checked = !!config.ssl;
+  pUser.value = config.username || '';
+  pPass.value = config.password || '';
+  pConn.value = config.connections || 4;
+  providerConfigured = !!(config.host && config.username && config.password);
+}
+loadProvider();
+
+function currentProviderForm() {
+  return {
+    host: pHost.value.trim(),
+    port: parseInt(pPort.value, 10) || 563,
+    ssl: pSsl.checked,
+    username: pUser.value,
+    password: pPass.value,
+    connections: parseInt(pConn.value, 10) || 4
+  };
+}
+
+pSave.addEventListener('click', async () => {
+  providerStatus.className = ''; providerStatus.textContent = 'Saving...';
+  try {
+    const res = await fetch('/api/provider', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(currentProviderForm())
+    });
+    const config = await res.json();
+    pPass.value = config.password || '';
+    providerConfigured = !!(config.host && config.username && config.password);
+    providerStatus.className = 'ok';
+    providerStatus.textContent = 'Saved.';
+  } catch (err) {
+    providerStatus.className = 'fail';
+    providerStatus.textContent = err.message;
+  }
+});
+
+pTest.addEventListener('click', async () => {
+  providerStatus.className = ''; providerStatus.textContent = 'Testing...';
+  pTest.disabled = true;
+  try {
+    const res = await fetch('/api/provider/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(currentProviderForm())
+    });
+    const result = await res.json();
+    providerStatus.className = result.ok ? 'ok' : 'fail';
+    providerStatus.textContent = result.ok ? 'Connected OK.' : result.error;
+  } catch (err) {
+    providerStatus.className = 'fail';
+    providerStatus.textContent = err.message;
+  } finally {
+    pTest.disabled = false;
+  }
+});
+
+// ---- Availability pre-check ----
+// Returns true (available), false (confirmed unavailable - caller may drop
+// the row), or null (couldn't determine, e.g. no provider - leave it be).
+async function checkAvailabilityFor(r, tr) {
+  const button = tr.querySelector('.check-btn');
+  const resultEl = tr.querySelector('.check-result');
+  button.disabled = true;
+  resultEl.className = 'check-result';
+  resultEl.textContent = 'Checking...';
+
+  try {
+    const res = await fetch('/api/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nzbUrl: r.nzbUrl })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Check failed');
+
+    const sampleNote = data.sampledSegments < data.totalSegments
+      ? ` (${data.sampledSegments} of ${data.totalSegments} sampled)`
+      : '';
+    if (data.available) {
+      resultEl.className = 'check-result ok';
+      resultEl.textContent = `✓ available${sampleNote}`;
+      button.disabled = false;
+      return true;
+    }
+    resultEl.className = 'check-result fail';
+    resultEl.textContent = `⚠ ${data.missingSegments}/${data.sampledSegments} sample missing${sampleNote}`;
+    button.disabled = false;
+    return false;
+  } catch (err) {
+    resultEl.className = 'check-result fail';
+    resultEl.textContent = err.message;
+    button.disabled = false;
+    return null;
+  }
+}
+
+// Runs checks for several results at once (bounded - not all of them in
+// one go). Each check opens its own small connection pool (see
+// CHECK_POOL_SIZE in lib/availability.js), so total simultaneous NNTP
+// connections is roughly CHECK_CONCURRENCY * CHECK_POOL_SIZE - capped
+// deliberately to avoid blowing past the provider's connection limit while
+// still being meaningfully faster than one-at-a-time. Rows confirmed
+// unavailable are removed; rows the check couldn't determine (e.g. a
+// transient error) are left in place rather than dropped.
+const CHECK_CONCURRENCY = 4;
+
+async function autoCheckAvailability(rows) {
+  const queue = rows.slice();
+  let removed = 0;
+
+  async function worker() {
+    for (;;) {
+      const next = queue.shift();
+      if (!next) return;
+      const { r, tr } = next;
+      if (!tr.isConnected) continue; // row already removed by the user or another worker's pass
+      const outcome = await checkAvailabilityFor(r, tr);
+      if (outcome === false) {
+        tr.remove();
+        removed++;
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: CHECK_CONCURRENCY }, worker));
+
+  if (removed) {
+    const remaining = rows.filter(({ tr }) => tr.isConnected).length;
+    statusEl.textContent = `${remaining} playable result(s) available (filtered out ${removed} not on your provider)`;
+    if (!remaining) emptyEl.style.display = '';
+  }
+}
+
+// ---- Playback ----
+const overlay = document.getElementById('player-overlay');
+const playerTitle = document.getElementById('player-title');
+const progressBar = document.getElementById('player-progress-bar');
+const progressLabel = document.getElementById('player-progress-label');
+const playerError = document.getElementById('player-error');
+const video = document.getElementById('player-video');
+const playerClose = document.getElementById('player-close');
+
+let pollTimer = null;
+
+function stopPolling() {
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+}
+
+playerClose.addEventListener('click', () => {
+  stopPolling();
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+  overlay.classList.remove('show');
+});
+
+function formatBytes(n) {
+  if (!n) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(1)} ${units[i]}`;
+}
+
+async function playResult(r) {
+  overlay.classList.add('show');
+  playerTitle.textContent = r.filename;
+  playerError.textContent = '';
+  video.style.display = 'none';
+  progressBar.style.width = '0%';
+  progressLabel.textContent = 'Starting download...';
+
+  let job;
+  try {
+    const res = await fetch('/api/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nzbUrl: r.nzbUrl, filename: r.filename })
+    });
+    job = await res.json();
+    if (!res.ok) throw new Error(job.error || 'Failed to start download');
+  } catch (err) {
+    playerError.textContent = err.message;
+    return;
+  }
+
+  stopPolling();
+  const poll = async () => {
+    try {
+      const res = await fetch(`/api/download/${job.id}`);
+      const status = await res.json();
+
+      if (status.state === 'error') {
+        playerError.textContent = status.error;
+        return;
+      }
+
+      const pct = Math.round((status.progress || 0) * 100);
+      progressBar.style.width = pct + '%';
+      progressLabel.textContent =
+        `${status.state} - ${formatBytes(status.downloadedBytes)} / ${formatBytes(status.totalBytes)} (${pct}%)`;
+
+      if (status.state === 'complete') {
+        progressLabel.textContent = 'Ready.';
+        video.src = `/api/media/${job.id}`;
+        video.style.display = '';
+        video.play().catch(() => {}); // autoplay can be blocked - controls still work
+        return;
+      }
+
+      pollTimer = setTimeout(poll, 1200);
+    } catch (err) {
+      playerError.textContent = err.message;
+    }
+  };
+  poll();
+}
+</script>
+
+</body>
+</html>

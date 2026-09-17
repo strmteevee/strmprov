@@ -1,0 +1,14 @@
+{
+  "name": "usenet-search",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Standalone lookup tool for playable (non-compressed) movie/series releases on free Usenet indexers",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --use-system-ca server.js"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "fast-xml-parser": "^5.0.0"
+  }
+}

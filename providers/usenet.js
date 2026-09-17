@@ -8,9 +8,10 @@
 // the user's own NNTP provider credentials (Admin panel -> Usenet), and is
 // served live, segment by segment, by lib/usenet/streamSession.js via
 // addon-server.js's /usenet/stream route - nothing is ever written to disk.
-// Only tried as a last resort when every other provider comes up empty (see
-// lib/aggregate.js's LAST_RESORT_PROVIDERS), since even a successful match
-// here starts playing noticeably slower than an instant CDN link.
+// Searched and ranked alongside every other provider (lib/aggregate.js's
+// applyPreferredLogic can't cheaply probe its placeholder url the way it
+// does a real hotlink, so probeStream just treats it as reachable - see that
+// function's own comment).
 
 const nzbking = require('../lib/usenet/nzbking');
 const binsearch = require('../lib/usenet/binsearch');

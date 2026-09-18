@@ -176,7 +176,7 @@ function buildManifest(profileId) {
         // resources, etc.) - some Stremio-protocol clients key their cached
         // manifest/catalog data on this and won't notice new catalogs on an
         // existing install (even after a reinstall) unless it changes.
-        version: '1.1.0',
+        version: '1.2.0',
         name: 'StrmProv',
         description: `Self-hosted multi-source streaming addon (profile ${profileId}) with a personalized "For You" catalog based on this profile's own watch history.`,
         logo: 'https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png',
@@ -900,4 +900,11 @@ server.listen(PORT, () => {
     // already warm.
     indycar.listVideos(null).catch((err) => console.error(`[addon-server] IndyCar cache warm-up failed: ${err.message}`));
     f1.listVideos(null).catch((err) => console.error(`[addon-server] F1 cache warm-up failed: ${err.message}`));
+    // Same reasoning as the two crawls above - SportzX's cold start is a
+    // Firebase Remote Config round trip plus a decrypt, not a multi-page
+    // crawl, but it's still real network latency (and, confirmed live
+    // during development, this specific backend can be slow or transiently
+    // unreachable) that a real user's first catalog open shouldn't have to
+    // wait through.
+    sportzx.listEvents().catch((err) => console.error(`[addon-server] SportzX cache warm-up failed: ${err.message}`));
 });

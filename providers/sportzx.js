@@ -74,7 +74,15 @@ function getBaseUrl() {
         sdkVersion: '23.1.0',
         analyticsUserProperties: {}
     });
-    return fetch(`https://firebaseremoteconfig.googleapis.com/v1/projects/${FIREBASE_PROJECT_NUMBER}/namespaces/firebase:fetch`, {
+    // A failed call here falls back to the hardcoded default anyway (see
+    // below), which happens to be the same URL Remote Config itself is
+    // returning as of 2026-09-18 - but that's the current default, not a
+    // guarantee, and this result gets cached for a full hour (much longer
+    // than the events cache), so a transient failure is worth a couple of
+    // retries rather than risking an hour on a stale fallback if SportzX
+    // ever rotates their real backend domain the way several other sites in
+    // this project already have.
+    const fetchRemoteConfig = (attemptsLeft = 2) => fetch(`https://firebaseremoteconfig.googleapis.com/v1/projects/${FIREBASE_PROJECT_NUMBER}/namespaces/firebase:fetch`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -84,7 +92,17 @@ function getBaseUrl() {
         },
         body
     })
-        .then((res) => (res.ok ? res.json() : null))
+        .then((res) => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.json();
+        })
+        .catch((err) => {
+            if (attemptsLeft <= 0) throw err;
+            return new Promise((resolve) => setTimeout(resolve, 1000))
+                .then(() => fetchRemoteConfig(attemptsLeft - 1));
+        });
+
+    return fetchRemoteConfig()
         .then((json) => {
             const apiUrl = json && json.entries && json.entries.api_url;
             const base = (apiUrl || FALLBACK_BASE_URL).replace(/\/+$/, '');
@@ -95,17 +113,29 @@ function getBaseUrl() {
         .catch(() => FALLBACK_BASE_URL);
 }
 
+// This backend has been directly observed to be flaky during development
+// today (connection failures that cleared up moments later) - the same
+// transient-network class of problem providers/indycar.js's own
+// fetchHtmlWithRetries already exists to smooth over, so this mirrors that
+// same couple-of-retries-with-a-short-backoff shape rather than letting one
+// bad request empty out the whole catalog.
+function fetchEnvelope(url, attemptsLeft = 2) {
+    return fetch(url, { headers: { 'User-Agent': USER_AGENT } })
+        .then((res) => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.json();
+        })
+        .catch((err) => {
+            if (attemptsLeft <= 0) throw err;
+            return new Promise((resolve) => setTimeout(resolve, 1000))
+                .then(() => fetchEnvelope(url, attemptsLeft - 1));
+        });
+}
+
 function fetchDecrypted(path) {
     return getBaseUrl().then((base) => {
         const url = `${base}${path}`;
-        return fetch(url, { headers: { 'User-Agent': USER_AGENT } })
-            .then((res) => {
-                if (!res.ok) {
-                    console.log(`[SportzX] HTTP ${res.status} for ${url}`);
-                    return null;
-                }
-                return res.json();
-            })
+        return fetchEnvelope(url)
             .then((envelope) => {
                 if (!envelope || !envelope.data) return null;
                 const decrypted = sportzxCrypto.decrypt(envelope.data);

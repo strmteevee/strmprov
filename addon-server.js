@@ -191,18 +191,21 @@ function buildManifest(profileId) {
         // (for indycar: originally, and the same fix reused for f1:).
         resources: [
             'catalog', 'stream',
-            { name: 'meta', types: ['movie'], idPrefixes: ['indycar:', 'f1:'] },
             // SportzX events are genuinely live/linear, not on-demand clips
-            // like IndyCar/F1's - kept as its own scoped 'tv' meta entry
-            // rather than folding into the 'movie' one above.
-            { name: 'meta', types: ['tv'], idPrefixes: ['sportzx:'] },
+            // like IndyCar/F1's, but 'movie' is used here anyway rather than
+            // Stremio's own 'tv' catalog type - IndyCar/F1's 'movie' catalogs
+            // are confirmed working in Nuvio's UI, while 'tv' was untested
+            // and Nuvio's app surfaces are built around movie/series
+            // browsing, not a separate live-channel guide screen; there's no
+            // confirmation it renders a 'tv' catalog anywhere at all.
+            { name: 'meta', types: ['movie'], idPrefixes: ['indycar:', 'f1:', 'sportzx:'] },
             // Scoped to real tt-id content only - neither IndyCar's nor
             // F1/F2/F3/Academy's/SportzX's own custom id schemes have a
             // subtitle concept, and Cinemeta already handles meta for the
             // tt-id ones, so there's nothing for this resource to add there.
             { name: 'subtitles', types: ['movie', 'series'], idPrefixes: ['tt'] }
         ],
-        types: ['movie', 'series', 'tv'],
+        types: ['movie', 'series'],
         catalogs: [
             { type: 'movie', id: 'strmprov-foryou-movie', name: 'For You' },
             { type: 'series', id: 'strmprov-foryou-series', name: 'For You' },
@@ -223,8 +226,9 @@ function buildManifest(profileId) {
             { type: 'movie', id: 'f3-highlights', name: 'F3 Race Highlights' },
             { type: 'movie', id: 'f1academy-highlights', name: 'F1 Academy Highlights' },
             // One combined catalog rather than one per sport - see
-            // buildSportzxCatalog below for why.
-            { type: 'tv', id: 'sportzx-live', name: 'SportzX Live' }
+            // buildSportzxCatalog below for why. type: 'movie', not 'tv' -
+            // see the meta resource entry above for why.
+            { type: 'movie', id: 'sportzx-live', name: 'SportzX Live' }
         ],
         idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:'],
         behaviorHints: { configurable: false, configurationRequired: false }
@@ -533,7 +537,7 @@ function sportzxEventToMeta(event) {
     const info = event.eventInfo || {};
     return {
         id: `sportzx:${event.id}`,
-        type: 'tv',
+        type: 'movie',
         name: status ? `${status} ${title}` : title,
         poster: info.eventBanner || info.teamAFlag || undefined,
         description: [info.eventName, info.startTime ? `Starts: ${info.startTime}` : null].filter(Boolean).join('\n') || undefined
@@ -822,7 +826,7 @@ const server = http.createServer((req, res) => {
         if (f1CatalogSeries && type === 'movie') {
             return buildF1Catalog(f1CatalogSeries).then(metas => sendJson(res, 200, { metas }));
         }
-        if (id === 'sportzx-live' && type === 'tv') {
+        if (id === 'sportzx-live' && type === 'movie') {
             return buildSportzxCatalog().then(metas => sendJson(res, 200, { metas }));
         }
         return sendJson(res, 200, { metas: [] });
@@ -837,7 +841,7 @@ const server = http.createServer((req, res) => {
         if (id.startsWith('f1:') && type === 'movie') {
             return buildF1Meta(id).then(meta => sendJson(res, 200, { meta }));
         }
-        if (id.startsWith('sportzx:') && type === 'tv') {
+        if (id.startsWith('sportzx:') && type === 'movie') {
             return buildSportzxMeta(id).then(meta => sendJson(res, 200, { meta }));
         }
         return sendJson(res, 200, { meta: null });

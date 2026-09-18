@@ -1,0 +1,8 @@
+{
+  "host": "",
+  "port": 563,
+  "ssl": true,
+  "username": "",
+  "password": "",
+  "connections": 4
+}

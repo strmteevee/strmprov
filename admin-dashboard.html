@@ -275,24 +275,6 @@
     <div class="muted" id="subtitles-status" style="font-size:12px;"></div>
   </section>
 
-  <section class="panel" id="usenet-panel">
-    <h2>Usenet</h2>
-    <p class="desc">Real-time progressive streaming from Usenet (NZBKing + Binsearch for search, no account needed there). Actually fetching a video needs your own NNTP provider's login below - nothing is ever written to disk, it's streamed live as the player consumes it. Searched and ranked alongside every other provider.</p>
-    <div class="field-row">
-      <div class="field"><label>Host</label><input type="text" class="mono" id="usenet-host" placeholder="news.example.com" style="width:220px;" /></div>
-      <div class="field"><label>Port</label><input type="number" id="usenet-port" placeholder="563" style="width:80px;" /></div>
-      <div class="field"><label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="usenet-ssl" /> SSL</label></div>
-      <div class="field"><label>Connections</label><input type="number" id="usenet-connections" min="1" max="20" style="width:70px;" /></div>
-    </div>
-    <div class="field-row">
-      <div class="field"><label>Username</label><input type="text" id="usenet-username" style="width:220px;" /></div>
-      <div class="field"><label>Password</label><input type="password" id="usenet-password" style="width:220px;" /></div>
-      <div class="field"><label>&nbsp;</label><button class="primary" id="usenet-save">Save</button></div>
-      <div class="field"><label>&nbsp;</label><button id="usenet-test">Test connection</button></div>
-    </div>
-    <div class="muted" id="usenet-status" style="font-size:12px;"></div>
-  </section>
-
   <section class="panel" id="test-panel">
     <h2>Live test</h2>
     <p class="desc">Runs the real aggregate pipeline (every enabled provider, current ranking config) for a TMDB id and shows the results, including which one wins <span class="mono">[PREFERRED]</span> and why.</p>
@@ -805,50 +787,6 @@ document.getElementById('subtitles-save').addEventListener('click', () => {
     .catch(e => toast(e.message, 'error'));
 });
 
-// ---- Usenet ----
-
-function loadUsenetConfig() {
-  return api('GET', '/api/usenet-config').then(data => {
-    document.getElementById('usenet-host').value = data.host || '';
-    document.getElementById('usenet-port').value = data.port || 563;
-    document.getElementById('usenet-ssl').checked = !!data.ssl;
-    document.getElementById('usenet-connections').value = data.connections || 4;
-    document.getElementById('usenet-username').value = data.username || '';
-    document.getElementById('usenet-password').value = data.password || '';
-    document.getElementById('usenet-status').textContent = data.configured ? 'Configured' : 'Not configured';
-  });
-}
-
-function readUsenetForm() {
-  return {
-    host: document.getElementById('usenet-host').value,
-    port: document.getElementById('usenet-port').value,
-    ssl: document.getElementById('usenet-ssl').checked,
-    connections: document.getElementById('usenet-connections').value,
-    username: document.getElementById('usenet-username').value,
-    password: document.getElementById('usenet-password').value
-  };
-}
-
-document.getElementById('usenet-save').addEventListener('click', () => {
-  api('POST', '/api/usenet-config', readUsenetForm())
-    .then(() => { toast('Usenet provider saved', 'ok'); loadUsenetConfig(); })
-    .catch(e => toast(e.message, 'error'));
-});
-
-document.getElementById('usenet-test').addEventListener('click', (e) => {
-  const status = document.getElementById('usenet-status');
-  e.target.disabled = true;
-  status.textContent = 'Testing…';
-  api('POST', '/api/usenet-config/test', readUsenetForm())
-    .then(data => {
-      status.textContent = data.ok ? 'Connection OK' : `Failed: ${data.error}`;
-      toast(data.ok ? 'Connected OK' : data.error, data.ok ? 'ok' : 'error');
-    })
-    .catch(e2 => { status.textContent = `Failed: ${e2.message}`; toast(e2.message, 'error'); })
-    .then(() => { e.target.disabled = false; });
-});
-
 // ---- Test ----
 
 document.getElementById('test-type').addEventListener('change', (e) => {
@@ -985,7 +923,7 @@ function escapeHtml(str) {
   return String(str == null ? '' : str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-Promise.all([loadEnvKeys(), loadDeployConfig(), loadProviders(), loadRanking(), loadProviderHealth(), loadProfiles(), loadSubtitlesConfig(), loadUsenetConfig(), loadCatalogManifest()]).catch(e => toast(e.message, 'error'));
+Promise.all([loadEnvKeys(), loadDeployConfig(), loadProviders(), loadRanking(), loadProviderHealth(), loadProfiles(), loadSubtitlesConfig(), loadCatalogManifest()]).catch(e => toast(e.message, 'error'));
 </script>
 
 </body>

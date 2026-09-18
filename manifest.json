@@ -178,28 +178,6 @@
       ]
     },
     {
-      "id": "netmirror",
-      "name": "NetMirror",
-      "description": "Streaming links from netmirror. Automatically disabled on iOS due to compatibility issues.",
-      "version": "1.1.1",
-      "author": "Nuvio Team",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "filename": "providers/netmirror.js",
-      "enabled": true,
-      "hasSettings": true,
-      "logo": "https://net22.cc/favicon.ico",
-      "contentLanguage": [
-        "en"
-      ],
-      "disabledPlatforms": [
-        "ios"
-      ],
-      "supportsExternalPlayer": false
-    },
-    {
       "id": "streamflix",
       "name": "StreamFlix",
       "description": "Direct links via StreamFlix API. Disabled: all three of StreamFlix's own CDN paths are confirmed dead as of 2026-09-13 - bb.streamflixserver.site and cf.streamflixserver.site no longer resolve at all (NXDOMAIN), and the remaining premium S3 bucket (wasabisys.com) 404s on every object tested - so every stream this provider can produce fails to play. Re-enable if StreamFlix's config.json ever points at working hosts again.",
@@ -405,26 +383,6 @@
       ]
     },
     {
-      "id": "doflix",
-      "name": "DoFlix",
-      "description": "Direct links via DoFlix's own TMDB-keyed API (reverse-engineered from its CloudStream plugin). Unverified: every request from development tooling was blocked at the TLS layer itself (the server demands TLS renegotiation then closes the connection) - this may work from Nuvio's real OkHttp-based fetch even though it failed in every test client tried while building it.",
-      "version": "1.0.0",
-      "author": "Nuvio Team",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "filename": "providers/doflix.js",
-      "enabled": true,
-      "formats": [
-        "m3u8"
-      ],
-      "logo": "https://www.google.com/s2/favicons?domain=watchkaroabhi.com&sz=128",
-      "contentLanguage": [
-        "en"
-      ]
-    },
-    {
       "id": "vegamovies",
       "name": "VegaMovies",
       "description": "Direct links via VegaMovies' G-Direct resolver (ported from the open-source CloudStream extension). Its original primary resolver, V-Cloud, is now behind a real Cloudflare challenge and unusable here; this uses the same download page's G-Direct option instead, which isn't protected - verified end-to-end.",
@@ -483,48 +441,6 @@
         "m3u8"
       ],
       "logo": "https://www.google.com/s2/favicons?domain=allmovieland.one&sz=128",
-      "contentLanguage": [
-        "en",
-        "hi"
-      ]
-    },
-    {
-      "id": "usenet",
-      "name": "Usenet",
-      "description": "Real-time progressive streaming from Usenet (NZBKing + Binsearch, no account needed for search) over your own NNTP provider's connection - configure it in the admin panel's Usenet section. Nothing is written to disk; segments are fetched, decoded, and served live as the player consumes them. Searched and ranked alongside every other provider, same as any other source.",
-      "version": "1.0.0",
-      "author": "Nuvio Team",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "filename": "providers/usenet.js",
-      "enabled": true,
-      "formats": [
-        "mkv",
-        "mp4"
-      ],
-      "logo": "https://www.google.com/s2/favicons?domain=nzbking.com&sz=128",
-      "contentLanguage": [
-        "en"
-      ]
-    },
-    {
-      "id": "movies4u",
-      "name": "Movies4u",
-      "description": "Direct links via Movies4u's WordPress REST API (its own search.html returns identical content regardless of query, confirmed live) through the HubCloud delivery chain shared with 4khdhub.js (lib/hubcloudExtract.js) - FSL (Cloudflare R2), PixelServer (pixeldrain.dev), and 10Gbps (often a Google Drive link, live-probed for seekability by lib/aggregate.js). Movies only.",
-      "version": "1.0.0",
-      "author": "Nuvio Team",
-      "supportedTypes": [
-        "movie"
-      ],
-      "filename": "providers/movies4u.js",
-      "enabled": true,
-      "formats": [
-        "mkv",
-        "mp4"
-      ],
-      "logo": "https://www.google.com/s2/favicons?domain=movies4u.foo&sz=128",
       "contentLanguage": [
         "en",
         "hi"

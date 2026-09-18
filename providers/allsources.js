@@ -1347,8 +1347,16 @@ function fetchPageUrl(name, year, isSeries) {
       return yearMatch;
     }).filter((_, el) => {
       const movieCardTitle = $(el).find(".movie-card-title").text().replace(/\[.*?]/g, "").trim();
-      const distance = levenshteinDistance(movieCardTitle.toLowerCase(), name.toLowerCase());
-      const match = distance < 5;
+      const normalizedCard = movieCardTitle.toLowerCase();
+      const normalizedName = name.toLowerCase();
+      const distance = levenshteinDistance(normalizedCard, normalizedName);
+      // Some cards append a franchise/collection label straight onto the
+      // title with no bracket or separator (e.g. "Guardians of the Galaxy
+      // Vol. 2  Marvel Phase 3"), which the year filter above has already
+      // narrowed down - a plain distance check rejects these since the
+      // added text pushes it well past the threshold, so also accept a
+      // clean prefix match.
+      const match = distance < 5 || normalizedCard.startsWith(normalizedName + " ") || normalizedCard === normalizedName;
       console.log(`[4KHDHub] Checking: "${movieCardTitle}" (Dist: ${distance}) vs "${name}"`);
       return match;
     }).map((_, el) => {
@@ -1588,161 +1596,6 @@ ${formatBytes(link.meta.bytes || 0)}`,
     }));
     const results = yield Promise.all(streamPromises);
     return results.reduce((acc, val) => acc.concat(val), []);
-  });
-}
-  return { getStreams: getStreams };
-})();
-
-const NetMirrorSource = (function () {
-// NetMirror Scraper for Nuvio Local Scrapers
-//
-// IMPORTANT: netmirror's original target (Netflix/Prime/Hotstar/Disney+ mirrors,
-// backed by the MovieBox/"aoneroom" catalog) is no longer scrapable over plain
-// HTTP. The current site (net27.cc, rebranded around the "CNCVerse" family of
-// mirrors) resolves titles against MovieBox's h5-api.aoneroom.com just fine
-// (GET /wefeed-h5api-bff/detail?detailPath=...), but the actual play/stream
-// URL fetch is deliberately stubbed out in the public site bundle:
-//
-//   async function O(e,t,i,r,n){return null}   // "Server 1" stream fetch
-//   async function R(e){return null}            // companion lookup
-//
-// The site's own UI says "Server 1 won't play without the extension" - the
-// real stream URLs are only ever supplied by NetMirror's proprietary browser
-// extension (presumably injected client-side), not by any discoverable REST
-// endpoint. "Server 2" (their own fallback for extension-less users) is just
-// an iframe to peachify.top, one of the many generic vidsrc-clone aggregators
-// - the same class of site listed under yflix.ws's own source list, and one
-// that (like most of that ecosystem) hides its stream fetch behind a Next.js
-// server action with no client-visible API.
-//
-// Since there's no way left to reach netmirror's actual unique catalog, this
-// rewrite falls back to the same verified-working aggregator yflix.js uses
-// (moviesapi.to's "vidora" API - a plain JSON endpoint gated only by a static
-// header baked into moviesapi.to's own JS bundle). This means netmirror and
-// yflix can return the same underlying stream when both are enabled; that's
-// a real limitation of what's left to scrape, not an oversight.
-//
-// This file is intentionally NOT generated from src/netmirror/ - there is no
-// src/netmirror/ directory. Running `node build.js` with no arguments will
-// NOT touch this file (only providers with a matching src/<name>/ folder get
-// regenerated), so hand edits here are safe.
-
-const TMDB_API_KEY = '439c478a771f35c05022f9feabcca01c';
-const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
-
-const API_BASE = 'https://moviesapi.to';
-// Static key read out of moviesapi.to's own frontend bundle (assets/index-*.js).
-const PLAYER_KEY = '3a67e8866ae1d2bb9e81fe7f73315a56eb3bdf5e3e755c7554c8be6910aa6b13';
-
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-
-const STREAM_HEADERS = {
-  'User-Agent': USER_AGENT,
-  'Referer': API_BASE + '/',
-  'Origin': API_BASE
-};
-
-function apiHeaders(referer) {
-  return {
-    'User-Agent': USER_AGENT,
-    'Accept': 'application/json',
-    'Origin': API_BASE,
-    'Referer': referer,
-    'x-player-key': PLAYER_KEY
-  };
-}
-
-function getTmdbInfo(tmdbId, mediaType) {
-  const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
-  const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
-  return fetch(url, { headers: { 'User-Agent': USER_AGENT } })
-    .then(res => res.json())
-    .then(data => {
-      const title = mediaType === 'tv' ? data.name : data.title;
-      const year = (mediaType === 'tv' ? data.first_air_date : data.release_date || '').substring(0, 4);
-      console.log(`[NetMirror] TMDB Info: "${title}" (${year})`);
-      return { title, year };
-    })
-    .catch(err => {
-      console.log(`[NetMirror] TMDB lookup failed: ${err.message}`);
-      return { title: '', year: '' };
-    });
-}
-
-function mapSubtitles(tracks) {
-  if (!Array.isArray(tracks)) return [];
-  return tracks
-    .filter(t => t && t.file)
-    .map(t => ({
-      url: t.file,
-      language: t.label || 'Unknown',
-      name: t.label || 'Unknown',
-      headers: STREAM_HEADERS
-    }));
-}
-
-function fetchStreams(tmdbId, mediaType, season, episode, mediaInfo) {
-  const path = mediaType === 'tv'
-    ? `/tv/${tmdbId}/${season}/${episode}`
-    : `/movie/${tmdbId}`;
-  const apiUrl = `${API_BASE}/api/vidora/v1${path}`;
-  const pageUrl = `${API_BASE}${path}`;
-
-  console.log(`[NetMirror] Requesting: ${apiUrl}`);
-  return fetch(apiUrl, { headers: apiHeaders(pageUrl) })
-    .then(res => {
-      if (!res.ok) {
-        return res.json().catch(() => null).then(body => {
-          const reason = body && (body.message || body.error);
-          console.log(`[NetMirror] Stream request failed: ${res.status}${reason ? ' - ' + reason : ''}`);
-          return [];
-        });
-      }
-      return res.json().then(data => {
-        if (!data || !data.result || !Array.isArray(data.sources) || data.sources.length === 0) {
-          console.log('[NetMirror] No sources returned for this title');
-          return [];
-        }
-        const label = mediaInfo.title
-          ? `${mediaInfo.title}${mediaInfo.year ? ' (' + mediaInfo.year + ')' : ''}`
-          : (data.title || 'Auto Quality Stream');
-
-        return data.sources
-          .filter(s => s && s.url)
-          .map((s, idx) => ({
-            name: 'NetMirror',
-            title: data.sources.length > 1 ? `${label} - Server ${idx + 1}` : label,
-            url: s.url,
-            quality: 'Auto',
-            type: 'direct',
-            headers: STREAM_HEADERS,
-            subtitles: mapSubtitles(s.tracks),
-            provider: 'netmirror'
-          }));
-      });
-    })
-    .catch(err => {
-      console.log(`[NetMirror] Error fetching streams: ${err.message}`);
-      return [];
-    });
-}
-
-function getStreams(tmdbId, mediaType, season, episode) {
-  console.log(`[NetMirror] getStreams start tmdbId=${tmdbId} type=${mediaType} S=${season || ''} E=${episode || ''}`);
-
-  if (mediaType === 'tv' && (!season || !episode)) {
-    console.log('[NetMirror] Missing season/episode for TV lookup');
-    return Promise.resolve([]);
-  }
-
-  return getTmdbInfo(tmdbId, mediaType).then(mediaInfo => {
-    return fetchStreams(tmdbId, mediaType, season, episode, mediaInfo).then(streams => {
-      console.log(`[NetMirror] Found ${streams.length} stream(s)`);
-      return streams;
-    });
-  }).catch(err => {
-    console.log(`[NetMirror] getStreams failed: ${err.message}`);
-    return [];
   });
 }
   return { getStreams: getStreams };
@@ -2305,6 +2158,15 @@ function createStreamTitle(mediaInfo) {
   }
   return mediaInfo.year ? `${mediaInfo.title} (${mediaInfo.year})` : mediaInfo.title;
 }
+// The URLs built below point at Vidlink's actual CDN (bcdn.hakunaymatata.com
+// or similar), not vidlink.pro itself - confirmed live that this CDN returns
+// 429/428 when the request carries vidlink.pro's own Referer/User-Agent
+// (VIDLINK_HEADERS, used elsewhere in this file for the vidlink.pro API
+// calls that produce these URLs) but 200/206 with no headers at all. These
+// stream objects intentionally carry no `headers` field - Nuvio only
+// attaches proxyHeaders when a stream has one, so omitting it here sends the
+// plain request the CDN actually wants, both for this file's own validation
+// and for real playback.
 function processVidlinkResponse(data, mediaInfo) {
   const streams = [];
   try {
@@ -2335,7 +2197,6 @@ function processVidlinkResponse(data, mediaInfo) {
             url: qualityData.url,
             quality,
             size: "Unknown",
-            headers: VIDLINK_HEADERS,
             provider: "vidlink",
             subtitles
           });
@@ -2365,7 +2226,6 @@ function processVidlinkResponse(data, mediaInfo) {
         url: data.url,
         quality,
         size: "Unknown",
-        headers: VIDLINK_HEADERS,
         provider: "vidlink",
         subtitles
       });
@@ -2379,7 +2239,6 @@ function processVidlinkResponse(data, mediaInfo) {
             url: stream.url,
             quality,
             size: stream.size || "Unknown",
-            headers: VIDLINK_HEADERS,
             provider: "vidlink",
             subtitles
           });
@@ -2395,7 +2254,6 @@ function processVidlinkResponse(data, mediaInfo) {
             url: link.url,
             quality,
             size: link.size || "Unknown",
-            headers: VIDLINK_HEADERS,
             provider: "vidlink",
             subtitles
           });
@@ -2415,7 +2273,6 @@ function processVidlinkResponse(data, mediaInfo) {
               url: value,
               quality,
               size: "Unknown",
-              headers: VIDLINK_HEADERS,
               provider: "vidlink",
               subtitles
             });
@@ -2848,10 +2705,12 @@ function findCastleMovieId(securityKey, tmdbInfo, mediaType) {
 
     let best = candidates.find((item) => (item.title || item.name || "").toLowerCase() === searchTitle);
     if (!best) {
-      best = candidates.find((item) => {
-        const itemTitle = (item.title || item.name || "").toLowerCase();
-        return itemTitle.startsWith(`${searchTitle}:`) || itemTitle.startsWith(`${searchTitle} `) || itemTitle === searchTitle;
-      });
+      // Only accept a "<title>: <subtitle>" style match here (e.g. a
+      // reboot/special named "X: The Reunion"). A bare startsWith(`${searchTitle} `)
+      // is too loose - it previously matched unrelated shows like "Friends from
+      // College" or "Friends and Family" when searching for "Friends", silently
+      // serving the wrong show's video.
+      best = candidates.find((item) => (item.title || item.name || "").toLowerCase().startsWith(`${searchTitle}:`));
     }
     if (!best) {
       throw new Error(`No matching ${mediaType === "tv" ? "TV show" : "movie"} found for "${tmdbInfo.title}"`);
@@ -3232,8 +3091,18 @@ function findBestMatch(mediaInfo, searchResults) {
     let score = calculateTitleSimilarity(mediaInfo.title, result.name);
     if (mediaInfo.year && result.release_date) {
       const resultYear = parseInt(result.release_date.split("-")[0]);
-      if (mediaInfo.year === resultYear)
-        score += 0.2;
+      if (!isNaN(resultYear)) {
+        if (Math.abs(mediaInfo.year - resultYear) <= 1) {
+          score += 0.2;
+        } else {
+          // Word-overlap alone is unreliable for short titles (e.g. "Up"
+          // vs "Guns Up" share their only real word), so a known release
+          // year that's off by more than a year is treated as a hard
+          // disqualifier instead of just withholding the bonus - otherwise
+          // an unrelated same-word title can still clear the threshold.
+          continue;
+        }
+      }
     }
     if (score > bestScore && score > 0.4) {
       bestScore = score;
@@ -3510,12 +3379,23 @@ function getStreams(tmdbId, mediaType, season, episode) {
       const seasonItems = $2("ul.seasons-lst li");
       let targetUrl = itemUrl;
       let mediaType2 = 1;
+      const epNum = episode || 1;
+      const wantSeason = season || 1;
       if (seasonItems.length > 0) {
         mediaType2 = 2;
+        // Despite the "seasons-lst" name, this list is actually flat and
+        // per-episode - each item is labeled "S{season}-E{episode}" with its
+        // own distinct episode deep link (confirmed live: One Piece's list
+        // has one entry per episode, e.g. "S1-E1".."S1-E25", not one per
+        // season). Matching on the season digit alone and letting later
+        // items keep overwriting targetUrl - the previous behavior - always
+        // ended up on that season's *last* episode, regardless of which
+        // episode was actually requested.
         seasonItems.each((_, el) => {
-          const seasonNum = $2(el).find("h3.title > span").text().match(/S(\d+)/)?.[1];
+          const label = $2(el).find("h3.title > span").text();
+          const m = label.match(/S(\d+)-E(\d+)/i);
           const href = $2(el).find("a").attr("href");
-          if (href && parseInt(seasonNum) === (season || 1)) {
+          if (href && m && parseInt(m[1], 10) === wantSeason && parseInt(m[2], 10) === epNum) {
             targetUrl = href;
           }
         });
@@ -3525,7 +3405,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
       const targetBodyClass = $3("body").attr("class") || "";
       const targetTermMatch = targetBodyClass.match(/(?:term|postid)-(\d+)/);
       const targetTerm = targetTermMatch?.[1] || term;
-      const epNum = episode || 1;
       // The 11 track indices are independent lookups (each just asks "does
       // track i exist for this title"), so probing them one at a time was
       // paying their full round-trip latency 11 times over for no reason -
@@ -3732,6 +3611,18 @@ var HEADERS = {
   "Content-Type": "application/json",
   "x-origin": "kickass-anime.ru"
 };
+function searchKickassAnime(query) {
+  return fetch(`${BASE_URL}/api/fsearch`, {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ page: "1", query }),
+    skipSizeCheck: true
+  }).then((res) => res.json());
+}
+function findExactShowMatch(results, title) {
+  const norm = (title || "").toLowerCase().trim();
+  return (results || []).find((r) => (r.title_en || r.title || "").toLowerCase().trim() === norm) || null;
+}
 function getStreams(tmdbId, mediaType, season, episode) {
   return __async(this, null, function* () {
     try {
@@ -3740,19 +3631,30 @@ function getStreams(tmdbId, mediaType, season, episode) {
       const title = mediaInfo.title || mediaInfo.name;
       if (!title)
         return [];
-      const searchBody = JSON.stringify({ page: "1", query: title });
-      const searchResp = yield fetch(`${BASE_URL}/api/fsearch`, {
-        method: "POST",
-        headers: HEADERS,
-        body: searchBody,
-        skipSizeCheck: true
-      });
-      const searchData = yield searchResp.json();
-      if (!searchData || !searchData.result || searchData.result.length === 0)
-        return [];
-      const match = searchData.result.find(
-        (r) => (r.title_en || r.title || "").toLowerCase().includes(title.toLowerCase())
-      ) || searchData.result[0];
+      const searchData = yield searchKickassAnime(title);
+      let match = findExactShowMatch(searchData && searchData.result, title);
+      // kaa.lt indexes each season/arc/movie of a franchise as its own show
+      // entry, prefixed with the base name - a loose substring match against
+      // the full "Base: Subtitle" TMDB title (e.g. "Demon Slayer: Kimetsu no
+      // Yaiba") can match an unrelated arc/movie whose title happens to
+      // start with that same string (confirmed live: querying that exact
+      // title never even returns the base show, only its arcs/movies, one
+      // of which "includes" the query as a prefix). If nothing matched
+      // exactly, retry with just the part before the colon, which reliably
+      // surfaces the actual base entry as its own exact match.
+      if (!match && title.includes(":")) {
+        const baseTitle = title.split(":")[0].trim();
+        if (baseTitle && baseTitle.toLowerCase() !== title.toLowerCase()) {
+          const retryData = yield searchKickassAnime(baseTitle);
+          match = findExactShowMatch(retryData && retryData.result, baseTitle);
+        }
+      }
+      if (!match) {
+        const candidates = (searchData && searchData.result) || [];
+        match = candidates.find(
+          (r) => (r.title_en || r.title || "").toLowerCase().includes(title.toLowerCase())
+        ) || candidates[0];
+      }
       if (!match)
         return [];
       const showSlug = match.slug || match.watch_uri;
@@ -3965,6 +3867,15 @@ function findBestMatch(hits, mediaInfo) {
   let bestScore = -1;
   for (const hit of hits) {
     const doc = hit.document;
+    // A post title carrying its own distinct release year that conflicts
+    // with the target's is a hard mismatch, not just a missed bonus below -
+    // otherwise a same-named but unrelated title (e.g. "The Office" (2005)
+    // vs. an unrelated 2024 remake also called "The Office") wins purely on
+    // word overlap, since short common titles overlap 100% either way.
+    const postYearMatch = doc.post_title.match(/\b(19|20)\d{2}\b/);
+    if (mediaInfo.year && postYearMatch && Math.abs(parseInt(postYearMatch[0], 10) - parseInt(mediaInfo.year, 10)) > 1) {
+      continue;
+    }
     const titleWords = normalize(doc.post_title).split(' ').filter(Boolean);
     const overlap = titleWords.filter(w => targetWords.has(w)).length;
     let score = targetWords.size ? overlap / targetWords.size : 0;
@@ -4057,7 +3968,12 @@ function extractSeriesTargets($, season) {
     const seasonMatch = text.match(/Season\s*(\d+)/i);
     if (!seasonMatch || parseInt(seasonMatch[1], 10) !== season) return;
     if (!/\d{3,4}\s*[pP]|4K/i.test(text)) return;
-    const listUrl = findLinkByText($, $(el).next(), /Episode Links/i);
+    // Most posts label the per-episode hub link "Episode Links", but some
+    // (e.g. older season-pack posts) skip that label and put the hub link
+    // directly under "G-Direct" instead - confirmed live that link's target
+    // page lists one "G-Direct [Instant]" link per episode either way, so
+    // it's the same kind of hub, just unlabeled.
+    const listUrl = findLinkByText($, $(el).next(), /Episode Links/i) || findLinkByText($, $(el).next(), /G-Direct/i);
     if (listUrl) targets.push({ qualityText: text, listUrl });
   });
   return targets;
@@ -4398,7 +4314,6 @@ const SOURCES = [
   { id: 'moviebox', name: 'MovieBox', mod: MovieBoxSource },
   { id: 'rivestream', name: 'RiveStream', mod: RiveStreamSource },
   { id: '4khdhub', name: '4KHDHub', mod: FourKHdHubSource },
-  { id: 'netmirror', name: 'NetMirror', mod: NetMirrorSource },
   { id: 'vixsrc', name: 'Vixsrc', mod: VixSrcSource },
   { id: 'vidlink', name: 'Vidlink', mod: VidLinkSource },
   { id: 'castle', name: 'Castle', mod: CastleSource },

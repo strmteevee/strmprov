@@ -70,6 +70,7 @@ const gemini = require('./lib/gemini');
 const subtitles = require('./lib/subtitles');
 const indycar = require('./providers/indycar');
 const f1 = require('./providers/f1');
+const sportzx = require('./providers/sportzx');
 const usenetProvider = require('./providers/usenet');
 const usenetConfig = require('./lib/usenetConfig');
 const usenetSessions = require('./lib/usenet/sessionManager');
@@ -191,13 +192,17 @@ function buildManifest(profileId) {
         resources: [
             'catalog', 'stream',
             { name: 'meta', types: ['movie'], idPrefixes: ['indycar:', 'f1:'] },
+            // SportzX events are genuinely live/linear, not on-demand clips
+            // like IndyCar/F1's - kept as its own scoped 'tv' meta entry
+            // rather than folding into the 'movie' one above.
+            { name: 'meta', types: ['tv'], idPrefixes: ['sportzx:'] },
             // Scoped to real tt-id content only - neither IndyCar's nor
-            // F1/F2/F3/Academy's own custom id schemes have a subtitle
-            // concept, and Cinemeta already handles meta for those ids, so
-            // there's nothing for this resource to add there.
+            // F1/F2/F3/Academy's/SportzX's own custom id schemes have a
+            // subtitle concept, and Cinemeta already handles meta for the
+            // tt-id ones, so there's nothing for this resource to add there.
             { name: 'subtitles', types: ['movie', 'series'], idPrefixes: ['tt'] }
         ],
-        types: ['movie', 'series'],
+        types: ['movie', 'series', 'tv'],
         catalogs: [
             { type: 'movie', id: 'strmprov-foryou-movie', name: 'For You' },
             { type: 'series', id: 'strmprov-foryou-series', name: 'For You' },
@@ -216,9 +221,12 @@ function buildManifest(profileId) {
             { type: 'movie', id: 'f1-highlights', name: 'F1 Race Highlights' },
             { type: 'movie', id: 'f2-highlights', name: 'F2 Race Highlights' },
             { type: 'movie', id: 'f3-highlights', name: 'F3 Race Highlights' },
-            { type: 'movie', id: 'f1academy-highlights', name: 'F1 Academy Highlights' }
+            { type: 'movie', id: 'f1academy-highlights', name: 'F1 Academy Highlights' },
+            // One combined catalog rather than one per sport - see
+            // buildSportzxCatalog below for why.
+            { type: 'tv', id: 'sportzx-live', name: 'SportzX Live' }
         ],
-        idPrefixes: ['tt', 'indycar:', 'f1:'],
+        idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:'],
         behaviorHints: { configurable: false, configurationRequired: false }
     };
 }
@@ -491,6 +499,86 @@ function buildF1StreamResponse(id) {
     });
 }
 
+// Same team-vs-team / plain-title display logic and 🔴/🔜/✅ status prefix
+// the real SportzX app itself uses for its own event list (recovered from
+// its decompiled source), so the catalog reads the same way the app's own
+// would - live events sort first, then upcoming, then everything else.
+function sportzxEventStatus(event) {
+    const info = event && event.eventInfo;
+    if (!info) return '';
+    const start = info.startTime ? Date.parse(info.startTime.replace(' ', 'T').replace(/\+0000$/, 'Z')) : NaN;
+    const end = info.endTime ? Date.parse(info.endTime.replace(' ', 'T').replace(/\+0000$/, 'Z')) : NaN;
+    const now = Date.now();
+    if (!Number.isNaN(end) && now >= end) return '✅';
+    if (Number.isNaN(start) || now < start) return Number.isNaN(start) ? '' : '\u{1F51C}';
+    return '\u{1F534}';
+}
+function sportzxDisplayTitle(event) {
+    const info = event && event.eventInfo;
+    if (info && info.teamA && info.teamB) {
+        return info.teamA === info.teamB ? info.teamA : `${info.teamA} vs ${info.teamB}`;
+    }
+    return event.title;
+}
+function sportzxStatusRank(event) {
+    const status = sportzxEventStatus(event);
+    if (status === '\u{1F534}') return 0; // live
+    if (status === '\u{1F51C}') return 1; // upcoming
+    if (status === '✅') return 2; // ended
+    return 3;
+}
+function sportzxEventToMeta(event) {
+    const status = sportzxEventStatus(event);
+    const title = sportzxDisplayTitle(event);
+    const info = event.eventInfo || {};
+    return {
+        id: `sportzx:${event.id}`,
+        type: 'tv',
+        name: status ? `${status} ${title}` : title,
+        poster: info.eventBanner || info.teamAFlag || undefined,
+        description: [info.eventName, info.startTime ? `Starts: ${info.startTime}` : null].filter(Boolean).join('\n') || undefined
+    };
+}
+
+// One combined catalog rather than one per sport (events.json's own `cat`
+// field has dozens of distinct values, including several that are really
+// just regional channel bundles, not sports) - sorted live-first the same
+// way the app's own home screen is, so the catalog opens with what's
+// actually on right now instead of an alphabetical or arrival-order list.
+function buildSportzxCatalog() {
+    return sportzx.listEvents().then((events) => {
+        const sorted = events.slice().sort((a, b) => {
+            const rankDiff = sportzxStatusRank(a) - sportzxStatusRank(b);
+            if (rankDiff !== 0) return rankDiff;
+            const aStart = a.eventInfo && a.eventInfo.startTime ? Date.parse(a.eventInfo.startTime.replace(' ', 'T').replace(/\+0000$/, 'Z')) : Infinity;
+            const bStart = b.eventInfo && b.eventInfo.startTime ? Date.parse(b.eventInfo.startTime.replace(' ', 'T').replace(/\+0000$/, 'Z')) : Infinity;
+            return (Number.isNaN(aStart) ? Infinity : aStart) - (Number.isNaN(bStart) ? Infinity : bStart);
+        });
+        return sorted.map(sportzxEventToMeta);
+    });
+}
+
+// Same reasoning as buildIndycarMeta/buildF1Meta above - Cinemeta has no way
+// to resolve our own sportzx: id scheme.
+function buildSportzxMeta(id) {
+    const eventId = id.slice('sportzx:'.length);
+    return sportzx.getEvent(eventId).then((event) => (event ? sportzxEventToMeta(event) : null));
+}
+
+function buildSportzxStreamResponse(id) {
+    const eventId = id.slice('sportzx:'.length);
+    return sportzx.getEventStreams(eventId).then((streams) => ({
+        streams: streams.map((s) => {
+            const behaviorHints = { notWebReady: true };
+            if (s.headers && Object.keys(s.headers).length) behaviorHints.proxyHeaders = { request: s.headers };
+            return { name: s.name, title: s.quality || 'Live', url: s.url, behaviorHints };
+        })
+    })).catch((err) => {
+        console.error(`[addon-server] SportzX stream error for ${id}: ${err.message}`);
+        return { streams: [] };
+    });
+}
+
 // Merges the provider-embedded subtitles a stream already carries with the
 // (possibly hash-matched) results from lib/subtitles.js, deduping by
 // (lang, url) - the embedded ones are guaranteed to ship with this exact
@@ -734,6 +822,9 @@ const server = http.createServer((req, res) => {
         if (f1CatalogSeries && type === 'movie') {
             return buildF1Catalog(f1CatalogSeries).then(metas => sendJson(res, 200, { metas }));
         }
+        if (id === 'sportzx-live' && type === 'tv') {
+            return buildSportzxCatalog().then(metas => sendJson(res, 200, { metas }));
+        }
         return sendJson(res, 200, { metas: [] });
     }
 
@@ -745,6 +836,9 @@ const server = http.createServer((req, res) => {
         }
         if (id.startsWith('f1:') && type === 'movie') {
             return buildF1Meta(id).then(meta => sendJson(res, 200, { meta }));
+        }
+        if (id.startsWith('sportzx:') && type === 'tv') {
+            return buildSportzxMeta(id).then(meta => sendJson(res, 200, { meta }));
         }
         return sendJson(res, 200, { meta: null });
     }
@@ -768,6 +862,9 @@ const server = http.createServer((req, res) => {
         }
         if (id.startsWith('f1:')) {
             return buildF1StreamResponse(id).then(body => sendJson(res, 200, body));
+        }
+        if (id.startsWith('sportzx:')) {
+            return buildSportzxStreamResponse(id).then(body => sendJson(res, 200, body));
         }
         if (type !== 'movie' && type !== 'series') {
             return sendJson(res, 200, { streams: [] });

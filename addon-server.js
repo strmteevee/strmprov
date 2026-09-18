@@ -81,6 +81,75 @@ const CATALOG_MIN_ITEMS = 30;
 const CATALOG_MAX_ITEMS = 40;
 const AI_CACHE_TTL_MS = 1000 * 60 * 60 * 24;
 
+// Plain TMDB browse catalogs (genres, streaming services, popular/new/
+// featured) - unlike "For You" above, these have no per-profile
+// personalization signal at all, so they're built once globally and shared
+// across every profile rather than cached per profileId.
+const DISCOVER_CATALOG_MAX_ITEMS = 40;
+const DISCOVER_CATALOG_TTL_MS = 1000 * 60 * 60 * 6; // 6h - browse lists move slowly
+const discoverCatalogCache = new Map(); // catalog id -> { metas, timestamp }
+
+function getOrBuildDiscoverCatalog(catalogId, builder) {
+    const cached = discoverCatalogCache.get(catalogId);
+    if (cached && Date.now() - cached.timestamp < DISCOVER_CATALOG_TTL_MS) {
+        return Promise.resolve(cached.metas);
+    }
+    return builder().then(metas => {
+        discoverCatalogCache.set(catalogId, { metas, timestamp: Date.now() });
+        return metas;
+    }).catch(err => {
+        console.error(`[addon-server] Failed to build catalog "${catalogId}": ${err.message}`);
+        return cached ? cached.metas : [];
+    });
+}
+
+// TMDB genre ids differ between movies and TV, and TV doesn't even have a
+// distinct genre for every category requested here - confirmed live against
+// TMDB's own /genre/movie/list and /genre/tv/list. Action & Adventure and
+// Sci-Fi & Fantasy are each ONE combined TV genre (so e.g. "Action Series"
+// and "Adventure Series" intentionally show the same underlying TMDB genre -
+// TMDB itself doesn't distinguish them for TV, there's no way to split it
+// further), and History/Horror/Thriller have no TV genre at all, so those
+// three fall back to a TMDB keyword search (with_keywords) instead - the
+// closest available approximation, not a perfect substitute. Teen and Sport
+// aren't real TMDB genres for either media type, so both use keyword search
+// too (ids confirmed via TMDB's /search/keyword).
+const GENRE_CATALOGS = [
+    { slug: 'action', label: 'Action', movie: { with_genres: '28' }, tv: { with_genres: '10759' } },
+    { slug: 'adventure', label: 'Adventure', movie: { with_genres: '12' }, tv: { with_genres: '10759' } },
+    // TMDB's Animation genre includes anime - excluded via the "anime"
+    // keyword plus a belt-and-suspenders original_language filter below
+    // (virtually all anime is JP-original; virtually no Western animation
+    // is), since without_keywords alone doesn't catch everything.
+    { slug: 'animation', label: 'Animation', movie: { with_genres: '16', without_keywords: '210024' }, tv: { with_genres: '16', without_keywords: '210024' }, excludeOriginalLanguage: 'ja' },
+    { slug: 'comedy', label: 'Comedy', movie: { with_genres: '35' }, tv: { with_genres: '35' } },
+    { slug: 'crime', label: 'Crime', movie: { with_genres: '80' }, tv: { with_genres: '80' } },
+    { slug: 'drama', label: 'Drama', movie: { with_genres: '18' }, tv: { with_genres: '18' } },
+    { slug: 'family', label: 'Family', movie: { with_genres: '10751' }, tv: { with_genres: '10751' } },
+    { slug: 'teen', label: 'Teen', movie: { with_keywords: '365374' }, tv: { with_keywords: '365374' } },
+    { slug: 'fantasy', label: 'Fantasy', movie: { with_genres: '14' }, tv: { with_genres: '10765' } },
+    { slug: 'history', label: 'History', movie: { with_genres: '36' }, tv: { with_keywords: '282633' } },
+    { slug: 'horror', label: 'Horror', movie: { with_genres: '27' }, tv: { with_keywords: '315058' } },
+    { slug: 'mystery', label: 'Mystery', movie: { with_genres: '9648' }, tv: { with_genres: '9648' } },
+    { slug: 'scifi', label: 'Sci-Fi', movie: { with_genres: '878' }, tv: { with_genres: '10765' } },
+    { slug: 'sport', label: 'Sport', movie: { with_keywords: '333328' }, tv: { with_keywords: '333328' } },
+    { slug: 'thriller', label: 'Thriller', movie: { with_genres: '53' }, tv: { with_keywords: '316362' } },
+    { slug: 'war', label: 'War', movie: { with_genres: '10752' }, tv: { with_genres: '10768' } },
+    { slug: 'western', label: 'Western', movie: { with_genres: '37' }, tv: { with_genres: '37' } }
+];
+
+// TMDB provider ids for the "streaming services" catalog, watch_region 'US' -
+// picked because it's the one region where TMDB actually has ids for most of
+// the examples named in the request (Netflix/Prime/Disney+/Hulu/Max/Apple
+// TV+/Paramount+/Peacock) at once. Sky is UK-only on TMDB and there's no
+// single region covering both Sky and the US-only services, so it's left out
+// rather than splitting this into a second, region-specific catalog.
+const STREAMING_SERVICE_PARAMS = {
+    with_watch_providers: ['8', '9', '337', '15', '1899', '350', '2303', '386'].join('|'),
+    watch_region: 'US',
+    with_watch_monetization_types: 'flatrate'
+};
+
 function getLocalIp() {
     const interfaces = os.networkInterfaces();
     for (const name of Object.keys(interfaces)) {
@@ -176,7 +245,7 @@ function buildManifest(profileId) {
         // resources, etc.) - some Stremio-protocol clients key their cached
         // manifest/catalog data on this and won't notice new catalogs on an
         // existing install (even after a reinstall) unless it changes.
-        version: '1.2.0',
+        version: '1.3.0',
         name: 'StrmProv',
         description: `Self-hosted multi-source streaming addon (profile ${profileId}) with a personalized "For You" catalog based on this profile's own watch history.`,
         logo: 'https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png',
@@ -209,6 +278,16 @@ function buildManifest(profileId) {
         catalogs: [
             { type: 'movie', id: 'strmprov-foryou-movie', name: 'For You' },
             { type: 'series', id: 'strmprov-foryou-series', name: 'For You' },
+            // Plain TMDB browse catalogs - no personalization, same for every
+            // profile (see the DISCOVER_CATALOG_* constants/builders above).
+            { type: 'movie', id: 'strmprov-browse-movie', name: 'Popular, New & Featured' },
+            { type: 'series', id: 'strmprov-browse-series', name: 'Popular, New & Featured' },
+            ...GENRE_CATALOGS.flatMap(g => [
+                { type: 'movie', id: `genre-${g.slug}-movie`, name: `${g.label} Movies` },
+                { type: 'series', id: `genre-${g.slug}-series`, name: `${g.label} Series` }
+            ]),
+            { type: 'movie', id: 'strmprov-streaming-movie', name: 'Streaming Services' },
+            { type: 'series', id: 'strmprov-streaming-series', name: 'Streaming Services' },
             {
                 type: 'movie',
                 id: 'indycar-videos',
@@ -251,6 +330,60 @@ function tmdbItemToMeta(item, mediaType, type) {
             releaseInfo: (item.release_date || item.first_air_date || '').substring(0, 4)
         };
     }).catch(() => null);
+}
+
+// Genre/keyword browse catalog (see GENRE_CATALOGS above). Fetches double
+// the target count up front since both the original_language filter and
+// tmdbItemToMeta's own imdb-lookup attrition (some TMDB titles have no
+// imdb_id at all) can both drop items after the fact - same "aim higher than
+// the minimum" reasoning as regenerateCatalog's own comment below.
+function buildDiscoverGenreCatalog(def, mediaType, type) {
+    const params = mediaType === 'tv' ? def.tv : def.movie;
+    return tmdb.discoverMany(mediaType, params, DISCOVER_CATALOG_MAX_ITEMS * 2).then(items => {
+        const filtered = def.excludeOriginalLanguage
+            ? items.filter(item => item.original_language !== def.excludeOriginalLanguage)
+            : items;
+        return Promise.all(filtered.slice(0, DISCOVER_CATALOG_MAX_ITEMS).map(item => tmdbItemToMeta(item, mediaType, type)))
+            .then(metas => metas.filter(Boolean));
+    });
+}
+
+// "Combine Popular, new and featured" - merges TMDB's own popular, "new"
+// (now_playing for movies / on_the_air for tv) and trending/week lists into
+// one catalog, deduped and re-sorted by popularity. Trending is merged in
+// first so a handful of true trending titles aren't drowned out by popular's
+// much larger, slower-moving library.
+function buildCombinedBrowseCatalog(mediaType, type) {
+    const newListName = mediaType === 'tv' ? 'on_the_air' : 'now_playing';
+    return Promise.all([
+        tmdb.getList(mediaType, 'trending', DISCOVER_CATALOG_MAX_ITEMS),
+        tmdb.getList(mediaType, 'popular', DISCOVER_CATALOG_MAX_ITEMS),
+        tmdb.getList(mediaType, newListName, DISCOVER_CATALOG_MAX_ITEMS)
+    ]).then(lists => {
+        const seen = new Set();
+        const merged = [];
+        for (const list of lists) {
+            for (const item of list) {
+                const id = String(item.id);
+                if (seen.has(id) || !item.poster_path) continue;
+                seen.add(id);
+                merged.push(item);
+            }
+        }
+        merged.sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
+        return Promise.all(merged.slice(0, DISCOVER_CATALOG_MAX_ITEMS).map(item => tmdbItemToMeta(item, mediaType, type)))
+            .then(metas => metas.filter(Boolean));
+    });
+}
+
+// "Movies and series catalog for streaming services like netflix, sky,
+// prime, hulu etc" - one combined catalog per type, not one per service (see
+// STREAMING_SERVICE_PARAMS above for which providers/region).
+function buildStreamingServiceCatalog(mediaType, type) {
+    return tmdb.discoverMany(mediaType, STREAMING_SERVICE_PARAMS, DISCOVER_CATALOG_MAX_ITEMS * 2).then(items =>
+        Promise.all(items.slice(0, DISCOVER_CATALOG_MAX_ITEMS).map(item => tmdbItemToMeta(item, mediaType, type)))
+            .then(metas => metas.filter(Boolean))
+    );
 }
 
 // TMDB's own /recommendations and /similar only ever take one title (see
@@ -828,6 +961,21 @@ const server = http.createServer((req, res) => {
         }
         if (id === 'sportzx-live' && type === 'movie') {
             return buildSportzxCatalog().then(metas => sendJson(res, 200, { metas }));
+        }
+        const browseType = { 'strmprov-browse-movie': 'movie', 'strmprov-browse-series': 'series' }[id];
+        if (browseType && type === browseType) {
+            const mediaType = type === 'series' ? 'tv' : 'movie';
+            return getOrBuildDiscoverCatalog(id, () => buildCombinedBrowseCatalog(mediaType, type)).then(metas => sendJson(res, 200, { metas }));
+        }
+        const streamingType = { 'strmprov-streaming-movie': 'movie', 'strmprov-streaming-series': 'series' }[id];
+        if (streamingType && type === streamingType) {
+            const mediaType = type === 'series' ? 'tv' : 'movie';
+            return getOrBuildDiscoverCatalog(id, () => buildStreamingServiceCatalog(mediaType, type)).then(metas => sendJson(res, 200, { metas }));
+        }
+        const genreMatch = GENRE_CATALOGS.find(g => id === `genre-${g.slug}-${type}`);
+        if (genreMatch && (type === 'movie' || type === 'series')) {
+            const mediaType = type === 'series' ? 'tv' : 'movie';
+            return getOrBuildDiscoverCatalog(id, () => buildDiscoverGenreCatalog(genreMatch, mediaType, type)).then(metas => sendJson(res, 200, { metas }));
         }
         return sendJson(res, 200, { metas: [] });
     }

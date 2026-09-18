@@ -508,6 +508,68 @@
       "contentLanguage": [
         "en"
       ]
+    },
+    {
+      "id": "movies4u",
+      "name": "Movies4u",
+      "description": "Direct links via Movies4u's WordPress REST API (its own search.html returns identical content regardless of query, confirmed live) through the HubCloud delivery chain shared with 4khdhub.js (lib/hubcloudExtract.js) - FSL (Cloudflare R2), PixelServer (pixeldrain.dev), and 10Gbps (often a Google Drive link, live-probed for seekability by lib/aggregate.js). Movies only.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie"
+      ],
+      "filename": "providers/movies4u.js",
+      "enabled": true,
+      "formats": [
+        "mkv",
+        "mp4"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=movies4u.foo&sz=128",
+      "contentLanguage": [
+        "en",
+        "hi"
+      ]
+    },
+    {
+      "id": "hindmoviez",
+      "name": "HindMoviez",
+      "description": "Direct links via HindMoviez's WordPress REST API through mvlink.blog -> hshare.lol -> gdshine.org's own API (GET /api/files/s/{id} then POST /api/downloads/{id}/via-worker for a fresh Cloudflare Worker direct link, confirmed live), plus a bonus embedded workers.dev link that can be intermittently dead (self-heals via the normal reachability probing every stream gets). Movies only; older posts' embedded links can point to reused/wrong content - a site-side link-rot issue, not fixable client-side.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie"
+      ],
+      "filename": "providers/hindmoviez.js",
+      "enabled": true,
+      "formats": [
+        "mkv",
+        "mp4"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=hindmovie.fit&sz=128",
+      "contentLanguage": [
+        "en",
+        "hi"
+      ]
+    },
+    {
+      "id": "animeworld",
+      "name": "AnimeWorld",
+      "description": "Italian-subbed anime via AnimeWorld's own session/CSRF-protected episode API (GET /api/episode/info?id=... with a CSRF-Token header) - resolves to a direct, self-hosted SweetPixel CDN link, confirmed live with a real 206 Partial Content and no Cloudflare in front of the video host. No TMDB-season concept on the site itself, so only season 1 (or a movie) is handled precisely; a later season falls back to a best-effort search query.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/animeworld.js",
+      "enabled": true,
+      "formats": [
+        "mp4"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=animeworld.so&sz=128",
+      "contentLanguage": [
+        "it"
+      ]
     }
   ]
 }

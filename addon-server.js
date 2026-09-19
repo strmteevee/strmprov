@@ -100,38 +100,43 @@ function getOrBuildDiscoverCatalog(catalogId, builder) {
     });
 }
 
+// By request: the 17 separate genre catalogs (34 with movie+series) were
+// consolidated into fewer, more logically grouped categories, and Teen was
+// dropped entirely. Each entry's movie/tv value is either one params object
+// (a single /discover call) or an array of them (run separately and merged -
+// only needed when a category spans two TMDB filter DIMENSIONS that can't be
+// OR'd together in one request, e.g. a genre id and a keyword id at once;
+// two ids of the SAME dimension, like two genres, are OR'd with a single
+// pipe-joined with_genres/with_keywords value instead - both confirmed live
+// against TMDB's /discover).
+//
 // TMDB genre ids differ between movies and TV, and TV doesn't even have a
-// distinct genre for every category requested here - confirmed live against
-// TMDB's own /genre/movie/list and /genre/tv/list. Action & Adventure and
-// Sci-Fi & Fantasy are each ONE combined TV genre (so e.g. "Action Series"
-// and "Adventure Series" intentionally show the same underlying TMDB genre -
-// TMDB itself doesn't distinguish them for TV, there's no way to split it
-// further), and History/Horror/Thriller have no TV genre at all, so those
-// three fall back to a TMDB keyword search (with_keywords) instead - the
-// closest available approximation, not a perfect substitute. Teen and Sport
-// aren't real TMDB genres for either media type, so both use keyword search
+// distinct genre for every category here - confirmed live against TMDB's own
+// /genre/movie/list and /genre/tv/list. Action+Adventure and Sci-Fi+Fantasy
+// are each already ONE combined TV genre on TMDB's side, which conveniently
+// matches grouping them here. History and Horror/Thriller have no TV genre
+// at all, so those fall back to TMDB keyword search (with_keywords) instead -
+// the closest available approximation, not a perfect substitute. Sport isn't
+// a real TMDB genre for either media type either, so it uses keyword search
 // too (ids confirmed via TMDB's /search/keyword).
 const GENRE_CATALOGS = [
-    { slug: 'action', label: 'Action', movie: { with_genres: '28' }, tv: { with_genres: '10759' } },
-    { slug: 'adventure', label: 'Adventure', movie: { with_genres: '12' }, tv: { with_genres: '10759' } },
+    { slug: 'action-adventure', label: 'Action & Adventure', movie: { with_genres: '28|12' }, tv: { with_genres: '10759' } },
+    { slug: 'scifi-fantasy', label: 'Sci-Fi & Fantasy', movie: { with_genres: '878|14' }, tv: { with_genres: '10765' } },
     // TMDB's Animation genre includes anime - excluded via the "anime"
     // keyword plus a belt-and-suspenders original_language filter below
     // (virtually all anime is JP-original; virtually no Western animation
     // is), since without_keywords alone doesn't catch everything.
-    { slug: 'animation', label: 'Animation', movie: { with_genres: '16', without_keywords: '210024' }, tv: { with_genres: '16', without_keywords: '210024' }, excludeOriginalLanguage: 'ja' },
+    { slug: 'animation-family', label: 'Animation & Family', movie: { with_genres: '16|10751', without_keywords: '210024' }, tv: { with_genres: '16|10751', without_keywords: '210024' }, excludeOriginalLanguage: 'ja' },
     { slug: 'comedy', label: 'Comedy', movie: { with_genres: '35' }, tv: { with_genres: '35' } },
-    { slug: 'crime', label: 'Crime', movie: { with_genres: '80' }, tv: { with_genres: '80' } },
+    { slug: 'crime-mystery', label: 'Crime & Mystery', movie: { with_genres: '80|9648' }, tv: { with_genres: '80|9648' } },
     { slug: 'drama', label: 'Drama', movie: { with_genres: '18' }, tv: { with_genres: '18' } },
-    { slug: 'family', label: 'Family', movie: { with_genres: '10751' }, tv: { with_genres: '10751' } },
-    { slug: 'teen', label: 'Teen', movie: { with_keywords: '365374' }, tv: { with_keywords: '365374' } },
-    { slug: 'fantasy', label: 'Fantasy', movie: { with_genres: '14' }, tv: { with_genres: '10765' } },
-    { slug: 'history', label: 'History', movie: { with_genres: '36' }, tv: { with_keywords: '282633' } },
-    { slug: 'horror', label: 'Horror', movie: { with_genres: '27' }, tv: { with_keywords: '315058' } },
-    { slug: 'mystery', label: 'Mystery', movie: { with_genres: '9648' }, tv: { with_genres: '9648' } },
-    { slug: 'scifi', label: 'Sci-Fi', movie: { with_genres: '878' }, tv: { with_genres: '10765' } },
+    { slug: 'horror-thriller', label: 'Horror & Thriller', movie: { with_genres: '27|53' }, tv: { with_keywords: '315058|316362' } },
+    // TV War has a real genre (War & Politics) but TV History doesn't (only a
+    // keyword) - a genre id and a keyword id can't be OR'd in one /discover
+    // call (different filter dimensions, always ANDed), so TV runs both as
+    // separate queries and merges the results instead of one combined call.
+    { slug: 'history-war', label: 'History & War', movie: { with_genres: '36|10752' }, tv: [{ with_genres: '10768' }, { with_keywords: '282633' }] },
     { slug: 'sport', label: 'Sport', movie: { with_keywords: '333328' }, tv: { with_keywords: '333328' } },
-    { slug: 'thriller', label: 'Thriller', movie: { with_genres: '53' }, tv: { with_keywords: '316362' } },
-    { slug: 'war', label: 'War', movie: { with_genres: '10752' }, tv: { with_genres: '10768' } },
     { slug: 'western', label: 'Western', movie: { with_genres: '37' }, tv: { with_genres: '37' } }
 ];
 
@@ -147,11 +152,11 @@ const GENRE_CATALOGS = [
 // request), but a reasonable, adjustable list.
 const WESTERN_ORIGIN_COUNTRIES = ['US', 'CA', 'GB', 'IE', 'AU', 'NZ', 'FR', 'DE', 'ES', 'IT', 'NL', 'BE', 'SE', 'NO', 'DK', 'FI', 'PT', 'AT', 'CH', 'PL', 'GR', 'CZ'];
 const WESTERN_REGION_PARAMS = { with_origin_country: WESTERN_ORIGIN_COUNTRIES.join('|') };
-// /discover isn't available for buildCombinedBrowseCatalog's trending/popular/
-// now_playing lists (they're fixed endpoints, not filterable by
-// with_origin_country) - those are post-filtered instead using origin_country
-// (present on TV list results) or, for movies, original_language as the best
-// available proxy (movie list results carry no origin_country field at all).
+// /discover isn't available for buildNewCatalog's now_playing/on_the_air
+// lists (they're fixed endpoints, not filterable by with_origin_country) -
+// those are post-filtered instead using origin_country (present on TV list
+// results) or, for movies, original_language as the best available proxy
+// (movie list results carry no origin_country field at all).
 const WESTERN_LANGUAGES = new Set(['en', 'fr', 'de', 'es', 'it', 'pt', 'nl', 'sv', 'no', 'da', 'fi', 'pl', 'el', 'cs', 'ro', 'hu']);
 function isWesternListItem(item, mediaType) {
     if (mediaType === 'tv' && Array.isArray(item.origin_country) && item.origin_country.length) {
@@ -160,17 +165,22 @@ function isWesternListItem(item, mediaType) {
     return WESTERN_LANGUAGES.has(item.original_language);
 }
 
-// TMDB provider ids for the "streaming services" catalog, watch_region 'US' -
-// picked because it's the one region where TMDB actually has ids for most of
-// the examples named in the request (Netflix/Prime/Disney+/Hulu/Max/Apple
-// TV+/Paramount+/Peacock) at once. Sky is UK-only on TMDB and there's no
-// single region covering both Sky and the US-only services, so it's left out
-// rather than splitting this into a second, region-specific catalog.
-const STREAMING_SERVICE_PARAMS = Object.assign({
-    with_watch_providers: ['8', '9', '337', '15', '1899', '350', '2303', '386'].join('|'),
-    watch_region: 'US',
-    with_watch_monetization_types: 'flatrate'
-}, WESTERN_REGION_PARAMS);
+// One catalog pair (Movies/Series) per streaming service, by request - rather
+// than the one combined catalog this used to be. TMDB provider ids below,
+// watch_region 'US' - picked because it's the one region where TMDB actually
+// has ids for all of these at once. Sky is UK-only on TMDB (no single region
+// covers both Sky and these US-only services), so it's left out rather than
+// adding a second, region-specific set of catalogs just for it.
+const STREAMING_SERVICES = [
+    { slug: 'netflix', label: 'Netflix', providerId: '8' },
+    { slug: 'prime', label: 'Prime Video', providerId: '9' },
+    { slug: 'disneyplus', label: 'Disney+', providerId: '337' },
+    { slug: 'hulu', label: 'Hulu', providerId: '15' },
+    { slug: 'max', label: 'Max', providerId: '1899' },
+    { slug: 'appletv', label: 'Apple TV+', providerId: '350' },
+    { slug: 'paramountplus', label: 'Paramount+', providerId: '2303' },
+    { slug: 'peacock', label: 'Peacock', providerId: '386' }
+];
 
 function getLocalIp() {
     const interfaces = os.networkInterfaces();
@@ -201,7 +211,7 @@ function buildManifest(profileId) {
         // resources, etc.) - some Stremio-protocol clients key their cached
         // manifest/catalog data on this and won't notice new catalogs on an
         // existing install (even after a reinstall) unless it changes.
-        version: '1.3.0',
+        version: '1.6.0',
         name: 'StrmProv',
         description: `Self-hosted multi-source streaming addon (profile ${profileId}) with a personalized "For You" catalog based on this profile's own watch history.`,
         logo: 'https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png',
@@ -236,14 +246,16 @@ function buildManifest(profileId) {
             { type: 'series', id: 'strmprov-foryou-series', name: 'For You' },
             // Plain TMDB browse catalogs - no personalization, same for every
             // profile (see the DISCOVER_CATALOG_* constants/builders above).
-            { type: 'movie', id: 'strmprov-browse-movie', name: 'Popular, New & Featured' },
-            { type: 'series', id: 'strmprov-browse-series', name: 'Popular, New & Featured' },
+            { type: 'movie', id: 'strmprov-new-movie', name: 'New' },
+            { type: 'series', id: 'strmprov-new-series', name: 'New' },
             ...GENRE_CATALOGS.flatMap(g => [
                 { type: 'movie', id: `genre-${g.slug}-movie`, name: `${g.label} Movies` },
                 { type: 'series', id: `genre-${g.slug}-series`, name: `${g.label} Series` }
             ]),
-            { type: 'movie', id: 'strmprov-streaming-movie', name: 'Streaming Services' },
-            { type: 'series', id: 'strmprov-streaming-series', name: 'Streaming Services' },
+            ...STREAMING_SERVICES.flatMap(s => [
+                { type: 'movie', id: `streaming-${s.slug}-movie`, name: `${s.label} Movies` },
+                { type: 'series', id: `streaming-${s.slug}-series`, name: `${s.label} Series` }
+            ]),
             {
                 type: 'movie',
                 id: 'indycar-videos',
@@ -294,44 +306,105 @@ function tmdbItemToMeta(item, mediaType, type) {
 // imdb_id at all) can both drop items after the fact - same "aim higher than
 // the minimum" reasoning as regenerateCatalog's own comment below.
 function buildDiscoverGenreCatalog(def, mediaType, type) {
-    const params = Object.assign({}, mediaType === 'tv' ? def.tv : def.movie, WESTERN_REGION_PARAMS);
-    return tmdb.discoverMany(mediaType, params, DISCOVER_CATALOG_MAX_ITEMS * 2).then(items => {
-        const filtered = def.excludeOriginalLanguage
-            ? items.filter(item => item.original_language !== def.excludeOriginalLanguage)
-            : items;
-        return Promise.all(filtered.slice(0, DISCOVER_CATALOG_MAX_ITEMS).map(item => tmdbItemToMeta(item, mediaType, type)))
-            .then(metas => metas.filter(Boolean));
-    });
-}
-
-// "Combine Popular, new and featured" - merges TMDB's own popular, "new"
-// (now_playing for movies / on_the_air for tv) and trending/week lists into
-// one catalog, deduped and re-sorted by popularity. Trending is merged in
-// first so a handful of true trending titles aren't drowned out by popular's
-// much larger, slower-moving library.
-function buildCombinedBrowseCatalog(mediaType, type) {
-    const newListName = mediaType === 'tv' ? 'on_the_air' : 'now_playing';
-    // Fetches double the target count from each list since isWesternListItem
-    // below drops a meaningful chunk of each (these are fixed TMDB endpoints,
-    // not /discover, so there's no with_origin_country to filter server-side
-    // the way the genre/streaming catalogs do).
-    return Promise.all([
-        tmdb.getList(mediaType, 'trending', DISCOVER_CATALOG_MAX_ITEMS * 2),
-        tmdb.getList(mediaType, 'popular', DISCOVER_CATALOG_MAX_ITEMS * 2),
-        tmdb.getList(mediaType, newListName, DISCOVER_CATALOG_MAX_ITEMS * 2)
-    ]).then(lists => {
+    // Most categories are one /discover call; a few (see history-war's tv
+    // entry above) need two separate calls merged together because they mix
+    // filter dimensions that can't be OR'd in a single request.
+    const rawParamSets = mediaType === 'tv' ? def.tv : def.movie;
+    const paramSets = Array.isArray(rawParamSets) ? rawParamSets : [rawParamSets];
+    return Promise.all(paramSets.map(p =>
+        tmdb.discoverMany(mediaType, Object.assign({}, p, WESTERN_REGION_PARAMS), DISCOVER_CATALOG_MAX_ITEMS * 2)
+    )).then(lists => {
         const seen = new Set();
         const merged = [];
         for (const list of lists) {
             for (const item of list) {
                 const id = String(item.id);
-                if (seen.has(id) || !item.poster_path || !isWesternListItem(item, mediaType)) continue;
+                if (seen.has(id)) continue;
                 seen.add(id);
                 merged.push(item);
             }
         }
         merged.sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
-        return Promise.all(merged.slice(0, DISCOVER_CATALOG_MAX_ITEMS).map(item => tmdbItemToMeta(item, mediaType, type)))
+        const filtered = def.excludeOriginalLanguage
+            ? merged.filter(item => item.original_language !== def.excludeOriginalLanguage)
+            : merged;
+        return Promise.all(filtered.slice(0, DISCOVER_CATALOG_MAX_ITEMS).map(item => tmdbItemToMeta(item, mediaType, type)))
+            .then(metas => metas.filter(Boolean));
+    });
+}
+
+// A movie's overall `release_date` field (what now_playing sorts/filters by,
+// and what /discover's primary_release_date.gte/lte filters check) reflects
+// its EARLIEST/theatrical release, not its digital one - confirmed live that
+// a movie still theatrical-only, with only a scheduled FUTURE digital date on
+// record, still passes a with_release_type=4 discover filter and any coarse
+// range built on primary_release_date (e.g. a movie theatrical Jul 31 with a
+// digital date of Sep 29 still shows up in a query bounded to "on or before
+// Sep 19"). The only reliable way to know a movie is actually available
+// digitally today is to read its own real per-region release_dates (type 4 =
+// Digital) and check that specific date has actually passed.
+function getDigitalReleaseDate(releaseDatesResults) {
+    const nowIso = new Date().toISOString();
+    const regions = releaseDatesResults || [];
+    const us = regions.find(r => r.iso_3166_1 === 'US');
+    const candidates = us ? [us] : regions;
+    let best = null;
+    for (const region of candidates) {
+        for (const rd of region.release_dates || []) {
+            if (rd.type !== 4 || rd.release_date > nowIso) continue;
+            if (!best || rd.release_date > best) best = rd.release_date;
+        }
+    }
+    return best;
+}
+
+// "New" - by request, only already-digitally-released movies (no
+// theatrical-only titles), sorted newest first. TV has no theatrical/digital
+// concept at all, so "currently airing" (on_the_air) is already the right
+// definition of "new" there and needs none of the extra checking below.
+function buildNewCatalog(mediaType, type) {
+    if (mediaType === 'tv') {
+        return tmdb.getList('tv', 'on_the_air', DISCOVER_CATALOG_MAX_ITEMS * 2).then(list => {
+            const seen = new Set();
+            const merged = [];
+            for (const item of list) {
+                const id = String(item.id);
+                if (seen.has(id) || !item.poster_path || !isWesternListItem(item, 'tv')) continue;
+                seen.add(id);
+                merged.push(item);
+            }
+            merged.sort((a, b) => (b.first_air_date || '').localeCompare(a.first_air_date || ''));
+            return Promise.all(merged.slice(0, DISCOVER_CATALOG_MAX_ITEMS).map(item => tmdbItemToMeta(item, 'tv', type)))
+                .then(metas => metas.filter(Boolean));
+        });
+    }
+
+    // Movies: with_release_type=4 + region narrows candidates to ones with
+    // SOME US digital release record and the primary_release_date range is
+    // just a coarse popularity-pool trimmer (not a trustworthy digital-date
+    // filter, per getDigitalReleaseDate's comment above) - the real check
+    // happens per-candidate below. A wide 180-day window plus a 3x candidate
+    // pool leaves enough headroom for the two layers of attrition that
+    // follow (not-yet-digital exclusion, then the usual imdb-lookup misses).
+    const since = new Date(Date.now() - 1000 * 60 * 60 * 24 * 180).toISOString().slice(0, 10);
+    const today = new Date().toISOString().slice(0, 10);
+    const params = Object.assign({
+        with_release_type: '4',
+        region: 'US',
+        sort_by: 'popularity.desc',
+        'primary_release_date.gte': since,
+        'primary_release_date.lte': today
+    }, WESTERN_REGION_PARAMS);
+
+    return tmdb.discoverMany('movie', params, DISCOVER_CATALOG_MAX_ITEMS * 3).then(candidates => {
+        const usable = candidates.filter(item => item.poster_path && isWesternListItem(item, 'movie'));
+        return Promise.all(usable.map(item =>
+            tmdb.getReleaseDates(item.id).then(rd => ({ item, digitalDate: getDigitalReleaseDate(rd) }))
+        ));
+    }).then(withDates => {
+        const released = withDates.filter(x => x.digitalDate);
+        released.sort((a, b) => b.digitalDate.localeCompare(a.digitalDate));
+        return Promise.all(released.slice(0, DISCOVER_CATALOG_MAX_ITEMS).map(x => tmdbItemToMeta(x.item, 'movie', type)))
             .then(metas => metas.filter(Boolean));
     });
 }
@@ -339,8 +412,13 @@ function buildCombinedBrowseCatalog(mediaType, type) {
 // "Movies and series catalog for streaming services like netflix, sky,
 // prime, hulu etc" - one combined catalog per type, not one per service (see
 // STREAMING_SERVICE_PARAMS above for which providers/region).
-function buildStreamingServiceCatalog(mediaType, type) {
-    return tmdb.discoverMany(mediaType, STREAMING_SERVICE_PARAMS, DISCOVER_CATALOG_MAX_ITEMS * 2).then(items =>
+function buildStreamingServiceCatalog(service, mediaType, type) {
+    const params = Object.assign({
+        with_watch_providers: service.providerId,
+        watch_region: 'US',
+        with_watch_monetization_types: 'flatrate'
+    }, WESTERN_REGION_PARAMS);
+    return tmdb.discoverMany(mediaType, params, DISCOVER_CATALOG_MAX_ITEMS * 2).then(items =>
         Promise.all(items.slice(0, DISCOVER_CATALOG_MAX_ITEMS).map(item => tmdbItemToMeta(item, mediaType, type)))
             .then(metas => metas.filter(Boolean))
     );
@@ -901,15 +979,15 @@ const server = http.createServer((req, res) => {
         if (id === 'sportzx-live' && type === 'movie') {
             return buildSportzxCatalog().then(metas => sendJson(res, 200, { metas }));
         }
-        const browseType = { 'strmprov-browse-movie': 'movie', 'strmprov-browse-series': 'series' }[id];
-        if (browseType && type === browseType) {
+        const newCatalogType = { 'strmprov-new-movie': 'movie', 'strmprov-new-series': 'series' }[id];
+        if (newCatalogType && type === newCatalogType) {
             const mediaType = type === 'series' ? 'tv' : 'movie';
-            return getOrBuildDiscoverCatalog(id, () => buildCombinedBrowseCatalog(mediaType, type)).then(metas => sendJson(res, 200, { metas }));
+            return getOrBuildDiscoverCatalog(id, () => buildNewCatalog(mediaType, type)).then(metas => sendJson(res, 200, { metas }));
         }
-        const streamingType = { 'strmprov-streaming-movie': 'movie', 'strmprov-streaming-series': 'series' }[id];
-        if (streamingType && type === streamingType) {
+        const streamingMatch = STREAMING_SERVICES.find(s => id === `streaming-${s.slug}-${type}`);
+        if (streamingMatch && (type === 'movie' || type === 'series')) {
             const mediaType = type === 'series' ? 'tv' : 'movie';
-            return getOrBuildDiscoverCatalog(id, () => buildStreamingServiceCatalog(mediaType, type)).then(metas => sendJson(res, 200, { metas }));
+            return getOrBuildDiscoverCatalog(id, () => buildStreamingServiceCatalog(streamingMatch, mediaType, type)).then(metas => sendJson(res, 200, { metas }));
         }
         const genreMatch = GENRE_CATALOGS.find(g => id === `genre-${g.slug}-${type}`);
         if (genreMatch && (type === 'movie' || type === 'series')) {

@@ -480,6 +480,16 @@ function getStreams(tmdbId, mediaType = "movie", seasonNum = null, episodeNum = 
       const response = yield makeRequest(vidlinkUrl, { headers: VIDLINK_HEADERS });
       const data = yield response.json();
       console.log(`[Vidlink] Received response from Vidlink API`);
+      if (!data) {
+        // Confirmed live: vidlink.pro's API returns a bare JSON `null` body
+        // (not an object with empty fields) for at least one real title with
+        // no available stream - processVidlinkResponse assumes an object and
+        // throws reading `data.subtitles` off it, which the outer try/catch
+        // does paper over, but only after an exception rather than the clean
+        // "no streams" result this genuinely is.
+        console.log("[Vidlink] API returned no data for this title");
+        return [];
+      }
       const mediaInfo = {
         title,
         year,

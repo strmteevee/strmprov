@@ -41,7 +41,11 @@ const SOURCES = [
   { id: 'castle', varName: 'Castle', name: 'Castle' },
   { id: 'hdhub4u', varName: 'HdHub4u', name: 'HDHub4u', external: true },
   { id: 'penguplay', varName: 'PenguPlay', name: 'PenguPlay', external: true },
-  { id: 'movieblast', varName: 'MovieBlast', name: 'MovieBlast' },
+  // movieblast removed entirely (2026-09-20, not just excluded from this
+  // bundle) - its own CDN's TLS/domain setup was confirmed broken across
+  // every hostname it uses (a generic Fastly default-SNI cert instead of one
+  // for its own domain, 421 Misdirected Request even bypassing that), with
+  // no fix possible client-side.
   { id: 'anime-dekho', varName: 'AnimeDekho', name: 'AnimeDekho' },
   { id: 'kickassanime', varName: 'KickassAnime', name: 'KickassAnime' },
   { id: 'vegamovies', varName: 'VegaMovies', name: 'VegaMovies' },

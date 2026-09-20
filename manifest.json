@@ -178,27 +178,6 @@
       ]
     },
     {
-      "id": "streamflix",
-      "name": "StreamFlix",
-      "description": "Direct links via StreamFlix API. Disabled: all three of StreamFlix's own CDN paths are confirmed dead as of 2026-09-13 - bb.streamflixserver.site and cf.streamflixserver.site no longer resolve at all (NXDOMAIN), and the remaining premium S3 bucket (wasabisys.com) 404s on every object tested - so every stream this provider can produce fails to play. Re-enable if StreamFlix's config.json ever points at working hosts again.",
-      "version": "1.1.1",
-      "author": "Nuvio Team",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "filename": "providers/streamflix.js",
-      "enabled": false,
-      "formats": [
-        "mkv"
-      ],
-      "logo": "https://streamflix.app/assets/images/logo-text-148x72.png",
-      "contentLanguage": [
-        "en",
-        "hin"
-      ]
-    },
-    {
       "id": "vixsrc",
       "name": "Vixsrc",
       "description": "Vixsrc M3U8 streaming with auto quality selection",
@@ -320,29 +299,6 @@
       ]
     },
     {
-      "id": "movieblast",
-      "name": "MovieBlast",
-      "description": "Direct links via MovieBlast API with multi-language support",
-      "version": "1.1.1",
-      "author": "Nuvio Team",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "filename": "providers/movieblast.js",
-      "enabled": true,
-      "formats": [
-        "mp4",
-        "mkv"
-      ],
-      "logo": "https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/Icons/movieblast.png",
-      "contentLanguage": [
-        "te",
-        "hi",
-        "en"
-      ]
-    },
-    {
       "id": "anime-dekho",
       "name": "AnimeDekho",
       "description": "AnimeDekho anime streaming (sub/dub)",
@@ -407,7 +363,7 @@
     {
       "id": "vidfastpro",
       "name": "VidFastPro",
-      "description": "Multi-server streaming (including a 4K server) via vidfast.vc, ported from the open-source CineStream CloudStream extension. Disabled: suspected of occasionally serving the wrong episode for TV content (traced to vidfast.vc's own server-side content mapping, not this scraper's request logic - see repo history) - re-enable once confirmed fixed or disproven.",
+      "description": "Multi-server streaming (including a 4K server) via vidfast.vc, ported from the open-source CineStream CloudStream extension. TMDB-id based, no title search involved. Re-enabled 2026-09-20: re-tested the previously-suspected wrong-episode bug live (Breaking Bad S1E1 vs S1E2 - distinct tokens/URLs returned for each, not the same content twice); re-disable if it recurs.",
       "version": "1.0.0",
       "author": "Nuvio Team",
       "supportedTypes": [
@@ -415,7 +371,7 @@
         "tv"
       ],
       "filename": "providers/vidfastpro.js",
-      "enabled": false,
+      "enabled": true,
       "formats": [
         "m3u8",
         "mp4"

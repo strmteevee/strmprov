@@ -187,11 +187,19 @@ function getAllEvents() {
     return inFlightEvents;
 }
 
+// startTime/endTime arrive as "2026/09/24 08:30:00 +0000" - slash-separated
+// date, space before the offset. Node's Date.parse actually handles that
+// exact shape natively (confirmed live: it round-trips to the correct UTC
+// instant, offset and all) - a previous version of this function rewrote it
+// toward ISO shape first ("T" separator, "+0000"->"Z"), which actually broke
+// it instead (the rewritten string doesn't match any format Date.parse
+// recognizes and silently returns NaN), so every event's status/timing
+// computation always failed. Parse the raw string as-is.
 function isEventLive(event) {
     const info = event && event.eventInfo;
     if (!info || !info.startTime) return false;
-    const start = Date.parse(info.startTime.replace(' ', 'T').replace(/\+0000$/, 'Z'));
-    const end = info.endTime ? Date.parse(info.endTime.replace(' ', 'T').replace(/\+0000$/, 'Z')) : null;
+    const start = Date.parse(info.startTime);
+    const end = info.endTime ? Date.parse(info.endTime) : null;
     const now = Date.now();
     if (Number.isNaN(start)) return false;
     return now >= start && (end === null || Number.isNaN(end) || now < end);

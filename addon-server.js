@@ -678,11 +678,14 @@ function buildF1StreamResponse(id) {
 // the real SportzX app itself uses for its own event list (recovered from
 // its decompiled source), so the catalog reads the same way the app's own
 // would - live events sort first, then upcoming, then everything else.
+// startTime/endTime ("2026/09/24 08:30:00 +0000") parse correctly as-is via
+// Date.parse (confirmed live) - see providers/sportzx.js's isEventLive for
+// why this must NOT be rewritten toward an ISO-ish shape first.
 function sportzxEventStatus(event) {
     const info = event && event.eventInfo;
     if (!info) return '';
-    const start = info.startTime ? Date.parse(info.startTime.replace(' ', 'T').replace(/\+0000$/, 'Z')) : NaN;
-    const end = info.endTime ? Date.parse(info.endTime.replace(' ', 'T').replace(/\+0000$/, 'Z')) : NaN;
+    const start = info.startTime ? Date.parse(info.startTime) : NaN;
+    const end = info.endTime ? Date.parse(info.endTime) : NaN;
     const now = Date.now();
     if (!Number.isNaN(end) && now >= end) return '✅';
     if (Number.isNaN(start) || now < start) return Number.isNaN(start) ? '' : '\u{1F51C}';
@@ -694,13 +697,6 @@ function sportzxDisplayTitle(event) {
         return info.teamA === info.teamB ? info.teamA : `${info.teamA} vs ${info.teamB}`;
     }
     return event.title;
-}
-function sportzxStatusRank(event) {
-    const status = sportzxEventStatus(event);
-    if (status === '\u{1F534}') return 0; // live
-    if (status === '\u{1F51C}') return 1; // upcoming
-    if (status === '✅') return 2; // ended
-    return 3;
 }
 function sportzxEventToMeta(event) {
     const status = sportzxEventStatus(event);
@@ -715,18 +711,46 @@ function sportzxEventToMeta(event) {
     };
 }
 
+// By request: most of the 92-odd events events.json carries are hours-to-days
+// away, and their `formats` links are largely non-functional placeholders
+// until the event's own feed actually goes live - so a catalog full of every
+// event regardless of timing meant most clicks landed on something that
+// couldn't stream yet (this is also what turned out to explain "SportzX
+// isn't working": every event's start/end time was silently failing to parse
+// at all, from the same broken date rewrite fixed in providers/sportzx.js's
+// isEventLive - meaning live/upcoming status was never computed correctly
+// either). This keeps only events that are already live or start within the
+// next 30 minutes. Date.now()/Date.parse both operate in absolute UTC
+// regardless of this server's own timezone, so this needs no explicit
+// Amsterdam-time conversion - "half an hour from now" is the same instant in
+// every zone.
+const STARTING_SOON_WINDOW_MS = 30 * 60 * 1000;
+function sportzxStartTime(event) {
+    const info = event && event.eventInfo;
+    if (!info || !info.startTime) return NaN;
+    return Date.parse(info.startTime);
+}
+function isSportzxStartingSoonOrLive(event) {
+    const start = sportzxStartTime(event);
+    if (Number.isNaN(start)) return false;
+    const info = event.eventInfo;
+    const end = info.endTime ? Date.parse(info.endTime) : NaN;
+    const now = Date.now();
+    if (!Number.isNaN(end) && now >= end) return false; // already ended
+    return start <= now + STARTING_SOON_WINDOW_MS;
+}
+
 // One combined catalog rather than one per sport (events.json's own `cat`
 // field has dozens of distinct values, including several that are really
-// just regional channel bundles, not sports) - sorted live-first the same
-// way the app's own home screen is, so the catalog opens with what's
-// actually on right now instead of an alphabetical or arrival-order list.
+// just regional channel bundles, not sports). Sorted first-to-last by actual
+// start time now (by request) - a live event naturally sorts ahead of one
+// still starting soon since it started earlier, so this alone still opens
+// with what's live right now without needing a separate status-based rank.
 function buildSportzxCatalog() {
     return sportzx.listEvents().then((events) => {
-        const sorted = events.slice().sort((a, b) => {
-            const rankDiff = sportzxStatusRank(a) - sportzxStatusRank(b);
-            if (rankDiff !== 0) return rankDiff;
-            const aStart = a.eventInfo && a.eventInfo.startTime ? Date.parse(a.eventInfo.startTime.replace(' ', 'T').replace(/\+0000$/, 'Z')) : Infinity;
-            const bStart = b.eventInfo && b.eventInfo.startTime ? Date.parse(b.eventInfo.startTime.replace(' ', 'T').replace(/\+0000$/, 'Z')) : Infinity;
+        const sorted = events.filter(isSportzxStartingSoonOrLive).sort((a, b) => {
+            const aStart = sportzxStartTime(a);
+            const bStart = sportzxStartTime(b);
             return (Number.isNaN(aStart) ? Infinity : aStart) - (Number.isNaN(bStart) ? Infinity : bStart);
         });
         return sorted.map(sportzxEventToMeta);

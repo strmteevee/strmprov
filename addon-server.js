@@ -300,10 +300,40 @@ function tmdbItemToMeta(item, mediaType, type) {
     }).catch(() => null);
 }
 
-// Genre/keyword browse catalog (see GENRE_CATALOGS above). Fetches double
-// the target count up front since both the original_language filter and
+// TMDB's own genre_ids on a discover result are ordered, with the first one
+// generally the title's most defining genre (confirmed live: "Spider-Man:
+// Brand New Day" matches an Action|Adventure query via genre 28, but its own
+// genre_ids are [878, 28, 12] - Sci-Fi is actually listed first). By request:
+// used to limit a title showing up in every genre catalog it happens to
+// match (a genre-soup blockbuster could otherwise appear in Action &
+// Adventure AND Sci-Fi & Fantasy AND Comedy simultaneously) - only kept in a
+// genre category when that category's own genre set contains the title's
+// PRIMARY (first-listed) genre, so it lands in whichever one it's really
+// mainly about.
+//
+// Only applies where every filter dimension for this mediaType is a real
+// TMDB genre (with_genres) - a category mixing in a keyword (with_keywords),
+// like Sport, Teen, or history-war's TV fallback, has candidates with no
+// matching "genre" concept to check primacy against at all, so those are
+// left unfiltered rather than wrongly excluding legitimate matches.
+function extractGenreIds(paramSets) {
+    const ids = new Set();
+    for (const p of paramSets) {
+        if (p && p.with_genres) {
+            for (const id of String(p.with_genres).split('|')) ids.add(id.trim());
+        }
+    }
+    return ids;
+}
+function isPrimaryGenreMatch(item, genreIds) {
+    return Array.isArray(item.genre_ids) && item.genre_ids.length > 0 && genreIds.has(String(item.genre_ids[0]));
+}
+
+// Genre/keyword browse catalog (see GENRE_CATALOGS above). Fetches triple the
+// target count up front for genre categories (double for keyword-only ones)
+// since the primary-genre filter above, the original_language filter, and
 // tmdbItemToMeta's own imdb-lookup attrition (some TMDB titles have no
-// imdb_id at all) can both drop items after the fact - same "aim higher than
+// imdb_id at all) can all drop items after the fact - same "aim higher than
 // the minimum" reasoning as regenerateCatalog's own comment below.
 function buildDiscoverGenreCatalog(def, mediaType, type) {
     // Most categories are one /discover call; a few (see history-war's tv
@@ -311,8 +341,11 @@ function buildDiscoverGenreCatalog(def, mediaType, type) {
     // filter dimensions that can't be OR'd in a single request.
     const rawParamSets = mediaType === 'tv' ? def.tv : def.movie;
     const paramSets = Array.isArray(rawParamSets) ? rawParamSets : [rawParamSets];
+    const hasKeywordParam = paramSets.some(p => p && p.with_keywords);
+    const ownGenreIds = hasKeywordParam ? null : extractGenreIds(paramSets);
+    const poolMultiplier = ownGenreIds && ownGenreIds.size > 0 ? 3 : 2;
     return Promise.all(paramSets.map(p =>
-        tmdb.discoverMany(mediaType, Object.assign({}, p, WESTERN_REGION_PARAMS), DISCOVER_CATALOG_MAX_ITEMS * 2)
+        tmdb.discoverMany(mediaType, Object.assign({}, p, WESTERN_REGION_PARAMS), DISCOVER_CATALOG_MAX_ITEMS * poolMultiplier)
     )).then(lists => {
         const seen = new Set();
         const merged = [];
@@ -325,9 +358,12 @@ function buildDiscoverGenreCatalog(def, mediaType, type) {
             }
         }
         merged.sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
-        const filtered = def.excludeOriginalLanguage
-            ? merged.filter(item => item.original_language !== def.excludeOriginalLanguage)
+        let filtered = ownGenreIds && ownGenreIds.size > 0
+            ? merged.filter(item => isPrimaryGenreMatch(item, ownGenreIds))
             : merged;
+        if (def.excludeOriginalLanguage) {
+            filtered = filtered.filter(item => item.original_language !== def.excludeOriginalLanguage);
+        }
         return Promise.all(filtered.slice(0, DISCOVER_CATALOG_MAX_ITEMS).map(item => tmdbItemToMeta(item, mediaType, type)))
             .then(metas => metas.filter(Boolean));
     });

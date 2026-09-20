@@ -38,9 +38,19 @@ const REQUEST_HEADERS = {
   'Origin': VIDROCK_BASE_URL,
   'Accept': 'application/json'
 };
+// Missing Origin here (unlike REQUEST_HEADERS above) meant every stream/proxy
+// host - the workers.dev fronts for Luna, the standalone domain Orion uses,
+// all of them - came back a hard Cloudflare 403 on every single validation
+// and playback attempt, confirmed live across 5 different titles: not one
+// candidate ever passed validateStreamUrl, so getStreams always returned
+// empty regardless of how many servers vidrock.net's own API actually
+// offered. Adding just this one header (confirmed live, isolating it from
+// Accept/sec-fetch-*, which made no difference on their own) was enough to
+// turn a 403 into a real 200 on both proxy hosts tested.
 const PLAYBACK_HEADERS = {
   'User-Agent': USER_AGENT,
-  'Referer': `${VIDROCK_BASE_URL}/`
+  'Referer': `${VIDROCK_BASE_URL}/`,
+  'Origin': VIDROCK_BASE_URL
 };
 
 // vidrock.net's own backend always advertises the same handful of named

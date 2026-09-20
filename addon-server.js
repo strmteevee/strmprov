@@ -698,16 +698,41 @@ function sportzxDisplayTitle(event) {
     }
     return event.title;
 }
+// SportzX's own startTime/endTime strings are UTC (the "+0000" suffix - see
+// sportzxEventStatus's comment above) but read as if they were already local,
+// so showing them as-is is 1-2 hours behind actual Amsterdam time depending
+// on the CET/CEST DST transition. Intl's own IANA-timezone support handles
+// that transition automatically - no manual +1/+2 offset math needed, and it
+// won't silently drift wrong across the DST boundary the way a fixed offset
+// would.
+const AMSTERDAM_TIME_PARTS = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Amsterdam',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false
+});
+function formatAmsterdamTime(rawTime) {
+    if (!rawTime) return null;
+    const ts = Date.parse(rawTime);
+    if (Number.isNaN(ts)) return null;
+    const parts = {};
+    for (const part of AMSTERDAM_TIME_PARTS.formatToParts(new Date(ts))) parts[part.type] = part.value;
+    return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+}
 function sportzxEventToMeta(event) {
     const status = sportzxEventStatus(event);
     const title = sportzxDisplayTitle(event);
     const info = event.eventInfo || {};
+    const startLocal = formatAmsterdamTime(info.startTime);
+    const endLocal = formatAmsterdamTime(info.endTime);
+    const timeLine = startLocal
+        ? `${startLocal}${endLocal ? ` - ${endLocal}` : ''} (Amsterdam time)`
+        : null;
     return {
         id: `sportzx:${event.id}`,
         type: 'movie',
         name: status ? `${status} ${title}` : title,
         poster: info.eventBanner || info.teamAFlag || undefined,
-        description: [info.eventName, info.startTime ? `Starts: ${info.startTime}` : null].filter(Boolean).join('\n') || undefined
+        description: [info.eventName, timeLine].filter(Boolean).join('\n') || undefined
     };
 }
 

@@ -196,7 +196,10 @@ function mapSubtitles(subtitles) {
     .map(s => ({ url: s.url, language: s.label || s.lang || 'Unknown', name: s.label || s.lang || 'Unknown' }));
 }
 
-function fetchFromProvider(provider, tmdbId, mediaType, season, episode, mediaInfo) {
+// Doesn't depend on mediaInfo (the display label is attached afterward, once
+// the parallel TMDB lookup below also resolves) - see getStreams for why that
+// split matters here specifically.
+function fetchFromProvider(provider, tmdbId, mediaType, season, episode) {
   let apiUrl = `${API_BASE}/${provider}/${mediaType}/${tmdbId}`;
   if (mediaType === 'tv') apiUrl += `/${season}/${episode}`;
 
@@ -215,19 +218,25 @@ function fetchFromProvider(provider, tmdbId, mediaType, season, episode, mediaIn
       if (!data || !Array.isArray(data.sources) || data.sources.length === 0) return [];
 
       const subtitles = mapSubtitles(data.subtitles);
-      const label = mediaInfo.title
-        ? `${mediaInfo.title}${mediaInfo.year ? ' (' + mediaInfo.year + ')' : ''}`
-        : 'Auto Quality Stream';
 
       return data.sources
         .filter(s => s && s.url)
         .map(s => ({
           name: `Peachify - ${provider}${s.dub ? ' [' + s.dub + ']' : ''}`,
-          title: label,
           url: s.url,
           quality: s.quality ? `${s.quality}p` : 'Auto',
           type: 'direct',
-          headers: REQUEST_HEADERS,
+          // Confirmed live the CDN these actually point to (mendx437sim.com)
+          // doesn't enforce Origin/Referer either way, so this wasn't itself
+          // the bug behind low success - but each source DOES carry its own
+          // real per-source headers (a different origin/referer than
+          // peachify.top's own, confirmed live in the raw API response) that
+          // were being silently discarded in favor of the generic
+          // REQUEST_HEADERS regardless. Using them when present is still the
+          // correct behavior in general - other providers/titles routed
+          // through a CDN that does check these would have failed exactly
+          // the way vidrock.js's missing Origin header did.
+          headers: s.headers || REQUEST_HEADERS,
           subtitles,
           provider: 'peachify'
         }));
@@ -246,19 +255,33 @@ function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) 
     return Promise.resolve([]);
   }
 
-  return getTmdbInfo(tmdbId, mediaType).then(mediaInfo => {
-    return Promise.all(
-      PROVIDERS.map(p => fetchFromProvider(p, tmdbId, mediaType, season, episode, mediaInfo))
-    ).then(results => {
-      const streams = results.flat();
-      console.log(`[Peachify] Found ${streams.length} stream(s) across ${PROVIDERS.length} providers, validating...`);
-      return Promise.all(streams.map(s => validateStreamUrl(s).then(ok => ({ stream: s, ok })))).then(validated => {
-        const valid = validated.filter(v => v.ok).map(v => v.stream);
-        const dead = validated.filter(v => !v.ok).map(v => v.stream.name);
-        if (dead.length) console.log(`[Peachify] Dropping unreachable: ${dead.join(', ')}`);
-        console.log(`[Peachify] ${valid.length}/${streams.length} stream(s) validated OK`);
-        return valid;
-      });
+  // Peachify's own signed stream URLs are valid for only a few minutes from
+  // the moment its API generates them - confirmed live, one real source's own
+  // embedded expiry timestamp left as little as ~3 minutes of headroom at the
+  // moment it was returned. The TMDB lookup only feeds the display `title`
+  // below, not the provider requests that actually mint those URLs, but it
+  // used to run FIRST and block them - burning a whole extra round trip off
+  // an already-tight budget before validation (itself multiple sequential
+  // hops per candidate, for m3u8 chains) even gets to start. Running both in
+  // parallel instead gets the clock-sensitive provider fetches underway
+  // immediately.
+  const tmdbInfoPromise = getTmdbInfo(tmdbId, mediaType);
+  const providerResultsPromise = Promise.all(
+    PROVIDERS.map(p => fetchFromProvider(p, tmdbId, mediaType, season, episode))
+  );
+
+  return Promise.all([tmdbInfoPromise, providerResultsPromise]).then(([mediaInfo, results]) => {
+    const label = mediaInfo.title
+      ? `${mediaInfo.title}${mediaInfo.year ? ' (' + mediaInfo.year + ')' : ''}`
+      : 'Auto Quality Stream';
+    const streams = results.flat().map(s => Object.assign({}, s, { title: label }));
+    console.log(`[Peachify] Found ${streams.length} stream(s) across ${PROVIDERS.length} providers, validating...`);
+    return Promise.all(streams.map(s => validateStreamUrl(s).then(ok => ({ stream: s, ok })))).then(validated => {
+      const valid = validated.filter(v => v.ok).map(v => v.stream);
+      const dead = validated.filter(v => !v.ok).map(v => v.stream.name);
+      if (dead.length) console.log(`[Peachify] Dropping unreachable: ${dead.join(', ')}`);
+      console.log(`[Peachify] ${valid.length}/${streams.length} stream(s) validated OK`);
+      return valid;
     });
   }).catch(err => {
     console.log(`[Peachify] getStreams failed: ${err.message}`);

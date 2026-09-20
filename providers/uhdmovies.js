@@ -82,8 +82,25 @@ var HEADERS = {
 // src/uhdmovies/utils.js
 var import_cheerio_without_node_native = __toESM(require("cheerio-without-node-native"));
 var cachedDomain = "";
-function fetchWithTimeout(url, options) {
-  return fetch(url, options);
+// Every UHDMovies request goes through this one function, and every one of
+// them was a bare, unretried fetch() - confirmed live that its current domain
+// (uhdmovies.my, resolved via getMainUrl below) intermittently rejects with a
+// plain ECONNRESET (not a bad HTTP status - Node's raw https/curl both
+// succeed against the exact same URL moments later, and a follow-up fetch()
+// a moment after also succeeds), a transient failure worth retrying around.
+// No setTimeout-based backoff here though (unlike indycar.js/sportzx.js's own
+// retry wrappers) - THIS file, unlike those, is also distributed as a
+// standalone Nuvio local-scraper plugin, and Nuvio's own JS sandbox has no
+// timer of any kind (see this file's own header comment history - a prior
+// setTimeout-based approach here threw a silently-swallowed ReferenceError,
+// turning every single request into an empty result). An immediate retry
+// with no delay still catches this exact one-off-glitch failure mode without
+// needing a timer at all.
+function fetchWithTimeout(url, options, attemptsLeft = 2) {
+  return fetch(url, options).catch((err) => {
+    if (attemptsLeft <= 0) throw err;
+    return fetchWithTimeout(url, options, attemptsLeft - 1);
+  });
 }
 function getMainUrl() {
   return __async(this, null, function* () {

@@ -8,10 +8,20 @@ let cachedDomain = "";
 // used to wrap fetch in a JS-level timeout via setTimeout, but that just
 // threw a ReferenceError (silently swallowed by callers' try/catch, making
 // every request quietly return nothing instead of hanging - the opposite of
-// the intended fix). Kept as a passthrough so callers and imports don't need
-// to change.
-export function fetchWithTimeout(url, options) {
-    return fetch(url, options);
+// the intended fix).
+//
+// Confirmed live (2026-09-20) that uhdmovies.my - the domain getMainUrl below
+// resolves to - intermittently rejects a request with a plain ECONNRESET even
+// though the exact same URL succeeds via curl/Node's raw https module at the
+// same moment, and via a follow-up fetch() a moment later: a genuine
+// transient glitch, not a real block. An immediate retry (no delay, since
+// there's still no timer available here to back off with) catches it without
+// reintroducing the setTimeout problem above.
+export function fetchWithTimeout(url, options, attemptsLeft = 2) {
+    return fetch(url, options).catch((err) => {
+        if (attemptsLeft <= 0) throw err;
+        return fetchWithTimeout(url, options, attemptsLeft - 1);
+    });
 }
 
 export async function getMainUrl() {

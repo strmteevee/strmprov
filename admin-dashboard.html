@@ -252,6 +252,7 @@
     </table>
     <div class="row" style="margin-top:14px;">
       <button id="provider-health-refresh">Refresh</button>
+      <button class="danger" id="provider-health-reset">Reset</button>
     </div>
   </section>
 
@@ -672,6 +673,17 @@ function loadProviderHealth() {
 
 document.getElementById('provider-health-refresh').addEventListener('click', () => {
   loadProviderHealth().catch(e => toast(e.message, 'error'));
+});
+
+document.getElementById('provider-health-reset').addEventListener('click', () => {
+  if (!confirm('Reset all provider health history? This clears every tracked provider\'s success/empty/error counts and can\'t be undone.')) return;
+  api('POST', '/api/provider-health/reset')
+    .then(data => {
+      document.getElementById('health-retention').textContent = data.retentionDays;
+      renderProviderHealth(data.rows || []);
+      toast('Provider health reset', 'ok');
+    })
+    .catch(e => toast(e.message, 'error'));
 });
 
 // ---- Profiles ----

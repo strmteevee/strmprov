@@ -406,6 +406,11 @@ function handleGetProviderHealth(res) {
     sendJson(res, 200, { rows: providerHealth.getHealth(), retentionDays: providerHealth.RETENTION_DAYS });
 }
 
+function handleResetProviderHealth(res) {
+    providerHealth.resetHealth();
+    sendJson(res, 200, { rows: providerHealth.getHealth(), retentionDays: providerHealth.RETENTION_DAYS });
+}
+
 // ---- Live test ----
 
 function handleTest(body, res) {
@@ -545,8 +550,12 @@ const server = http.createServer((req, res) => {
         return readBody(req).then(body => handleSetRanking(body, res)).catch(e => sendJson(res, 400, { error: e.message }));
     }
     // /api/provider-health
-    if (parts[0] === 'api' && parts[1] === 'provider-health' && req.method === 'GET') {
+    if (parts[0] === 'api' && parts[1] === 'provider-health' && parts.length === 2 && req.method === 'GET') {
         return handleGetProviderHealth(res);
+    }
+    // /api/provider-health/reset
+    if (parts[0] === 'api' && parts[1] === 'provider-health' && parts[2] === 'reset' && req.method === 'POST') {
+        return handleResetProviderHealth(res);
     }
     // /api/profiles
     if (parts[0] === 'api' && parts[1] === 'profiles' && parts.length === 2 && req.method === 'GET') {

@@ -110,13 +110,23 @@ function findBestMatch(items, mediaInfo, mediaType) {
   let bestScore = -1;
   for (const item of items) {
     if (item.subjectType !== wantType) continue;
+    const itemYear = (item.releaseDate || '').substring(0, 4);
+    // A same/exact-titled but wrong-year candidate is worse than no match at
+    // all - confirmed live: MovieBox's only movie-type "Supergirl" result is
+    // dated 2016, a decade off the 2026 reboot actually requested (which
+    // isn't in MovieBox's own catalog yet, too new), and an exact title
+    // match's score alone was already above the acceptance threshold with
+    // zero year bonus - it should never have been offered as a candidate at
+    // all. Only disqualifies when both years are actually known; a
+    // candidate with no releaseDate at all still gets the benefit of the
+    // doubt, same as before.
+    if (mediaInfo.year && itemYear && Math.abs(parseInt(itemYear, 10) - parseInt(mediaInfo.year, 10)) > 1) continue;
     const normTitle = normalizeTitle(item.title);
     let score = 0;
     if (normTitle === normTarget) score += 50;
     else if (normTitle.startsWith(normTarget) || normTarget.startsWith(normTitle)) score += 25;
     else if (normTitle.includes(normTarget)) score += 10;
     else continue;
-    const itemYear = (item.releaseDate || '').substring(0, 4);
     if (mediaInfo.year && itemYear === mediaInfo.year) score += 20;
     if (score > bestScore) {
       bestScore = score;

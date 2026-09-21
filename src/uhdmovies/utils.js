@@ -17,11 +17,35 @@ let cachedDomain = "";
 // transient glitch, not a real block. An immediate retry (no delay, since
 // there's still no timer available here to back off with) catches it without
 // reintroducing the setTimeout problem above.
+//
+// Separately confirmed live (2026-09-21) that this same chain (mainly the
+// "Instant Download" button's own redirect-following fetch, an unknown
+// number of hops across driveseed/video-seed-family gateways) can
+// occasionally stall far past normal: 3 back-to-back runs for the identical
+// title/quality took 6.8s, 7.1s, then 49s, all landing on the exact same
+// final 6 streams - the extra 42s bought nothing, it was just one hop
+// hanging far longer than usual that run. A bounded per-request timeout (via
+// AbortController) catches that without needing to know which specific hop
+// it'll be next time - feature-detected the same way, since AbortController
+// is no more guaranteed to exist in Nuvio's sandbox than setTimeout is.
+const UHDMOVIES_FETCH_TIMEOUT_MS = 12000;
+const HAS_ABORT_TIMER = typeof AbortController !== 'undefined' && typeof setTimeout !== 'undefined';
 export function fetchWithTimeout(url, options, attemptsLeft = 2) {
-    return fetch(url, options).catch((err) => {
-        if (attemptsLeft <= 0) throw err;
-        return fetchWithTimeout(url, options, attemptsLeft - 1);
-    });
+    if (!HAS_ABORT_TIMER) {
+        return fetch(url, options).catch((err) => {
+            if (attemptsLeft <= 0) throw err;
+            return fetchWithTimeout(url, options, attemptsLeft - 1);
+        });
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), UHDMOVIES_FETCH_TIMEOUT_MS);
+    return fetch(url, Object.assign({}, options, { signal: controller.signal }))
+        .then((res) => { clearTimeout(timer); return res; })
+        .catch((err) => {
+            clearTimeout(timer);
+            if (attemptsLeft <= 0) throw err;
+            return fetchWithTimeout(url, options, attemptsLeft - 1);
+        });
 }
 
 export async function getMainUrl() {

@@ -110,6 +110,18 @@ function extractQuality(str) {
     return 'Unknown';
 }
 
+// By request: each quality group's own resolution chain (mvlink page ->
+// hshare page -> gdshine's two API calls) is dominated by hshare.lol's own
+// page-load time, confirmed live at a consistent 4-6.5 seconds regardless of
+// which group - not a hang, just an inherently slow third-party site. With
+// up to 5 groups per movie all paying that same cost in parallel, total time
+// stretched to 10-30s. Capping to the 2 best-quality groups trades away the
+// rarely-used middle/lower qualities for a meaningfully faster typical
+// response - the final [PREFERRED] pick across all providers already favors
+// higher quality anyway, so this rarely changes what a user actually gets.
+const QUALITY_GROUP_RANK = { '4K': 4, '1080p': 3, '720p': 2, '480p': 1, 'Unknown': 0 };
+const MAX_QUALITY_GROUPS = 2;
+
 // Each mvlink.blog link on the movie page sits right after its own quality
 // heading (e.g. "... 1080p Web-DL [2.3GB]") - confirmed live by walking up
 // to the nearest preceding h1-h6 from the link's containing block.
@@ -210,7 +222,12 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         console.log('[HindMoviez] No mvlink.blog links found on movie page');
                         return [];
                     }
-                    return Promise.all(groups.map(g =>
+                    const topGroups = groups
+                        .slice()
+                        .sort((a, b) => (QUALITY_GROUP_RANK[extractQuality(b.heading)] || 0) - (QUALITY_GROUP_RANK[extractQuality(a.heading)] || 0))
+                        .slice(0, MAX_QUALITY_GROUPS);
+                    console.log(`[HindMoviez] ${groups.length} quality group(s) found, resolving top ${topGroups.length}`);
+                    return Promise.all(topGroups.map(g =>
                         fetch(g.mvlinkHref, { headers: { 'User-Agent': USER_AGENT, Referer: match.link } })
                             .then(res => res.text())
                             .then(mvHtml => {

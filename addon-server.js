@@ -211,7 +211,7 @@ function buildManifest(profileId) {
         // resources, etc.) - some Stremio-protocol clients key their cached
         // manifest/catalog data on this and won't notice new catalogs on an
         // existing install (even after a reinstall) unless it changes.
-        version: '1.6.0',
+        version: '1.7.0',
         name: 'StrmProv',
         description: `Self-hosted multi-source streaming addon (profile ${profileId}) with a personalized "For You" catalog based on this profile's own watch history.`,
         logo: 'https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png',
@@ -233,7 +233,15 @@ function buildManifest(profileId) {
             // and Nuvio's app surfaces are built around movie/series
             // browsing, not a separate live-channel guide screen; there's no
             // confirmation it renders a 'tv' catalog anywhere at all.
-            { name: 'meta', types: ['movie'], idPrefixes: ['indycar:', 'f1:', 'sportzx:'] },
+            // 'tt' ids added by request 2026-09-21: Cinemeta (and every other
+            // public meta addon tried) had no metadata at all for a real,
+            // valid, recently-released title (tt8814476 - confirmed live via
+            // TMDB's own /find that it's a real movie, just too new for those
+            // addons' own databases to have caught up on yet). This addon
+            // already has full TMDB access for every stream lookup, so it can
+            // fill that gap itself - a TMDB-backed fallback for any movie/
+            // series 'tt' id, not just this addon's own custom catalogs.
+            { name: 'meta', types: ['movie', 'series'], idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:'] },
             // Scoped to real tt-id content only - neither IndyCar's nor
             // F1/F2/F3/Academy's/SportzX's own custom id schemes have a
             // subtitle concept, and Cinemeta already handles meta for the
@@ -825,6 +833,92 @@ function buildSportzxMeta(id) {
     return sportzx.getEvent(eventId).then((event) => (event ? sportzxEventToMeta(event) : null));
 }
 
+// TMDB-backed meta fallback for real 'tt' ids - added by request after
+// Cinemeta (and every other public meta addon tried) came up empty for a
+// genuinely real, recently-released movie (tt8814476) that just hadn't been
+// indexed by those addons' own databases yet. Cached for a few hours since a
+// series' episode list (buildSeriesVideos below) costs one TMDB request per
+// season - no reason to redo that on every meta request for the same show.
+const TMDB_META_CACHE_TTL_MS = 1000 * 60 * 60 * 6;
+const tmdbMetaCache = new Map(); // "type:imdbId" -> { meta, timestamp }
+
+function tmdbCreditNames(details, job) {
+    const list = job === 'cast' ? (details.credits && details.credits.cast) : (details.credits && details.credits.crew);
+    if (!Array.isArray(list)) return [];
+    if (job === 'cast') return list.slice(0, 10).map(c => c.name).filter(Boolean);
+    return list.filter(c => c.job === 'Director').map(c => c.name).filter(Boolean);
+}
+
+// A series meta with no `videos` array gives Stremio no way to pick an
+// episode at all, so this fetches every season's episode list (in parallel -
+// most shows have few enough seasons that this is cheap) and flattens them
+// into Stremio's own video-id convention ("tt...:season:episode", the same
+// shape buildStreamResponse already expects on the way back in).
+function buildSeriesVideos(tmdbId, imdbId, details) {
+    const seasons = Array.isArray(details.seasons) ? details.seasons.filter(s => s.season_number > 0) : [];
+    return Promise.all(seasons.map(s => tmdb.getSeasonEpisodes(tmdbId, s.season_number))).then(seasonResults => {
+        const videos = [];
+        seasonResults.forEach((seasonData, i) => {
+            if (!seasonData || !Array.isArray(seasonData.episodes)) return;
+            const seasonNum = seasons[i].season_number;
+            for (const ep of seasonData.episodes) {
+                videos.push({
+                    id: `${imdbId}:${seasonNum}:${ep.episode_number}`,
+                    title: ep.name || `Episode ${ep.episode_number}`,
+                    season: seasonNum,
+                    episode: ep.episode_number,
+                    released: ep.air_date ? new Date(ep.air_date).toISOString() : undefined,
+                    overview: ep.overview || undefined,
+                    thumbnail: ep.still_path ? tmdb.posterUrl(ep.still_path) : undefined
+                });
+            }
+        });
+        return videos;
+    });
+}
+
+function buildTmdbFallbackMeta(imdbId, type) {
+    const cacheKey = `${type}:${imdbId}`;
+    const cached = tmdbMetaCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < TMDB_META_CACHE_TTL_MS) {
+        return Promise.resolve(cached.meta);
+    }
+    const mediaType = type === 'series' ? 'tv' : 'movie';
+    return tmdb.findByImdbId(imdbId).then(found => {
+        // found.mediaType comes from TMDB's own /find, independent of the
+        // `type` the client asked with - if they disagree, this imdbId isn't
+        // actually the type being requested (e.g. a movie id requested as a
+        // series), and there's nothing real to return.
+        if (!found || found.mediaType !== mediaType) return null;
+        return tmdb.getDetailsWithCredits(found.tmdbId, mediaType).then(details => {
+            const meta = {
+                id: imdbId,
+                type,
+                name: mediaType === 'tv' ? details.name : details.title,
+                poster: tmdb.posterUrl(details.poster_path),
+                background: tmdb.backdropUrl(details.backdrop_path) || undefined,
+                description: details.overview || undefined,
+                releaseInfo: (details.release_date || details.first_air_date || '').substring(0, 4) || undefined,
+                imdbRating: details.vote_average ? details.vote_average.toFixed(1) : undefined,
+                genres: Array.isArray(details.genres) ? details.genres.map(g => g.name) : undefined,
+                runtime: mediaType === 'movie' && details.runtime ? `${details.runtime} min` : undefined,
+                director: mediaType === 'movie' ? tmdbCreditNames(details, 'director') : undefined,
+                cast: tmdbCreditNames(details, 'cast')
+            };
+            const withVideos = mediaType === 'tv'
+                ? buildSeriesVideos(found.tmdbId, imdbId, details).then(videos => Object.assign(meta, { videos }))
+                : Promise.resolve(meta);
+            return withVideos.then(finalMeta => {
+                tmdbMetaCache.set(cacheKey, { meta: finalMeta, timestamp: Date.now() });
+                return finalMeta;
+            });
+        });
+    }).catch(err => {
+        console.error(`[addon-server] TMDB meta fallback failed for ${imdbId}: ${err.message}`);
+        return null;
+    });
+}
+
 function buildSportzxStreamResponse(id) {
     const eventId = id.slice('sportzx:'.length);
     return sportzx.getEventStreams(eventId).then((streams) => ({
@@ -1093,6 +1187,9 @@ const server = http.createServer((req, res) => {
         }
         if (id.startsWith('sportzx:') && type === 'movie') {
             return buildSportzxMeta(id).then(meta => sendJson(res, 200, { meta }));
+        }
+        if (id.startsWith('tt') && (type === 'movie' || type === 'series')) {
+            return buildTmdbFallbackMeta(id, type).then(meta => sendJson(res, 200, { meta }));
         }
         return sendJson(res, 200, { meta: null });
     }

@@ -107,10 +107,36 @@ function rangedValidateUrl(url, headers) {
     .catch(() => false);
 }
 
+// Confirmed live: 3 of vidfast.vc's own 8 advertised servers (vFast, vEdge,
+// Horizon) can each take 10-15+ seconds to answer this POST before finally
+// returning a 404 - a slow, broken response on vidfast.vc's own backend for
+// those specific server slugs, not a network/header issue on this end (the
+// other 5 servers for the same title answer in well under a second). Since
+// Promise.all across all 8 servers waits for the single slowest one, those 3
+// alone were turning a normally sub-second resolve into 15+ seconds every
+// time. A per-server timeout treats a slow server exactly like any other
+// failed one (the existing .catch(() => null) below already drops those),
+// just without waiting out a broken server's own multi-second timeout to get
+// there.
+//
+// This file also ships as a standalone Nuvio local-scraper plugin, and
+// Nuvio's own JS sandbox has neither setTimeout nor AbortController (see
+// uhdmovies.js's fetchWithTimeout for the same constraint hit before) - both
+// are feature-detected here so this degrades to the old no-timeout behavior
+// there instead of throwing a ReferenceError that would fail every server,
+// not just the slow ones, while still getting the real fix when this file
+// runs server-side in this repo's own addon-server.js/server.js (plain Node,
+// both available).
+const SERVER_RESOLVE_TIMEOUT_MS = 6000;
+const HAS_ABORT_TIMER = typeof AbortController !== 'undefined' && typeof setTimeout !== 'undefined';
+
 function resolveServer(streamBaseUrl, server, headers, label) {
   const finalUrl = `${streamBaseUrl}/${server.data}`;
-  return fetch(finalUrl, { method: 'POST', headers })
-    .then(res => res.text())
+  const controller = HAS_ABORT_TIMER ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), SERVER_RESOLVE_TIMEOUT_MS) : null;
+  const fetchOptions = controller ? { method: 'POST', headers, signal: controller.signal } : { method: 'POST', headers };
+  return fetch(finalUrl, fetchOptions)
+    .then(res => { if (timer) clearTimeout(timer); return res.text(); })
     .then(encrypted => {
       if (!encrypted) return null;
       return decDec(encrypted).then(streamData => {

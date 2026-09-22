@@ -1243,19 +1243,38 @@ function fetchLatestDomain() {
     return domainCache.url;
   });
 }
+// Confirmed live (2026-09-22): fanning out to extractHubCloud for every item
+// on a movie's page (up to a dozen, all in parallel) is only as fast as the
+// single slowest hubcloud.ist link - one title took 17s total when 10 of 12
+// links resolved in under 2s and the last one alone ate the other 15,
+// occasionally enough to blow past aggregateStreams's own 25s overall
+// deadline and return zero streams for a title this provider actually has.
+// A per-request timeout (like vidfastpro.js's/uhdmovies.js's own fixes for
+// the same shape of problem) treats a slow link like any other failed one -
+// this file is also distributed as a standalone Nuvio local-scraper plugin,
+// and Nuvio's sandbox has neither setTimeout nor AbortController, so both are
+// feature-detected the same way those fixes are, degrading to the old
+// no-timeout retry behavior there instead of throwing and failing every
+// request.
+const FETCH_TEXT_TIMEOUT_MS = 10000;
+const HAS_ABORT_TIMER = typeof AbortController !== "undefined" && typeof setTimeout !== "undefined";
 function fetchText(_0) {
   return __async(this, arguments, function* (url, options = {}) {
     const retries = options.retries !== void 0 ? options.retries : 2;
-    const delay = options.delay !== void 0 ? options.delay : 1e3;
     for (let i = 0; i <= retries; i++) {
+      const controller = HAS_ABORT_TIMER ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), FETCH_TEXT_TIMEOUT_MS) : null;
       try {
-        const response = yield fetch(url, {
+        const fetchOptions = __spreadValues({
           headers: __spreadValues({
             "User-Agent": USER_AGENT
           }, options.headers)
-        });
+        }, controller ? { signal: controller.signal } : {});
+        const response = yield fetch(url, fetchOptions);
+        if (timer) clearTimeout(timer);
         return yield response.text();
       } catch (err) {
+        if (timer) clearTimeout(timer);
         console.log(`[4KHDHub] Request failed for ${url}: ${err.message}${i < retries ? `, retrying (${i + 1}/${retries})...` : ""}`);
       }
     }
@@ -1561,8 +1580,12 @@ function extractHubCloud(hubCloudUrl, baseMeta) {
 }
 function resolveHubCloudFinalLink(url) {
   return __async(this, null, function* () {
+    const controller = HAS_ABORT_TIMER ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), FETCH_TEXT_TIMEOUT_MS) : null;
     try {
-      const response = yield fetch(url, { headers: { "User-Agent": USER_AGENT } });
+      const fetchOptions = __spreadValues({ headers: { "User-Agent": USER_AGENT } }, controller ? { signal: controller.signal } : {});
+      const response = yield fetch(url, fetchOptions);
+      if (timer) clearTimeout(timer);
       const finalUrl = response.url || url;
       try {
         const link = new URL(finalUrl).searchParams.get("link");
@@ -1572,6 +1595,7 @@ function resolveHubCloudFinalLink(url) {
       }
       return finalUrl;
     } catch (err) {
+      if (timer) clearTimeout(timer);
       console.log(`[4KHDHub] Failed to resolve HubCloud final link: ${err.message}`);
       return null;
     }

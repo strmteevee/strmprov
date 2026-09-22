@@ -111,13 +111,17 @@ function rangedValidateUrl(url, headers) {
 // Horizon) can each take 10-15+ seconds to answer this POST before finally
 // returning a 404 - a slow, broken response on vidfast.vc's own backend for
 // those specific server slugs, not a network/header issue on this end (the
-// other 5 servers for the same title answer in well under a second). Since
-// Promise.all across all 8 servers waits for the single slowest one, those 3
-// alone were turning a normally sub-second resolve into 15+ seconds every
-// time. A per-server timeout treats a slow server exactly like any other
-// failed one (the existing .catch(() => null) below already drops those),
-// just without waiting out a broken server's own multi-second timeout to get
-// there.
+// other 5 servers for the same title consistently answer in 300-950ms, a
+// ~10x gap with plenty of margin below). Since Promise.all across all 8
+// servers waits for the single slowest one, those 3 alone were turning a
+// normally sub-second resolve into 15+ seconds every time. A per-server
+// timeout treats a slow server exactly like any other failed one (the
+// existing .catch(() => null) below already drops those), just without
+// waiting out a broken server's own multi-second timeout to get there -
+// tightened from an initial 6s to 3s (2026-09-22) once the real response-time
+// gap between working and broken servers was measured directly, cutting the
+// typical end-to-end time further without meaningfully risking a legitimate
+// slow-but-working server.
 //
 // This file also ships as a standalone Nuvio local-scraper plugin, and
 // Nuvio's own JS sandbox has neither setTimeout nor AbortController (see
@@ -127,7 +131,7 @@ function rangedValidateUrl(url, headers) {
 // not just the slow ones, while still getting the real fix when this file
 // runs server-side in this repo's own addon-server.js/server.js (plain Node,
 // both available).
-const SERVER_RESOLVE_TIMEOUT_MS = 6000;
+const SERVER_RESOLVE_TIMEOUT_MS = 3000;
 const HAS_ABORT_TIMER = typeof AbortController !== 'undefined' && typeof setTimeout !== 'undefined';
 
 function resolveServer(streamBaseUrl, server, headers, label) {

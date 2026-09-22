@@ -71,6 +71,7 @@ const subtitles = require('./lib/subtitles');
 const indycar = require('./providers/indycar');
 const f1 = require('./providers/f1');
 const sportzx = require('./providers/sportzx');
+const fullraces = require('./providers/fullraces');
 
 const PORT = 3100;
 const CATALOG_SEED_COUNT = 10;
@@ -211,7 +212,7 @@ function buildManifest(profileId) {
         // resources, etc.) - some Stremio-protocol clients key their cached
         // manifest/catalog data on this and won't notice new catalogs on an
         // existing install (even after a reinstall) unless it changes.
-        version: '1.7.0',
+        version: '1.8.0',
         name: 'StrmProv',
         description: `Self-hosted multi-source streaming addon (profile ${profileId}) with a personalized "For You" catalog based on this profile's own watch history.`,
         logo: 'https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png',
@@ -241,7 +242,7 @@ function buildManifest(profileId) {
             // already has full TMDB access for every stream lookup, so it can
             // fill that gap itself - a TMDB-backed fallback for any movie/
             // series 'tt' id, not just this addon's own custom catalogs.
-            { name: 'meta', types: ['movie', 'series'], idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:'] },
+            { name: 'meta', types: ['movie', 'series'], idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:'] },
             // Scoped to real tt-id content only - neither IndyCar's nor
             // F1/F2/F3/Academy's/SportzX's own custom id schemes have a
             // subtitle concept, and Cinemeta already handles meta for the
@@ -283,9 +284,13 @@ function buildManifest(profileId) {
             // One combined catalog rather than one per sport - see
             // buildSportzxCatalog below for why. type: 'movie', not 'tv' -
             // see the meta resource entry above for why.
-            { type: 'movie', id: 'sportzx-live', name: 'SportzX Live' }
+            { type: 'movie', id: 'sportzx-live', name: 'SportzX Live' },
+            // fullraces.com race replays (F1/F2/F3/NASCAR/IndyCar/Formula E/
+            // others) - one combined catalog, same reasoning as SportzX's own
+            // above (many distinct series, not worth a manifest entry each).
+            { type: 'movie', id: 'fullraces-videos', name: 'FullRaces' }
         ],
-        idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:'],
+        idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:'],
         behaviorHints: { configurable: false, configurationRequired: false }
     };
 }
@@ -933,6 +938,46 @@ function buildSportzxStreamResponse(id) {
     });
 }
 
+// Same shape as indycarVideoToMeta/f1VideoToMeta - a Stremio Meta Object is a
+// superset of a catalog preview item.
+function fullracesVideoToMeta(v) {
+    return {
+        id: v.id,
+        type: 'movie',
+        name: v.title,
+        poster: v.poster,
+        description: v.description,
+        releaseInfo: v.timestamp ? new Date(v.timestamp).toISOString().substring(0, 10) : undefined
+    };
+}
+
+function buildFullracesCatalog() {
+    return fullraces.listVideos().then((videos) => videos.map(fullracesVideoToMeta));
+}
+
+// Same reasoning as buildIndycarMeta/buildF1Meta above - Cinemeta has no way
+// to resolve our own fullraces: id scheme.
+function buildFullracesMeta(id) {
+    return fullraces.listVideos().then((videos) => {
+        const video = videos.find((v) => v.id === id);
+        return video ? fullracesVideoToMeta(video) : null;
+    });
+}
+
+function buildFullracesStreamResponse(id) {
+    const path = `/${id.slice('fullraces:'.length)}`;
+    return fullraces.getVideoStreams(path).then((streams) => ({
+        streams: streams.map((s) => {
+            const stream = { name: s.name, title: s.quality || '', url: s.url };
+            if (s.headers && Object.keys(s.headers).length) stream.behaviorHints = { proxyHeaders: { request: s.headers } };
+            return stream;
+        })
+    })).catch((err) => {
+        console.error(`[addon-server] FullRaces stream error for ${id}: ${err.message}`);
+        return { streams: [] };
+    });
+}
+
 // Merges the provider-embedded subtitles a stream already carries with the
 // (possibly hash-matched) results from lib/subtitles.js, deduping by
 // (lang, url) - the embedded ones are guaranteed to ship with this exact
@@ -1158,6 +1203,9 @@ const server = http.createServer((req, res) => {
         if (id === 'sportzx-live' && type === 'movie') {
             return buildSportzxCatalog().then(metas => sendJson(res, 200, { metas }));
         }
+        if (id === 'fullraces-videos' && type === 'movie') {
+            return buildFullracesCatalog().then(metas => sendJson(res, 200, { metas }));
+        }
         const newCatalogType = { 'strmprov-new-movie': 'movie', 'strmprov-new-series': 'series' }[id];
         if (newCatalogType && type === newCatalogType) {
             const mediaType = type === 'series' ? 'tv' : 'movie';
@@ -1188,6 +1236,9 @@ const server = http.createServer((req, res) => {
         if (id.startsWith('sportzx:') && type === 'movie') {
             return buildSportzxMeta(id).then(meta => sendJson(res, 200, { meta }));
         }
+        if (id.startsWith('fullraces:') && type === 'movie') {
+            return buildFullracesMeta(id).then(meta => sendJson(res, 200, { meta }));
+        }
         if (id.startsWith('tt') && (type === 'movie' || type === 'series')) {
             return buildTmdbFallbackMeta(id, type).then(meta => sendJson(res, 200, { meta }));
         }
@@ -1216,6 +1267,9 @@ const server = http.createServer((req, res) => {
         }
         if (id.startsWith('sportzx:')) {
             return buildSportzxStreamResponse(id).then(body => sendJson(res, 200, body));
+        }
+        if (id.startsWith('fullraces:')) {
+            return buildFullracesStreamResponse(id).then(body => sendJson(res, 200, body));
         }
         if (type !== 'movie' && type !== 'series') {
             return sendJson(res, 200, { streams: [] });
@@ -1254,4 +1308,8 @@ server.listen(PORT, () => {
     // unreachable) that a real user's first catalog open shouldn't have to
     // wait through.
     sportzx.listEvents().catch((err) => console.error(`[addon-server] SportzX cache warm-up failed: ${err.message}`));
+    // Same reasoning as the warm-up calls above - a 15-category crawl on a
+    // real user's first catalog open would otherwise risk Nuvio's own
+    // catalog-fetch timeout giving up before it finishes.
+    fullraces.listVideos().catch((err) => console.error(`[addon-server] FullRaces cache warm-up failed: ${err.message}`));
 });

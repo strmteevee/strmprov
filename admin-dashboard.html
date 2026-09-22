@@ -245,10 +245,10 @@
 
   <section class="panel" id="provider-health-panel">
     <h2>Provider health</h2>
-    <p class="desc">Real success/empty/error counts from every live stream request, over the last <span id="health-retention">14</span> days - a provider stuck near 0% is chronically broken (wrong results, dead hosts, changed site structure) rather than just unlucky on one title. Sorted worst first.</p>
+    <p class="desc">Real success/empty/error counts and average load time from every live stream request, over the last <span id="health-retention">14</span> days - a provider stuck near 0% is chronically broken (wrong results, dead hosts, changed site structure) rather than just unlucky on one title. Both success rate and average load time also determine the order providers are queried in on a real stream request - see the Reset button below. Sorted worst first.</p>
     <table>
-      <thead><tr><th>Provider</th><th>Requests</th><th>Success</th><th>Empty</th><th>Error</th><th>Success rate</th><th>Last seen</th></tr></thead>
-      <tbody id="provider-health-body"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+      <thead><tr><th>Provider</th><th>Requests</th><th>Success</th><th>Empty</th><th>Error</th><th>Success rate</th><th>Avg load</th><th>Last seen</th></tr></thead>
+      <tbody id="provider-health-body"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
     </table>
     <div class="row" style="margin-top:14px;">
       <button id="provider-health-refresh">Refresh</button>
@@ -643,10 +643,15 @@ function loadRanking() {
 
 // ---- Provider health ----
 
+function formatLoadMs(ms) {
+  if (ms === null || ms === undefined) return '<span class="muted">—</span>';
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+}
+
 function renderProviderHealth(rows) {
   const body = document.getElementById('provider-health-body');
   if (rows.length === 0) {
-    body.innerHTML = '<tr><td colspan="7" class="muted">No requests recorded yet - health data appears after real stream requests come in.</td></tr>';
+    body.innerHTML = '<tr><td colspan="8" class="muted">No requests recorded yet - health data appears after real stream requests come in.</td></tr>';
     return;
   }
   body.innerHTML = rows.map(r => {
@@ -659,6 +664,7 @@ function renderProviderHealth(rows) {
       <td>${r.empty}</td>
       <td>${r.error}</td>
       <td>${pct === null ? '<span class="muted">—</span>' : `<span class="badge ${badgeClass}">${pct}%</span>`}</td>
+      <td class="mono">${formatLoadMs(r.avgMs)}</td>
       <td class="muted">${escapeHtml(r.lastSeen || '—')}</td>
     </tr>`;
   }).join('');

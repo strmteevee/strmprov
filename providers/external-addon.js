@@ -69,6 +69,25 @@ function isUsableStream(s) {
   }
 }
 
+// By request: PenguPlay's MovieBox-sourced entries sometimes offer the same
+// title re-dubbed into another language entirely (Arabic, French, Kurdish,
+// Russian, Tamil, Telugu, ...) - confirmed live in MovieBox's own
+// descriptions, two ways: most say so explicitly with a "<language> sub
+// audio"/"<language> dub audio" phrase (MovieBox's own confusing term for a
+// substitute/dubbed audio track, not an actual burned-in visual subtitle -
+// there's no separate subtitle file or hardsub involved at all), but Hindi
+// variants specifically only carry a trailing "Audio: Hindi" line with no
+// "dub audio" phrasing at all - confirmed live this second pattern would
+// otherwise slip through the first check alone. The original/default-audio
+// variants never carry either pattern, so both are reliable signals without
+// needing to enumerate every language they might show up as.
+function isForeignDubbedAudio(description) {
+  const text = description || "";
+  if (/\b(?:sub|dub) audio\b/i.test(text)) return true;
+  const audioLine = text.match(/Audio:\s*([^\n]+)/i);
+  return !!audioLine && !/\benglish\b/i.test(audioLine[1]);
+}
+
 function createProvider(config) {
   const addonBaseUrl = (config && config.addonBaseUrl || "").replace(/\/+$/, "");
   const configJson = config && config.configJson;
@@ -98,7 +117,7 @@ function createProvider(config) {
           const seenUrls = new Set();
           const streams = [];
           for (const s of raw) {
-            if (!isUsableStream(s) || seenUrls.has(s.url)) continue;
+            if (!isUsableStream(s) || seenUrls.has(s.url) || isForeignDubbedAudio(s.description)) continue;
             seenUrls.add(s.url);
             const rawName = (s.name || "").replace(/\n/g, " ").trim();
             const name = `${namePrefix}${rawName}`.trim();

@@ -253,43 +253,80 @@ function buildManifest(profileId) {
         catalogs: [
             { type: 'movie', id: 'strmprov-foryou-movie', name: 'For You' },
             { type: 'series', id: 'strmprov-foryou-series', name: 'For You' },
-            // Plain TMDB browse catalogs - no personalization, same for every
-            // profile (see the DISCOVER_CATALOG_* constants/builders above).
-            { type: 'movie', id: 'strmprov-new-movie', name: 'New' },
-            { type: 'series', id: 'strmprov-new-series', name: 'New' },
-            ...GENRE_CATALOGS.flatMap(g => [
-                { type: 'movie', id: `genre-${g.slug}-movie`, name: `${g.label} Movies` },
-                { type: 'series', id: `genre-${g.slug}-series`, name: `${g.label} Series` }
-            ]),
-            ...STREAMING_SERVICES.flatMap(s => [
-                { type: 'movie', id: `streaming-${s.slug}-movie`, name: `${s.label} Movies` },
-                { type: 'series', id: `streaming-${s.slug}-series`, name: `${s.label} Series` }
-            ]),
-            {
-                type: 'movie',
-                id: 'indycar-videos',
-                name: 'IndyCar Extended Highlights'
-                // By request: only "Extended Race Highlights" now, across
-                // every race, newest first - no genre filter needed since
-                // there's only the one category left. See
-                // buildIndycarCatalog below for the fixed filter.
-            },
-            // Separate catalogs per series, by request - each backed by the
-            // same providers/f1.js crawl, filtered to that one series (see
-            // buildF1Catalog below).
-            { type: 'movie', id: 'f1-highlights', name: 'F1 Race Highlights' },
-            { type: 'movie', id: 'f2-highlights', name: 'F2 Race Highlights' },
-            { type: 'movie', id: 'f3-highlights', name: 'F3 Race Highlights' },
-            { type: 'movie', id: 'f1academy-highlights', name: 'F1 Academy Highlights' },
-            // One combined catalog rather than one per sport - see
-            // buildSportzxCatalog below for why. type: 'movie', not 'tv' -
-            // see the meta resource entry above for why.
-            { type: 'movie', id: 'sportzx-live', name: 'SportzX Live' },
-            // fullraces.com race replays (F1/F2/F3/NASCAR/IndyCar/Formula E/
-            // others) - one combined catalog, same reasoning as SportzX's own
-            // above (many distinct series, not worth a manifest entry each).
-            { type: 'movie', id: 'fullraces-videos', name: 'FullRaces' }
+            ...buildNonPersonalizedCatalogs()
         ],
+        idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:'],
+        behaviorHints: { configurable: false, configurationRequired: false }
+    };
+}
+
+// Every catalog except "For You" (the one genuinely personalized, per-profile
+// catalog) - shared between the per-profile manifest above and the plain,
+// no-personalization one below, so a new catalog only ever needs adding in
+// one place instead of the two lists drifting apart over time.
+function buildNonPersonalizedCatalogs() {
+    return [
+        // Plain TMDB browse catalogs - no personalization, same for every
+        // profile (see the DISCOVER_CATALOG_* constants/builders above).
+        { type: 'movie', id: 'strmprov-new-movie', name: 'New' },
+        { type: 'series', id: 'strmprov-new-series', name: 'New' },
+        ...GENRE_CATALOGS.flatMap(g => [
+            { type: 'movie', id: `genre-${g.slug}-movie`, name: `${g.label} Movies` },
+            { type: 'series', id: `genre-${g.slug}-series`, name: `${g.label} Series` }
+        ]),
+        ...STREAMING_SERVICES.flatMap(s => [
+            { type: 'movie', id: `streaming-${s.slug}-movie`, name: `${s.label} Movies` },
+            { type: 'series', id: `streaming-${s.slug}-series`, name: `${s.label} Series` }
+        ]),
+        {
+            type: 'movie',
+            id: 'indycar-videos',
+            name: 'IndyCar Extended Highlights'
+            // By request: only "Extended Race Highlights" now, across
+            // every race, newest first - no genre filter needed since
+            // there's only the one category left. See
+            // buildIndycarCatalog below for the fixed filter.
+        },
+        // Separate catalogs per series, by request - each backed by the
+        // same providers/f1.js crawl, filtered to that one series (see
+        // buildF1Catalog below).
+        { type: 'movie', id: 'f1-highlights', name: 'F1 Race Highlights' },
+        { type: 'movie', id: 'f2-highlights', name: 'F2 Race Highlights' },
+        { type: 'movie', id: 'f3-highlights', name: 'F3 Race Highlights' },
+        { type: 'movie', id: 'f1academy-highlights', name: 'F1 Academy Highlights' },
+        // One combined catalog rather than one per sport - see
+        // buildSportzxCatalog below for why. type: 'movie', not 'tv' -
+        // see the meta resource entry above for why.
+        { type: 'movie', id: 'sportzx-live', name: 'SportzX Live' },
+        // fullraces.com race replays (F1/F2/F3/NASCAR/IndyCar/Formula E/
+        // others) - one combined catalog, same reasoning as SportzX's own
+        // above (many distinct series, not worth a manifest entry each).
+        { type: 'movie', id: 'fullraces-videos', name: 'FullRaces' }
+    ];
+}
+
+// By request: a second, non-profile-scoped manifest that skips every layer
+// of "smart" behavior the profile manifest adds on top of the raw provider
+// results - no [PREFERRED] tagging/ranking (lib/aggregate.js's own
+// `preferred: false` option already exists for exactly this), no
+// personalized "For You" catalog (there's no profile here to personalize
+// from), and no hash-matched subtitle enrichment (the `subtitles` resource
+// is left out of this manifest entirely, rather than declaring a resource
+// that would only ever return nothing useful). One shared URL instead of a
+// URL per profile, since nothing here varies by profile at all.
+function buildSimpleManifest() {
+    return {
+        id: 'com.strmprov.addon.simple',
+        version: '1.0.0',
+        name: 'StrmProv Simple',
+        description: 'Self-hosted multi-source streaming addon - raw aggregated streams from every enabled provider, unranked and untagged. No [PREFERRED] pick, no personalized "For You" catalog, no subtitle hash-matching - just the sources.',
+        logo: 'https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png',
+        resources: [
+            'catalog', 'stream',
+            { name: 'meta', types: ['movie', 'series'], idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:'] }
+        ],
+        types: ['movie', 'series'],
+        catalogs: buildNonPersonalizedCatalogs(),
         idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:'],
         behaviorHints: { configurable: false, configurationRequired: false }
     };
@@ -1116,6 +1153,140 @@ function buildSubtitlesResponse(type, rawId) {
         });
 }
 
+// Every catalog dispatch EXCEPT "For You" - shared between the profile route
+// (which checks "For You" first, then falls back to this) and the /simple
+// route (which has no personalized catalog at all, so this is its whole
+// dispatch). Resolves to `null`, not an empty array, when `id`/`type` doesn't
+// match anything known here - lets each caller decide what "unhandled" means
+// for it rather than baking a fallback into a function two different routes
+// share.
+function resolveNonPersonalizedCatalog(type, id) {
+    if (id === 'indycar-videos' && type === 'movie') {
+        return buildIndycarCatalog();
+    }
+    const f1CatalogSeries = { 'f1-highlights': 'f1', 'f2-highlights': 'f2', 'f3-highlights': 'f3', 'f1academy-highlights': 'academy' }[id];
+    if (f1CatalogSeries && type === 'movie') {
+        return buildF1Catalog(f1CatalogSeries);
+    }
+    if (id === 'sportzx-live' && type === 'movie') {
+        return buildSportzxCatalog();
+    }
+    if (id === 'fullraces-videos' && type === 'movie') {
+        return buildFullracesCatalog();
+    }
+    const newCatalogType = { 'strmprov-new-movie': 'movie', 'strmprov-new-series': 'series' }[id];
+    if (newCatalogType && type === newCatalogType) {
+        const mediaType = type === 'series' ? 'tv' : 'movie';
+        return getOrBuildDiscoverCatalog(id, () => buildNewCatalog(mediaType, type));
+    }
+    const streamingMatch = STREAMING_SERVICES.find(s => id === `streaming-${s.slug}-${type}`);
+    if (streamingMatch && (type === 'movie' || type === 'series')) {
+        const mediaType = type === 'series' ? 'tv' : 'movie';
+        return getOrBuildDiscoverCatalog(id, () => buildStreamingServiceCatalog(streamingMatch, mediaType, type));
+    }
+    const genreMatch = GENRE_CATALOGS.find(g => id === `genre-${g.slug}-${type}`);
+    if (genreMatch && (type === 'movie' || type === 'series')) {
+        const mediaType = type === 'series' ? 'tv' : 'movie';
+        return getOrBuildDiscoverCatalog(id, () => buildDiscoverGenreCatalog(genreMatch, mediaType, type));
+    }
+    return null;
+}
+
+// Meta dispatch has never depended on profile at all - shared as-is between
+// both routes.
+function resolveMeta(type, id) {
+    if (id.startsWith('indycar:') && type === 'movie') {
+        return buildIndycarMeta(id);
+    }
+    if (id.startsWith('f1:') && type === 'movie') {
+        return buildF1Meta(id);
+    }
+    if (id.startsWith('sportzx:') && type === 'movie') {
+        return buildSportzxMeta(id);
+    }
+    if (id.startsWith('fullraces:') && type === 'movie') {
+        return buildFullracesMeta(id);
+    }
+    if (id.startsWith('tt') && (type === 'movie' || type === 'series')) {
+        return buildTmdbFallbackMeta(id, type);
+    }
+    return Promise.resolve(null);
+}
+
+// The custom-catalog id prefixes (indycar:/f1:/sportzx:/fullraces:) already
+// return plain, unranked streams with no personalization or subtitle
+// enrichment of any kind - identical for both routes. Only a real 'tt' id
+// differs, since that's the one case with a "full" (buildStreamResponse) and
+// a "simple" (buildSimpleStreamResponse) version. Returns `null`, not a
+// Promise, when `id` isn't one of these prefixes, so callers can synchronously
+// fall through to their own tt-id handler instead.
+function resolveCustomStreamResponse(id) {
+    if (id.startsWith('indycar:')) return buildIndycarStreamResponse(id);
+    if (id.startsWith('f1:')) return buildF1StreamResponse(id);
+    if (id.startsWith('sportzx:')) return buildSportzxStreamResponse(id);
+    if (id.startsWith('fullraces:')) return buildFullracesStreamResponse(id);
+    return null;
+}
+
+// The /simple manifest's own stream builder - same aggregation as
+// buildStreamResponse, but with `preferred: false` (skips applyPreferredLogic
+// entirely - no [PREFERRED] tag, no ranking-based reordering) and no
+// subtitle-matching enrichment or profileStore.recordWatch call, since there's
+// no profile here to record against or personalize from. dropUnplayable
+// (inside aggregateStreams) still runs regardless - that's basic "don't hand
+// back a link already confirmed broken" hygiene, not ranking, so it stays
+// even in "just load the sources" mode. A provider's own embedded subtitles
+// (Castle/MovieBox/VidLink/...) are still passed through as-is, since those
+// are part of that source's own raw result, not an added enrichment layer.
+function buildSimpleStreamResponse(type, rawId) {
+    const mediaType = type === 'series' ? 'tv' : 'movie';
+    const [imdbId, seasonStr, episodeStr] = rawId.split(':');
+    const season = seasonStr ? parseInt(seasonStr, 10) : null;
+    const episode = episodeStr ? parseInt(episodeStr, 10) : null;
+
+    if (mediaType === 'tv' && (!season || !episode)) {
+        return Promise.resolve({ streams: [] });
+    }
+
+    return tmdb.findByImdbId(imdbId).then(found => {
+        if (!found) {
+            console.log(`[addon-server] No TMDB match for ${imdbId}`);
+            return { streams: [] };
+        }
+        return aggregate.aggregateStreams(found.tmdbId, found.mediaType, season, episode, { preferred: false }).then(({ streams }) => {
+            const stremioStreams = streams.map(s => {
+                const behaviorHints = { notWebReady: true };
+                if (s.headers && Object.keys(s.headers).length) {
+                    behaviorHints.proxyHeaders = { request: s.headers };
+                }
+                const stream = {
+                    url: s.url,
+                    name: s.name || s.source || 'Stream',
+                    title: [s.quality, s.size].filter(Boolean).join(' | ') || s.title || '',
+                    behaviorHints
+                };
+                if (Array.isArray(s.subtitles) && s.subtitles.length) {
+                    const embedded = s.subtitles
+                        .filter(sub => sub && sub.url)
+                        .map(sub => {
+                            const lang = sub.lang || sub.language || 'unknown';
+                            const name = lang.length <= 3
+                                ? subtitles.languageName(lang)
+                                : lang.charAt(0).toUpperCase() + lang.slice(1);
+                            return { url: sub.url, lang, language: lang, name };
+                        });
+                    if (embedded.length) stream.subtitles = embedded;
+                }
+                return stream;
+            });
+            return { streams: stremioStreams };
+        });
+    }).catch(err => {
+        console.error(`[addon-server] simple stream error for ${imdbId}: ${err.message}`);
+        return { streams: [] };
+    });
+}
+
 function notFound(res) {
     sendJson(res, 404, { error: 'Not found' });
 }
@@ -1175,6 +1346,38 @@ const server = http.createServer((req, res) => {
         return sendJson(res, 200, { cleared: true });
     }
 
+    // /simple/... - the shared, non-profile-scoped manifest (see
+    // buildSimpleManifest's own comment for why this exists). Checked before
+    // the /profile/:profileId/... branch below since it has no profileId
+    // segment at all.
+    if (parts[0] === 'simple') {
+        if (parts.length === 2 && parts[1] === 'manifest.json') {
+            return sendJson(res, 200, buildSimpleManifest());
+        }
+        if (parts.length >= 4 && parts[1] === 'catalog') {
+            const type = parts[2];
+            const id = parts[3].replace(/\.json$/, '');
+            return Promise.resolve(resolveNonPersonalizedCatalog(type, id)).then(metas => sendJson(res, 200, { metas: metas || [] }));
+        }
+        if (parts.length >= 4 && parts[1] === 'meta') {
+            const type = parts[2];
+            const id = decodeURIComponent(parts[3]).replace(/\.json$/, '');
+            return resolveMeta(type, id).then(meta => sendJson(res, 200, { meta }));
+        }
+        if (parts.length >= 4 && parts[1] === 'stream') {
+            const type = parts[2];
+            const idWithExt = decodeURIComponent(parts.slice(3).join('/'));
+            const id = idWithExt.replace(/\.json$/, '');
+            const custom = resolveCustomStreamResponse(id);
+            if (custom) return custom.then(body => sendJson(res, 200, body));
+            if (type !== 'movie' && type !== 'series') {
+                return sendJson(res, 200, { streams: [] });
+            }
+            return buildSimpleStreamResponse(type, id).then(body => sendJson(res, 200, body));
+        }
+        return notFound(res);
+    }
+
     // /profile/:profileId/...
     if (parts[0] !== 'profile' || parts.length < 3) {
         return notFound(res);
@@ -1193,56 +1396,13 @@ const server = http.createServer((req, res) => {
         if (id === `strmprov-foryou-${type}` && (type === 'movie' || type === 'series')) {
             return buildCatalog(profileId, type).then(metas => sendJson(res, 200, { metas }));
         }
-        if (id === 'indycar-videos' && type === 'movie') {
-            return buildIndycarCatalog().then(metas => sendJson(res, 200, { metas }));
-        }
-        const f1CatalogSeries = { 'f1-highlights': 'f1', 'f2-highlights': 'f2', 'f3-highlights': 'f3', 'f1academy-highlights': 'academy' }[id];
-        if (f1CatalogSeries && type === 'movie') {
-            return buildF1Catalog(f1CatalogSeries).then(metas => sendJson(res, 200, { metas }));
-        }
-        if (id === 'sportzx-live' && type === 'movie') {
-            return buildSportzxCatalog().then(metas => sendJson(res, 200, { metas }));
-        }
-        if (id === 'fullraces-videos' && type === 'movie') {
-            return buildFullracesCatalog().then(metas => sendJson(res, 200, { metas }));
-        }
-        const newCatalogType = { 'strmprov-new-movie': 'movie', 'strmprov-new-series': 'series' }[id];
-        if (newCatalogType && type === newCatalogType) {
-            const mediaType = type === 'series' ? 'tv' : 'movie';
-            return getOrBuildDiscoverCatalog(id, () => buildNewCatalog(mediaType, type)).then(metas => sendJson(res, 200, { metas }));
-        }
-        const streamingMatch = STREAMING_SERVICES.find(s => id === `streaming-${s.slug}-${type}`);
-        if (streamingMatch && (type === 'movie' || type === 'series')) {
-            const mediaType = type === 'series' ? 'tv' : 'movie';
-            return getOrBuildDiscoverCatalog(id, () => buildStreamingServiceCatalog(streamingMatch, mediaType, type)).then(metas => sendJson(res, 200, { metas }));
-        }
-        const genreMatch = GENRE_CATALOGS.find(g => id === `genre-${g.slug}-${type}`);
-        if (genreMatch && (type === 'movie' || type === 'series')) {
-            const mediaType = type === 'series' ? 'tv' : 'movie';
-            return getOrBuildDiscoverCatalog(id, () => buildDiscoverGenreCatalog(genreMatch, mediaType, type)).then(metas => sendJson(res, 200, { metas }));
-        }
-        return sendJson(res, 200, { metas: [] });
+        return Promise.resolve(resolveNonPersonalizedCatalog(type, id)).then(metas => sendJson(res, 200, { metas: metas || [] }));
     }
 
     if (resource === 'meta' && parts.length >= 5) {
         const type = parts[3];
         const id = decodeURIComponent(parts[4]).replace(/\.json$/, '');
-        if (id.startsWith('indycar:') && type === 'movie') {
-            return buildIndycarMeta(id).then(meta => sendJson(res, 200, { meta }));
-        }
-        if (id.startsWith('f1:') && type === 'movie') {
-            return buildF1Meta(id).then(meta => sendJson(res, 200, { meta }));
-        }
-        if (id.startsWith('sportzx:') && type === 'movie') {
-            return buildSportzxMeta(id).then(meta => sendJson(res, 200, { meta }));
-        }
-        if (id.startsWith('fullraces:') && type === 'movie') {
-            return buildFullracesMeta(id).then(meta => sendJson(res, 200, { meta }));
-        }
-        if (id.startsWith('tt') && (type === 'movie' || type === 'series')) {
-            return buildTmdbFallbackMeta(id, type).then(meta => sendJson(res, 200, { meta }));
-        }
-        return sendJson(res, 200, { meta: null });
+        return resolveMeta(type, id).then(meta => sendJson(res, 200, { meta }));
     }
 
     if (resource === 'subtitles' && parts.length >= 5) {
@@ -1259,18 +1419,8 @@ const server = http.createServer((req, res) => {
         const type = parts[3];
         const idWithExt = decodeURIComponent(parts.slice(4).join('/'));
         const id = idWithExt.replace(/\.json$/, '');
-        if (id.startsWith('indycar:')) {
-            return buildIndycarStreamResponse(id).then(body => sendJson(res, 200, body));
-        }
-        if (id.startsWith('f1:')) {
-            return buildF1StreamResponse(id).then(body => sendJson(res, 200, body));
-        }
-        if (id.startsWith('sportzx:')) {
-            return buildSportzxStreamResponse(id).then(body => sendJson(res, 200, body));
-        }
-        if (id.startsWith('fullraces:')) {
-            return buildFullracesStreamResponse(id).then(body => sendJson(res, 200, body));
-        }
+        const custom = resolveCustomStreamResponse(id);
+        if (custom) return custom.then(body => sendJson(res, 200, body));
         if (type !== 'movie' && type !== 'series') {
             return sendJson(res, 200, { streams: [] });
         }

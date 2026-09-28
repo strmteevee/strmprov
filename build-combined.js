@@ -50,6 +50,7 @@ const SOURCES = [
   { id: 'kickassanime', varName: 'KickassAnime', name: 'KickassAnime' },
   { id: 'vegamovies', varName: 'VegaMovies', name: 'VegaMovies' },
   { id: 'allmovieland', varName: 'AllMovieLand', name: 'AllMovieLand' },
+  { id: 'cinejoy', varName: 'Cinejoy', name: 'Cinejoy' },
 ];
 
 // Strips a provider file's trailing `module.exports = ...` statement (or,

@@ -1,6 +1,6 @@
 {
   "name": "Yoru's Repo",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "scrapers": [
     {
       "id": "streamapi",
@@ -441,6 +441,27 @@
       "logo": "https://www.google.com/s2/favicons?domain=animeworld.so&sz=128",
       "contentLanguage": [
         "it"
+      ]
+    },
+    {
+      "id": "cinejoy",
+      "name": "Cinejoy",
+      "description": "Multi-server streaming (Lisbon, Nebula, Solara, Athens - fetched live, the set changes) via Cinejoy's encrypted API, resolved through the same public enc-dec.app helper the CloudStream StreamPlay plugin itself relies on for the ECDH/AES-GCM handshake.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/cinejoy.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=cinejoy.to&sz=128",
+      "contentLanguage": [
+        "en"
       ]
     }
   ]

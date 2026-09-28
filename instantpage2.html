@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="google-site-verification" content="zz4zyQkNwYkuAV2QW_LNeJelyRMAHqaDPWOSMu211wk" />
+  <meta name="referrer" content="no-referrer" />
+  <title>VideoSeed - Free & Fastest Downloading CDN</title>
+
+  <!-- ✅ Local Bootstrap -->
+  <link rel="stylesheet" href="/css/bootstrap.min.css" />
+
+  <style>
+    body {
+      background-color: #111;
+      color: #fff;
+      text-align: center;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    main {
+      flex: 1;
+    }
+    .smaller-image {
+      width: 200px;
+      height: 50px;
+      border: 0;
+    }
+    .alert {
+      word-wrap: break-word;
+    }
+    .hidden {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <main class="container py-5">
+    <div class="col-lg-6 mx-auto">
+      <div class="p-4 border rounded-3 bg-light text-dark shadow">
+
+        <!-- Header -->
+        <div class="alert alert-warning mb-4">
+          <strong>VIDEO CDN</strong> Fastest Video Downloading CDN
+        </div>
+
+        <hr class="my-3" />
+
+        <p>Your file is ready for download.</p>
+
+        <!-- Spinner placeholder for button -->
+        <div class="loading mb-3">
+          <div class="spinner-border text-danger" role="status" style="width: 3rem; height: 3rem;">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+        </div>
+
+        <!-- Instant Download Button -->
+        <div class="download hidden mb-3">
+          <a id="downloadBtn" class="btn btn-lg btn-danger" href="#" target="_blank">
+            Instant Download
+          </a>
+        </div>
+
+        <!-- File status message -->
+        <p id="fileStatus" class="fw-semibold text-success">File already generated.</p>
+
+        <!-- Alerts -->
+        <div class="alert alert-info mt-3">
+          The download link is valid for only <strong>3 hours</strong>.
+        </div>
+
+        <div class="alert alert-danger">
+          <strong>Note:</strong> Please Don't Pause the Download or Close the Downloading App from Background.
+        </div>
+
+        <!-- Telegram Link -->
+        <a href="https://mmodlist.org/?type=telegram" rel="external noopener noreferrer">
+          <img
+            class="smaller-image mt-3"
+            alt="Telegram Channel"
+            src="https://i0.wp.com/blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEgFPs1xOUjnQnlN8mNQhZt_Z8jJGPujHXUyZNhvERiNRcbd9079Z6VMIumnT5Mx-Ou1YKYx37Nb9WQxAChvhtcNxWTRdJD2xSNzKniXfjurs_vPyto585enp4zwSrblKIk6o8cR0DH7CxF-1uBWV-0TL_A_n-n-yuFkjpI0y-QBhQCzQIJ_gf4auly4MQ/s0/photo_2024-01-07_20-36-03.jpg"
+          />
+        </a>
+      </div>
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer class="py-4 bg-dark text-muted">
+    <div class="container">
+      <p class="mb-0 small">
+        We do not host any files on its servers. All files or contents are hosted on third-party websites.<br />
+        We do not accept responsibility for content hosted on third-party websites.<br />
+        We just index those links which are already available on the internet.
+      </p>
+    </div>
+  </footer>
+  
+  <script>(function(s){s.dataset.zone='11076425',s.src='https://llvpn.com/tag.min.js'})([document.documentElement, document.body].filter(Boolean).pop().appendChild(document.createElement('script')))</script>
+
+
+  <script>
+    // Get ?url= param
+    function getQueryParam(param) {
+      const urlParams = new URLSearchParams(window.location.search);
+      return urlParams.get(param);
+    }
+
+    const downloadUrl = getQueryParam("url");
+    const fileStatus = document.getElementById("fileStatus");
+    const loading = document.querySelector(".loading");
+    const downloadBtn = document.getElementById("downloadBtn");
+    const downloadSection = document.querySelector(".download");
+
+    // Logic
+    if (downloadUrl) {
+      // Valid URL → show spinner, then button
+      fileStatus.textContent = "File already generated.";
+      fileStatus.classList.replace("text-danger", "text-success");
+
+      setTimeout(() => {
+        loading.classList.add("hidden");
+        downloadSection.classList.remove("hidden");
+        downloadBtn.href = downloadUrl;
+      }, 1000);
+    } else {
+      // Invalid / missing URL
+      fileStatus.textContent = "❌ File not found or invalid link.";
+      fileStatus.classList.replace("text-success", "text-danger");
+      loading.classList.add("hidden");
+      downloadSection.classList.add("hidden");
+    }
+  </script>
+</body>
+</html>

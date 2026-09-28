@@ -1,6 +1,6 @@
 {
   "name": "Yoru's Repo",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "scrapers": [
     {
       "id": "streamapi",
@@ -462,6 +462,157 @@
       "logo": "https://www.google.com/s2/favicons?domain=cinejoy.to&sz=128",
       "contentLanguage": [
         "en"
+      ]
+    },
+    {
+      "id": "filmyfiy",
+      "name": "Filmyfiy",
+      "description": "FilmyFly (Filmyfiy's current live brand/domain) - Hindi/English dual-audio Hollywood/Bollywood movie downloads. Resolves through a linkmake.in link-protector to per-quality direct 10Gbps and HubCloud links (movies only, no TV).",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie"
+      ],
+      "filename": "providers/filmyfiy.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=filmyhok.com&sz=128",
+      "contentLanguage": [
+        "en",
+        "hi"
+      ]
+    },
+    {
+      "id": "moviesdrive",
+      "name": "MoviesDrive",
+      "description": "Indian movie/TV WordPress-style blog with a Typesense JSON search API. Download links route through mdrive.lol to HubCloud, resolved via this repo's shared HubCloud extractor.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/moviesdrive.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=moviesdrive.christmas&sz=128",
+      "contentLanguage": [
+        "en",
+        "hi"
+      ]
+    },
+    {
+      "id": "rogmovies",
+      "name": "RogMovies",
+      "description": "Indian movie/TV blog sharing VegaMovies' own backend (Typesense search, same release naming). Resolves G-Direct links through a nexdrive.fit hub to a direct googleusercontent.com stream.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/rogmovies.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=rogmovies.best&sz=128",
+      "contentLanguage": [
+        "en",
+        "hi"
+      ]
+    },
+    {
+      "id": "topmovies",
+      "name": "TopMovies",
+      "description": "Indian/Bollywood movie and web-series blog (live under the \"Movies Leech\" brand). Resolves downloads through a driveseed.org gateway to a direct googleusercontent.com stream, same family as UHDMovies' own resolver.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/topmovies.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=moviesleech.club&sz=128",
+      "contentLanguage": [
+        "en",
+        "hi"
+      ]
+    },
+    {
+      "id": "hdmovie2",
+      "name": "HdMovie2",
+      "description": "Hindi/Bollywood-focused movie and TV blog, self-hosted JWPlayer streams - no download-host intermediary, resolves directly to signed HLS playlists.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/hdmovie2.js",
+      "enabled": true,
+      "formats": [
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=hdmovie2a.biz&sz=128",
+      "contentLanguage": [
+        "en",
+        "hi"
+      ]
+    },
+    {
+      "id": "multimovies",
+      "name": "MultiMovies",
+      "description": "Dooplay-theme movie/TV embed aggregator - resolves its \"Cineverse\" server option through an AJAX + proxy chain directly to an adaptive HLS master playlist, with multi-language audio and subtitle tracks.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/multimovies.js",
+      "enabled": true,
+      "formats": [
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=multimovies.casa&sz=128",
+      "contentLanguage": [
+        "en",
+        "hi"
+      ]
+    },
+    {
+      "id": "moviesmod",
+      "name": "MoviesMod",
+      "description": "Indian movie/TV blog resolving through modpro.blog ad-gates to driveseed.org, landing on direct googleusercontent.com streams. Some quality groups route through a since-repurposed gateway domain and are filtered out live rather than guessed at.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/moviesmod.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=moviesmod.ai.in&sz=128",
+      "contentLanguage": [
+        "en",
+        "hi"
       ]
     }
   ]

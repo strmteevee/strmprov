@@ -51,6 +51,13 @@ const SOURCES = [
   { id: 'vegamovies', varName: 'VegaMovies', name: 'VegaMovies' },
   { id: 'allmovieland', varName: 'AllMovieLand', name: 'AllMovieLand' },
   { id: 'cinejoy', varName: 'Cinejoy', name: 'Cinejoy' },
+  { id: 'filmyfiy', varName: 'Filmyfiy', name: 'Filmyfiy' },
+  { id: 'moviesdrive', varName: 'MoviesDrive', name: 'MoviesDrive' },
+  { id: 'rogmovies', varName: 'RogMovies', name: 'RogMovies' },
+  { id: 'topmovies', varName: 'TopMovies', name: 'TopMovies' },
+  { id: 'hdmovie2', varName: 'HdMovie2', name: 'HdMovie2' },
+  { id: 'multimovies', varName: 'MultiMovies', name: 'MultiMovies' },
+  { id: 'moviesmod', varName: 'MoviesMod', name: 'MoviesMod' },
 ];
 
 // Strips a provider file's trailing `module.exports = ...` statement (or,

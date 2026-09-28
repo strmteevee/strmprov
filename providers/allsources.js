@@ -4383,6 +4383,2819 @@ function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) 
   return { getStreams: getStreams };
 })();
 
+const FilmyfiySource = (function () {
+// Filmyfiy scraper.
+//
+// Ported from the CloudStream "StreamPlay" plugin's invokeFilmyfiy (decompiled
+// from com.phisher98.StreamPlayExtractor, StreamPlay.cs3 build), then
+// re-verified live end-to-end against the real site rather than trusted
+// as-is - the plugin's own scraping logic drifts from the live site over
+// time (confirmed twice already this session for two other sources in that
+// same plugin).
+//
+// Confirmed live (2026-09-28):
+//   current domain -> https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json
+//                      ["filmyfiy"] - the site itself rebranded away from the
+//                      "filmyfiy" name (its own <meta name="generator"> and
+//                      page titles now say "FilmyFly"), only the JSON key
+//                      still uses the old plugin name.
+//   search         -> the decompiled Kotlin's GET
+//                      "{domain}/site-1.html?to-search={query}" no longer
+//                      does a search at all - confirmed live it returns the
+//                      exact same fixed article regardless of the query
+//                      string. The site's real search (visible from its own
+//                      <form method="post"> on every page) is a plain DLE
+//                      (DataLife Engine) search: POST {domain}/index.php?do=search
+//                      with do=search&subaction=search&story={query}.
+//   search results -> one `div.A10` per hit (NOT the decompiled code's
+//                     `div.A2 > a:nth-child(2)` - that selector matches
+//                     nothing live, and a previous partial attempt's
+//                     from-scratch re-check of it was also stale, confirmed
+//                     by re-deriving the real markup here). Each `div.A10`
+//                     holds `a.row-thumb-link[href]` (the movie page link)
+//                     and a `.row-title` div with the full title text.
+//   movie page     -> `div.dlbtn a[href]` matches the decompiled code as-is:
+//                      one "go_link" redirector link (a Cloudflare 302 to a
+//                      linkmake.in "Link Protector" interstitial).
+//   go_link page   -> `div.dlink a[href]` also matches the decompiled code
+//                      as-is: one link per quality, each a
+//                      `filesdl.in/cloud/<id>` short link.
+//   filesdl link   -> redirects to a filesdl.top/.in "cloud" page offering
+//                      several parallel options. Two were confirmed live to
+//                      be immediately usable without any browser/JS step:
+//                        - "Direct Download (10Gbps)" (fffast.filesdl.in/
+//                          zdownload.php?...&token=...) - the token is baked
+//                          into the server-rendered HTML already (only the
+//                          page's OTHER "Cloud Direct" button gets a fresh
+//                          token injected by client-side JS - that one 403s
+//                          without it and is skipped here); this one 302s
+//                          straight to a video-downloads.googleusercontent.com
+//                          link. Confirmed live: a real 200 with
+//                          Content-Type: video/mkv and a Content-Length
+//                          matching the page's own stated file size.
+//                        - "Download - HubCloud" (hubcloud.*) - resolved via
+//                          this repo's shared lib/hubcloudExtract.js rather
+//                          than reimplementing that logic a third time.
+//                          Confirmed live: its FSL (r2.cloudflarestorage.com)
+//                          option answers a ranged GET with a real 206
+//                          (though, like other HubCloud FSL links elsewhere
+//                          in this repo, it 403s on a plain HEAD - the
+//                          signed URL only permits the method it was signed
+//                          for, which is why validation below falls back to
+//                          a ranged GET rather than trusting HEAD alone).
+//                      A "Login To Download - GDFLIX" option also appears
+//                      but requires an account, so it's skipped; likewise
+//                      GoFile.io, a Telegram bot link, and a "Buzz Download"
+//                      (fuckingfast.net) option are left unused to keep the
+//                      per-title request count bounded.
+//
+// Per the CloudStream plugin's own listing, this source is movies-only (its
+// invokeFilmyfiy only ever takes a plain title, no season/episode), so TV
+// requests short-circuit immediately below.
+
+const cheerio = require('cheerio');
+const { extractHubCloud } = require('../lib/hubcloudExtract');
+
+const TMDB_API_KEY = '439c478a771f35c05022f9feabcca01c';
+const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
+
+const DOMAINS_URL = 'https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json';
+const DEFAULT_DOMAIN = 'https://filmyhok.com';
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+let cachedDomain = null;
+let cachedDomainAt = 0;
+const DOMAIN_CACHE_TTL = 1000 * 60 * 30;
+
+function getDomain() {
+    if (cachedDomain && Date.now() - cachedDomainAt < DOMAIN_CACHE_TTL) return Promise.resolve(cachedDomain);
+    return fetch(DOMAINS_URL, { headers: { 'User-Agent': USER_AGENT } })
+        .then(res => res.json())
+        .then(data => {
+            const domain = ((data && data.filmyfiy) || DEFAULT_DOMAIN).replace(/\/+$/, '');
+            cachedDomain = domain;
+            cachedDomainAt = Date.now();
+            console.log(`[Filmyfiy] Using domain: ${domain}`);
+            return domain;
+        })
+        .catch(() => DEFAULT_DOMAIN);
+}
+
+function getTmdbInfo(tmdbId, mediaType) {
+    const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
+    const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
+    return fetch(url, { headers: { 'User-Agent': USER_AGENT } })
+        .then(res => res.json())
+        .then(data => {
+            const title = mediaType === 'tv' ? data.name : data.title;
+            const year = (mediaType === 'tv' ? data.first_air_date : data.release_date || '').substring(0, 4);
+            console.log(`[Filmyfiy] TMDB Info: "${title}" (${year})`);
+            return { title, year };
+        })
+        .catch(() => ({ title: null, year: '' }));
+}
+
+function normalize(str) {
+    return String(str || '').toLowerCase().replace(/&#8[0-9]{3};/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function search(domain, query) {
+    const body = new URLSearchParams({ do: 'search', subaction: 'search', story: query }).toString();
+    return fetch(`${domain}/index.php?do=search`, {
+        method: 'POST',
+        headers: {
+            'User-Agent': USER_AGENT,
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Referer': `${domain}/`
+        },
+        body
+    })
+        .then(res => (res.ok ? res.text() : ''))
+        .catch(() => '');
+}
+
+function parseSearchResults(html) {
+    const $ = cheerio.load(html);
+    const results = [];
+    $('div.A10').each((_, el) => {
+        const href = $(el).find('a.row-thumb-link').attr('href');
+        const title = $(el).find('.row-title').text().trim();
+        if (href && title) results.push({ href, title });
+    });
+    return results;
+}
+
+function findBestMatch(results, mediaInfo) {
+    const targetTitle = normalize(mediaInfo.title);
+    if (!targetTitle) return null;
+    if (mediaInfo.year) {
+        const withYear = results.find(r => normalize(r.title).startsWith(targetTitle) && r.title.includes(String(mediaInfo.year)));
+        if (withYear) return withYear;
+    }
+    return results.find(r => normalize(r.title).startsWith(targetTitle)) || null;
+}
+
+function extractQuality(str) {
+    const m = /(\d{3,4})[pP]/.exec(str || '');
+    if (m) {
+        const n = parseInt(m[1], 10);
+        if (n >= 2160) return '4K';
+        if (n >= 1080) return '1080p';
+        if (n >= 720) return '720p';
+        if (n >= 480) return '480p';
+        return `${n}p`;
+    }
+    if (/4K|UHD/i.test(str || '')) return '4K';
+    return 'Unknown';
+}
+
+function heightFromQuality(quality) {
+    if (quality === '4K') return 2160;
+    const m = /^(\d{3,4})p$/.exec(quality || '');
+    return m ? parseInt(m[1], 10) : 0;
+}
+
+function extractGoLinks(html, baseUrl) {
+    const $ = cheerio.load(html);
+    const hrefs = [];
+    $('div.dlbtn a[href]').each((_, el) => {
+        let href = $(el).attr('href');
+        if (!href) return;
+        if (!/^https?:\/\//i.test(href)) {
+            try { href = new URL(href, baseUrl).toString(); } catch (e) { return; }
+        }
+        hrefs.push(href);
+    });
+    return Array.from(new Set(hrefs));
+}
+
+function extractDlinks(html) {
+    const $ = cheerio.load(html);
+    const items = [];
+    $('div.dlink a[href]').each((_, el) => {
+        const href = $(el).attr('href');
+        const label = $(el).text().replace(/\s+/g, ' ').trim();
+        if (href) items.push({ url: href, label });
+    });
+    return items;
+}
+
+// Each MAX_DLINKS quality tier costs its own filesdl.top fetch plus (when it
+// has a HubCloud option) two more hops through extractHubCloud - capped the
+// same way hindmoviez.js caps its own quality groups, to keep total latency
+// for a single getStreams call bounded.
+const QUALITY_RANK = { '4K': 4, '1080p': 3, '720p': 2, '480p': 1, 'Unknown': 0 };
+const MAX_DLINKS = 3;
+
+function resolveFilesdlPage(dlink, fallbackTitle) {
+    return fetch(dlink.url, { headers: { 'User-Agent': USER_AGENT, Referer: dlink.url } })
+        .then(res => res.text())
+        .then(html => {
+            const $ = cheerio.load(html);
+            const pageTitle = $('.title').first().text().trim() || fallbackTitle;
+            const labelQuality = extractQuality(dlink.label);
+            const quality = labelQuality !== 'Unknown' ? labelQuality : extractQuality(pageTitle);
+            const height = heightFromQuality(quality);
+
+            let directHref = null;
+            $('a.button').each((_, el) => {
+                if (directHref) return;
+                if (/direct download/i.test($(el).text())) directHref = $(el).attr('href');
+            });
+
+            const streams = [];
+            if (directHref) {
+                streams.push({
+                    name: `Filmyfiy - Direct${quality !== 'Unknown' ? ` ${quality}` : ''}`,
+                    title: pageTitle,
+                    url: directHref,
+                    quality,
+                    headers: { 'User-Agent': USER_AGENT },
+                    subtitles: [],
+                    provider: 'filmyfiy'
+                });
+            }
+
+            let hubCloudHref = null;
+            $('a[href]').each((_, el) => {
+                if (hubCloudHref) return;
+                const href = $(el).attr('href') || '';
+                if (href.includes('hubcloud.')) hubCloudHref = href;
+            });
+
+            const hubCloudPromise = hubCloudHref
+                ? extractHubCloud(
+                    hubCloudHref,
+                    { title: pageTitle, height, bytes: 0 },
+                    { userAgent: USER_AGENT, log: msg => console.log(`[Filmyfiy] ${msg}`) }
+                ).then(results => results.map(r => ({
+                    name: `Filmyfiy - ${r.source}${height ? ` ${height}p` : ''}`,
+                    title: r.meta.title || pageTitle,
+                    url: r.url,
+                    quality,
+                    headers: { 'User-Agent': USER_AGENT },
+                    subtitles: [],
+                    provider: 'filmyfiy'
+                }))).catch(() => [])
+                : Promise.resolve([]);
+
+            return hubCloudPromise.then(hubStreams => streams.concat(hubStreams));
+        })
+        .catch(err => {
+            console.log(`[Filmyfiy] Failed to resolve ${dlink.url}: ${err.message}`);
+            return [];
+        });
+}
+
+// Direct file links get a cheap HEAD; a HubCloud FSL (r2.cloudflarestorage.com)
+// link is confirmed live to 403 on HEAD even though it 206s a ranged GET
+// (the pre-signed URL only permits the method it was signed for), so a
+// failed HEAD falls back to a ranged GET rather than being trusted as dead -
+// same approach as providers/cinejoy.js and providers/peachify.js.
+function isM3u8Url(url) {
+    return /\.m3u8(\?|$)/i.test(url);
+}
+
+function rangedValidateUrl(url, headers) {
+    const rangedHeaders = Object.assign({}, headers, { Range: 'bytes=0-2048' });
+    return fetch(url, { method: 'GET', headers: rangedHeaders })
+        .then(res => res.ok || res.status === 206)
+        .catch(() => false);
+}
+
+function validateStreamUrl(stream) {
+    if (isM3u8Url(stream.url)) {
+        return fetch(stream.url, { headers: stream.headers })
+            .then(res => {
+                if (!res.ok) return false;
+                return res.text().then(text => /^#EXTM3U/.test(text.trim()));
+            })
+            .catch(() => false);
+    }
+    return fetch(stream.url, { method: 'HEAD', headers: stream.headers })
+        .then(res => (res.ok || res.status === 206 ? true : rangedValidateUrl(stream.url, stream.headers)))
+        .catch(() => rangedValidateUrl(stream.url, stream.headers));
+}
+
+function getStreams(tmdbId, mediaType, season, episode) {
+    console.log(`[Filmyfiy] getStreams start tmdbId=${tmdbId} type=${mediaType}`);
+
+    if (mediaType === 'tv') {
+        console.log('[Filmyfiy] Movies only, skipping TV');
+        return Promise.resolve([]);
+    }
+
+    return Promise.all([getDomain(), getTmdbInfo(tmdbId, mediaType)])
+        .then(([domain, mediaInfo]) => {
+            if (!mediaInfo.title) return [];
+            return search(domain, mediaInfo.title).then(html => {
+                if (!html) return [];
+                const results = parseSearchResults(html);
+                const match = findBestMatch(results, mediaInfo);
+                if (!match) {
+                    console.log(`[Filmyfiy] No matching title found for "${mediaInfo.title}"`);
+                    return [];
+                }
+                console.log(`[Filmyfiy] Matched: "${match.title}"`);
+
+                return fetch(match.href, { headers: { 'User-Agent': USER_AGENT } })
+                    .then(res => res.text())
+                    .then(movieHtml => {
+                        const goLinks = extractGoLinks(movieHtml, domain);
+                        if (!goLinks.length) {
+                            console.log('[Filmyfiy] No download button found on movie page');
+                            return [];
+                        }
+                        return Promise.all(goLinks.map(goLink =>
+                            fetch(goLink, { headers: { 'User-Agent': USER_AGENT, Referer: match.href } })
+                                .then(res => res.text())
+                                .then(extractDlinks)
+                                .catch(() => [])
+                        )).then(perLink => {
+                            let dlinks = perLink.flat().filter(d => d.url);
+                            const seen = new Set();
+                            dlinks = dlinks.filter(d => {
+                                if (seen.has(d.url)) return false;
+                                seen.add(d.url);
+                                return true;
+                            });
+                            dlinks.sort((a, b) => (QUALITY_RANK[extractQuality(b.label)] || 0) - (QUALITY_RANK[extractQuality(a.label)] || 0));
+                            dlinks = dlinks.slice(0, MAX_DLINKS);
+                            console.log(`[Filmyfiy] Resolving ${dlinks.length} quality link(s)`);
+                            return Promise.all(dlinks.map(d => resolveFilesdlPage(d, match.title))).then(r => r.flat());
+                        });
+                    });
+            });
+        })
+        .then(streams => {
+            console.log(`[Filmyfiy] Found ${streams.length} candidate stream(s), validating...`);
+            return Promise.all(streams.map(s => validateStreamUrl(s).then(ok => ({ stream: s, ok })))).then(validated => {
+                const valid = validated.filter(v => v.ok).map(v => v.stream);
+                const dead = validated.filter(v => !v.ok).map(v => v.stream.name);
+                if (dead.length) console.log(`[Filmyfiy] Dropping unreachable: ${dead.join(', ')}`);
+                console.log(`[Filmyfiy] ${valid.length}/${streams.length} stream(s) validated OK`);
+                return valid;
+            });
+        })
+        .catch(err => {
+            console.log(`[Filmyfiy] getStreams failed: ${err.message}`);
+            return [];
+        });
+}
+  return { getStreams: getStreams };
+})();
+
+const MoviesDriveSource = (function () {
+// MoviesDrive scraper - ported from the decompiled CloudStream "StreamPlay"
+// plugin (com.phisher98.StreamPlayExtractor#invokeMoviesdrive, decompiled
+// this session from the StreamPlay.cs3 build), then verified live end-to-end
+// against the real site (2026-09-28) rather than trusted blindly - the
+// decompiled Kotlin is a coroutine-state-machine mess that jadx could only
+// partially decompile (the per-item resolver lambdas needed the register-
+// level fallback decompile to read at all), and this plugin's other sources
+// have already been confirmed to drift from reality twice this session.
+//
+//   current domain -> https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json ["moviesdrive"]
+//   search         -> GET {domain}/search.php?q={query}&page=1  (Typesense-style
+//                     JSON, same shape as vegamovies.js's search.php - each hit's
+//                     "document" has imdb_id/post_title/permalink)
+//   movie page     -> one "h5 > a" link per quality, each pointing to an
+//                     mdrive.lol "archive" intermediate page - confirmed live
+//                     (Inception, tmdb 27205) that page embeds exactly one
+//                     hubcloud.ist/drive/<id> link
+//   series page    -> one "Season N [...]" h5 per (season, quality) with NO
+//                     link of its own - the link lives on the immediately
+//                     following h5 ("{q}p Single Episode"), confirmed live
+//                     (Breaking Bad) to point at a SECOND mdrive.lol page
+//                     listing "EpNN– {q}p [size]" headers, each followed by
+//                     a "HubCloud" h5 whose <a> is the final hubcloud.ist link
+//   hubcloud.ist   -> resolved via the shared lib/hubcloudExtract.js helper
+//                     (already used by 4khdhub.js/hindmoviez.js) rather than
+//                     reimplementing that extraction - confirmed live it hands
+//                     back a real googleusercontent.com direct link (200,
+//                     video/mkv) and, sometimes, a PixelServer link that was
+//                     confirmed live to already be dead (404) for this same
+//                     title - exactly the kind of stale link this file's own
+//                     validateStreamUrl step is meant to filter out.
+//
+// Only hubcloud.ist links were seen live across every quality tried (movie:
+// 480p/1080p/4K; series: S1E5). The decompiled extractMdrive() also matches
+// gdflix/gdlink hosts, but neither was observed live and no gdflix handling
+// exists elsewhere in this repo to model - if a future title routes through
+// one, resolveTargetToStreams below logs and skips it rather than guessing.
+
+const cheerio = require('cheerio');
+const { extractHubCloud, formatBytes } = require('../lib/hubcloudExtract');
+
+const TMDB_API_KEY = '439c478a771f35c05022f9feabcca01c';
+const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
+
+const DOMAINS_URL = 'https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json';
+const DEFAULT_DOMAIN = 'https://new4.moviesdrive.christmas';
+
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const HEADERS = { 'User-Agent': USER_AGENT };
+
+let cachedDomain = null;
+let cachedDomainAt = 0;
+const DOMAIN_CACHE_TTL = 1000 * 60 * 30;
+
+function getDomain() {
+  if (cachedDomain && Date.now() - cachedDomainAt < DOMAIN_CACHE_TTL) return Promise.resolve(cachedDomain);
+  return fetch(DOMAINS_URL, { headers: HEADERS })
+    .then(res => res.json())
+    .then(data => {
+      const domain = ((data && data.moviesdrive) || DEFAULT_DOMAIN).replace(/\/+$/, '');
+      cachedDomain = domain;
+      cachedDomainAt = Date.now();
+      console.log(`[MoviesDrive] Using domain: ${domain}`);
+      return domain;
+    })
+    .catch(() => DEFAULT_DOMAIN);
+}
+
+function getTmdbInfo(tmdbId, mediaType) {
+  const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
+  const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}&append_to_response=external_ids`;
+  return fetch(url, { headers: HEADERS })
+    .then(res => res.json())
+    .then(data => {
+      const title = mediaType === 'tv' ? data.name : data.title;
+      const year = (mediaType === 'tv' ? data.first_air_date : data.release_date || '').substring(0, 4);
+      const imdbId = data.imdb_id || (data.external_ids && data.external_ids.imdb_id) || null;
+      console.log(`[MoviesDrive] TMDB Info: "${title}" (${year}) imdb=${imdbId || 'none'}`);
+      return { title, year, imdbId };
+    })
+    .catch(() => ({ title: null, year: '', imdbId: null }));
+}
+
+function normalize(str) {
+  return String(str || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+// Same matching strategy as vegamovies.js (same underlying site template -
+// the search.php document schema is identical field-for-field): prefer an
+// exact imdb_id hit, else score by title word-overlap with a year bonus, and
+// require a year that doesn't outright conflict with a post's own stated year.
+function findBestMatch(hits, mediaInfo) {
+  if (!hits || !hits.length) return null;
+  if (mediaInfo.imdbId) {
+    const exact = hits.find(h => h.document && h.document.imdb_id === mediaInfo.imdbId);
+    if (exact) return exact.document;
+  }
+  const targetWords = new Set(normalize(mediaInfo.title).split(' ').filter(Boolean));
+  let best = null;
+  let bestScore = -1;
+  for (const hit of hits) {
+    const doc = hit.document;
+    if (!doc || !doc.post_title) continue;
+    const postYearMatch = doc.post_title.match(/\b(19|20)\d{2}\b/);
+    if (mediaInfo.year && postYearMatch && Math.abs(parseInt(postYearMatch[0], 10) - parseInt(mediaInfo.year, 10)) > 1) {
+      continue;
+    }
+    const titleWords = normalize(doc.post_title).split(' ').filter(Boolean);
+    const overlap = titleWords.filter(w => targetWords.has(w)).length;
+    let score = targetWords.size ? overlap / targetWords.size : 0;
+    if (mediaInfo.year && doc.post_title.includes(mediaInfo.year)) score += 0.5;
+    if (score > bestScore) {
+      bestScore = score;
+      best = doc;
+    }
+  }
+  return bestScore >= 0.5 ? best : null;
+}
+
+function search(domain, query) {
+  const url = `${domain}/search.php?q=${encodeURIComponent(query)}&page=1`;
+  return fetch(url, { headers: Object.assign({}, HEADERS, { Referer: domain + '/' }) })
+    .then(res => (res.ok ? res.json() : null))
+    .then(data => (data && Array.isArray(data.hits) ? data.hits : []))
+    .catch(() => []);
+}
+
+function extractQuality(str) {
+  const m = /(\d{3,4})\s*[pP]/.exec(str || '');
+  if (m) {
+    const n = parseInt(m[1], 10);
+    if (n >= 2160) return '4K';
+    if (n >= 1080) return '1080p';
+    if (n >= 720) return '720p';
+    if (n >= 480) return '480p';
+    return `${n}p`;
+  }
+  if (/4K|UHD/i.test(str || '')) return '4K';
+  return 'Unknown';
+}
+
+// One h5>a per quality on a movie page - confirmed live the anchor's own
+// enclosing h5 carries the quality/size label directly (e.g. "1080p 10bit
+// HEVC [2.3GB]"), each pointing to an mdrive.lol intermediate page.
+function extractMovieQualityLinks($) {
+  const groups = [];
+  $('h5 > a').each((_, el) => {
+    const href = $(el).attr('href');
+    if (!href) return;
+    const label = $(el).closest('h5').text().trim();
+    groups.push({ label, mdriveHref: href });
+  });
+  return groups;
+}
+
+// A series page has one "Season N [...]" h5 per (season, quality) group with
+// no link of its own - confirmed live the link lives on the immediately
+// following h5 ("{q}p Single Episode"). Headers for other seasons/qualities
+// are skipped by the season-number match; "Single Episode"/"Zip" sub-headers
+// never themselves match the season pattern so they're naturally excluded.
+function extractSeasonQualityGroups($, season) {
+  const seasonPatterns = [
+    new RegExp('season\\s*' + season + '\\b', 'i'),
+    new RegExp('\\bs0?' + season + '\\b', 'i')
+  ];
+  const groups = [];
+  $('h5').each((_, el) => {
+    const text = $(el).text().trim();
+    if (!text || /single episode|zip/i.test(text)) return;
+    if (!seasonPatterns.some(re => re.test(text))) return;
+    let href = $(el).find('a').first().attr('href');
+    if (!href) {
+      const next = $(el).next();
+      if (next.length) href = next.find('a').first().attr('href');
+    }
+    if (href) groups.push({ label: text, epListHref: href });
+  });
+  return groups;
+}
+
+// The "{q}p Single Episode" link leads to a second mdrive.lol page listing
+// one "EpNN– {q}p [size]" heading per episode, each immediately followed by
+// a "HubCloud" heading holding the final link - confirmed live (Breaking Bad
+// S1E5) this exact regex/walk finds precisely the one hubcloud.ist href that
+// belongs to the requested episode, stopping before the next episode heading.
+function resolveEpisodeMdriveLinks(epListHref, season, episode) {
+  return fetch(epListHref, { headers: HEADERS })
+    .then(res => res.text())
+    .then(html => {
+      const $ = cheerio.load(html);
+      const sepRegex = new RegExp(
+        '\\b(?:ep|episode|e)\\s*0?' + episode + '\\b|s0?' + season + '\\s*e0?' + episode + '\\b',
+        'i'
+      );
+      const nextEpRegex = /^\s*(EP\s*\d+|Episode\s*\d+|S\d+E\d+)/i;
+      const headings = $('h5, h4, h3, p').toArray();
+      let matchIdx = -1;
+      for (let i = 0; i < headings.length; i++) {
+        if (sepRegex.test($(headings[i]).text())) { matchIdx = i; break; }
+      }
+      if (matchIdx === -1) return [];
+      const links = [];
+      let sib = $(headings[matchIdx]).next();
+      while (sib.length && !nextEpRegex.test(sib.text().trim())) {
+        sib.find('a[href]').each((_, a) => {
+          const href = $(a).attr('href');
+          if (href) links.push(href);
+        });
+        sib = sib.next();
+      }
+      return links;
+    })
+    .catch(() => []);
+}
+
+function isFinalHostUrl(url) {
+  return /hubcloud\.|gdflix\.|gdlink\.|hubdrive\./i.test(url);
+}
+
+// Mirrors the decompiled extractMdrive()'s core behavior: an mdrive.lol page
+// embeds one (occasionally more) hubcloud/gdflix/gdlink link - scan its
+// anchors for one. If the url handed in is already one of those hosts (as
+// happens directly on the episode-list page), skip the extra fetch.
+function resolveMdriveTargets(url) {
+  if (!url) return Promise.resolve([]);
+  if (isFinalHostUrl(url)) return Promise.resolve([url]);
+  return fetch(url, { headers: HEADERS })
+    .then(res => res.text())
+    .then(html => {
+      const $ = cheerio.load(html);
+      const targets = [];
+      $('a[href]').each((_, el) => {
+        const href = $(el).attr('href');
+        if (href && isFinalHostUrl(href) && targets.indexOf(href) === -1) targets.push(href);
+      });
+      return targets;
+    })
+    .catch(() => []);
+}
+
+// hubcloud.* is the only final host confirmed live this session - see the
+// file header. Anything else (gdflix/gdlink/hubdrive) is logged and skipped
+// rather than guessed at with unverified extraction logic.
+function resolveTargetToStreams(target, meta) {
+  if (/hubcloud\./i.test(target)) {
+    return extractHubCloud(target, { title: meta.title, bytes: 0 }, { userAgent: USER_AGENT, log: console.log })
+      .then(results => results.map(r => ({
+        name: `MoviesDrive [${r.source}]`,
+        title: `${r.meta.title || meta.title}\n${formatBytes(r.meta.bytes || 0)}`,
+        url: r.url,
+        quality: meta.quality,
+        headers: HEADERS,
+        provider: 'moviesdrive'
+      })));
+  }
+  console.log(`[MoviesDrive] Unsupported final-link host, skipping: ${target}`);
+  return Promise.resolve([]);
+}
+
+function dedupe(list) {
+  const seen = new Set();
+  return list.filter(item => {
+    if (seen.has(item)) return false;
+    seen.add(item);
+    return true;
+  });
+}
+
+function getMovieStreams($, label) {
+  const groups = extractMovieQualityLinks($);
+  if (!groups.length) {
+    console.log('[MoviesDrive] No quality links found on movie page');
+    return Promise.resolve([]);
+  }
+  const seen = new Set();
+  return Promise.all(groups.map(g =>
+    resolveMdriveTargets(g.mdriveHref).then(targets => {
+      const fresh = targets.filter(t => { if (seen.has(t)) return false; seen.add(t); return true; });
+      return Promise.all(fresh.map(t => resolveTargetToStreams(t, { title: label, quality: extractQuality(g.label) })));
+    })
+  )).then(nested => nested.flat(2));
+}
+
+function getTvStreams($, season, episode, label) {
+  const groups = extractSeasonQualityGroups($, season);
+  if (!groups.length) {
+    console.log(`[MoviesDrive] No quality groups found for season ${season}`);
+    return Promise.resolve([]);
+  }
+  const seen = new Set();
+  const episodeLabel = `${label} S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
+  return Promise.all(groups.map(g =>
+    resolveEpisodeMdriveLinks(g.epListHref, season, episode)
+      .then(rawLinks => Promise.all(dedupe(rawLinks).map(l => resolveMdriveTargets(l))).then(nested => nested.flat()))
+      .then(targets => {
+        const fresh = targets.filter(t => { if (seen.has(t)) return false; seen.add(t); return true; });
+        return Promise.all(fresh.map(t => resolveTargetToStreams(t, { title: episodeLabel, quality: extractQuality(g.label) })));
+      })
+  )).then(nested => nested.flat(2));
+}
+
+function isM3u8Url(url) {
+  return /\.m3u8(\?|$)/i.test(url);
+}
+
+// Confirmed live that a HubCloud "PixelServer" link can be stale (404 on
+// both HEAD and a ranged GET) even when the sibling "10Gbps"
+// googleusercontent link from the very same page is a real, playable 200 -
+// HTTP status from the resolver alone isn't reliable, so every stream this
+// provider returns is independently probed here before being handed back.
+function validateStreamUrl(stream) {
+  if (isM3u8Url(stream.url)) {
+    return fetch(stream.url, { headers: stream.headers })
+      .then(res => (res.ok ? res.text().then(text => /^#EXTM3U/.test(text.trim())) : false))
+      .catch(() => false);
+  }
+  return fetch(stream.url, { method: 'HEAD', headers: stream.headers })
+    .then(res => res.ok || res.status === 206)
+    .catch(() => fetch(stream.url, { method: 'GET', headers: Object.assign({}, stream.headers, { Range: 'bytes=0-2048' }) })
+      .then(res => res.ok || res.status === 206)
+      .catch(() => false));
+}
+
+function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) {
+  console.log(`[MoviesDrive] getStreams start tmdbId=${tmdbId} type=${mediaType} S=${season || ''} E=${episode || ''}`);
+
+  if (mediaType === 'tv' && (!season || !episode)) {
+    console.log('[MoviesDrive] Missing season/episode for TV lookup');
+    return Promise.resolve([]);
+  }
+
+  return Promise.all([getDomain(), getTmdbInfo(tmdbId, mediaType)]).then(([domain, mediaInfo]) => {
+    if (!mediaInfo.title) return [];
+    const label = `${mediaInfo.title}${mediaInfo.year ? ' (' + mediaInfo.year + ')' : ''}`;
+
+    return search(domain, mediaInfo.title).then(hits => {
+      const match = findBestMatch(hits, mediaInfo);
+      if (!match) {
+        console.log('[MoviesDrive] No matching title found');
+        return [];
+      }
+      console.log(`[MoviesDrive] Matched: "${match.post_title}"`);
+      const pageUrl = match.permalink && match.permalink.startsWith('http')
+        ? match.permalink
+        : new URL(match.permalink, domain).toString();
+
+      return fetch(pageUrl, { headers: HEADERS })
+        .then(res => res.text())
+        .then(html => {
+          const $ = cheerio.load(html);
+          return mediaType === 'tv'
+            ? getTvStreams($, season, episode, label)
+            : getMovieStreams($, label);
+        });
+    });
+  })
+    .then(streams => {
+      console.log(`[MoviesDrive] Found ${streams.length} candidate stream(s), validating...`);
+      return Promise.all(streams.map(s => validateStreamUrl(s).then(ok => ({ stream: s, ok })))).then(validated => {
+        const valid = validated.filter(v => v.ok).map(v => v.stream);
+        const dead = validated.filter(v => !v.ok).map(v => `${v.stream.name} ${v.stream.quality}`);
+        if (dead.length) console.log(`[MoviesDrive] Dropping unreachable: ${dead.join(', ')}`);
+        console.log(`[MoviesDrive] ${valid.length}/${streams.length} stream(s) validated OK`);
+        return valid;
+      });
+    })
+    .catch(err => {
+      console.log(`[MoviesDrive] getStreams failed: ${err.message}`);
+      return [];
+    });
+}
+  return { getStreams: getStreams };
+})();
+
+const RogMoviesSource = (function () {
+// RogMovies scraper.
+//
+//   current domain -> https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json
+//                     ["rogmovies"] - confirmed live (2026-09-28) that even
+//                     this always-rotating value is already stale by the
+//                     time it's read: new2.rogmovies.click answers with a
+//                     Cloudflare 301 chain (new2.rogmovies.click ->
+//                     n1.rogmovies.best -> rogmovies.best). fetch() follows
+//                     redirects by default, so requests built from the
+//                     domains.json value still land correctly - but the
+//                     final resolved origin (from response.url) is cached
+//                     instead of the pre-redirect one, so later requests
+//                     skip paying for two redirect hops every time.
+//   search         -> GET {domain}/search.php?q={query} - a Typesense-style
+//                     JSON index (facet_counts/hits/found) whose per-hit
+//                     "document" shape (id, imdb_id, permalink, post_title,
+//                     post_thumbnail) is identical to VegaMovies's own
+//                     search.php - confirmed live these two sites share the
+//                     same backend (a resolved RogMovies download even
+//                     carried a "-Vegamovies.to.mkv" filename suffix).
+//                     Confirmed live the index is typo-tolerant enough to
+//                     return unrelated hits for a query with no real match
+//                     (searching "Inception" fuzzy-matched "...The
+//                     Deception..." titles, zero actual hits) - matching on
+//                     imdb_id/word-overlap below is required, not optional.
+//   movie page     -> one nexdrive.fit hub link per quality: an h5 heading
+//                     carrying the quality text (e.g. "... 1080p 10Bit
+//                     WEB-DL x265 [2GB]"), immediately followed by a
+//                     `<p><a href="hub"><button class="dwd-button">Download
+//                     Now</button></a></p>` - confirmed live via direct HTML
+//                     inspection, matching the decompiled StreamPlay
+//                     extension's `button.dwd-button` selector.
+//   series page    -> one nexdrive.fit hub link per (season, quality) pair:
+//                     an h3 heading like "Season 2 (Episode 1 - 3 Added)
+//                     {HiNDi-Series} 720p WEB-DL x264 [1GB/E]" followed by a
+//                     "G-Direct [Instant]" button in the same <p>. That hub
+//                     page lists every episode for that (season, quality),
+//                     each under its own "-:Episode: N:-" h4 heading with
+//                     its own G-Direct link right after - so an episode is
+//                     found by matching heading text, not by position in a
+//                     list (confirmed live: RogMovies's own headings don't
+//                     guarantee episode 1 is listed first-and-only-once the
+//                     way VegaMovies's flat "Episode Links" list does).
+//   nexdrive.fit   -> "G-Direct [Instant]" is a fastdl.zip/embed(.php) link
+//                     containing a plain `var reurl = "https://fastdl.zip/dl.php?link=<real
+//                     googleusercontent.com URL>"` in static HTML - the
+//                     exact same mechanism vegamovies.js already documented
+//                     for its own G-Direct handling, no JS execution needed.
+//                     "V-Cloud" (vcloud.fit) is confirmed live behind a real
+//                     Cloudflare managed challenge (plain HTTP request gets
+//                     a 403 "Just a moment..." page), and "Filepress"
+//                     (filebee.xyz, which itself 301s to a rt.filepress.baby
+//                     mirror) failed to even establish a connection in
+//                     testing - both skipped, matching vegamovies.js's own
+//                     documented reasoning for the same two resolvers.
+
+const cheerio = require('cheerio');
+
+const TMDB_API_KEY = '439c478a771f35c05022f9feabcca01c';
+const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
+
+const DOMAINS_URL = 'https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json';
+const DEFAULT_DOMAIN = 'https://new2.rogmovies.click';
+
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const HEADERS = { 'User-Agent': USER_AGENT };
+
+let cachedDomain = null;
+let cachedDomainAt = 0;
+const DOMAIN_CACHE_TTL = 1000 * 60 * 30;
+
+// Reads domains.json, then follows that value's own redirect chain once
+// (confirmed live: two Cloudflare 301 hops as of 2026-09-28) so every
+// subsequent request in this run starts from the actually-final origin
+// instead of paying for the same two redirects every time.
+function getDomain() {
+  if (cachedDomain && Date.now() - cachedDomainAt < DOMAIN_CACHE_TTL) return Promise.resolve(cachedDomain);
+  return fetch(DOMAINS_URL, { headers: HEADERS })
+    .then(res => res.json())
+    .then(data => ((data && data.rogmovies) || DEFAULT_DOMAIN).replace(/\/+$/, ''))
+    .catch(() => DEFAULT_DOMAIN)
+    .then(domain => fetch(domain + '/', { headers: HEADERS })
+      .then(res => {
+        const resolved = (res.url || domain).replace(/\/+$/, '');
+        cachedDomain = resolved;
+        cachedDomainAt = Date.now();
+        console.log(`[RogMovies] Using domain: ${resolved}`);
+        return resolved;
+      })
+      .catch(() => {
+        cachedDomain = domain;
+        cachedDomainAt = Date.now();
+        return domain;
+      }));
+}
+
+function getTmdbInfo(tmdbId, mediaType) {
+  const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
+  const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}&append_to_response=external_ids`;
+  return fetch(url, { headers: HEADERS })
+    .then(res => res.json())
+    .then(data => {
+      const title = mediaType === 'tv' ? data.name : data.title;
+      const year = (mediaType === 'tv' ? data.first_air_date : data.release_date || '').substring(0, 4);
+      const imdbId = data.imdb_id || (data.external_ids && data.external_ids.imdb_id) || null;
+      console.log(`[RogMovies] TMDB Info: "${title}" (${year}) imdb=${imdbId || 'none'}`);
+      return { title, year, imdbId };
+    })
+    .catch(() => ({ title: '', year: '', imdbId: null }));
+}
+
+function normalize(str) {
+  return String(str || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function search(domain, query) {
+  return fetch(`${domain}/search.php?q=${encodeURIComponent(query)}`, { headers: HEADERS })
+    .then(res => res.ok ? res.json() : null)
+    .then(data => (data && Array.isArray(data.hits)) ? data.hits.map(h => h.document).filter(Boolean) : [])
+    .catch(() => []);
+}
+
+// Same two-tier strategy vegamovies.js uses against this same search index
+// shape: an exact imdb_id hit is unambiguous, otherwise fall back to
+// word-overlap scoring with a hard reject on a conflicting release year (a
+// same-named unrelated title otherwise wins purely on word overlap for
+// short common titles).
+function findBestMatch(docs, mediaInfo) {
+  if (!docs.length) return null;
+  if (mediaInfo.imdbId) {
+    const exact = docs.find(d => d.imdb_id && d.imdb_id === mediaInfo.imdbId);
+    if (exact) return exact;
+  }
+  const targetWords = new Set(normalize(mediaInfo.title).split(' ').filter(Boolean));
+  let best = null;
+  let bestScore = -1;
+  for (const doc of docs) {
+    if (!doc.post_title) continue;
+    const postYearMatch = doc.post_title.match(/\b(19|20)\d{2}\b/);
+    if (mediaInfo.year && postYearMatch && Math.abs(parseInt(postYearMatch[0], 10) - parseInt(mediaInfo.year, 10)) > 1) {
+      continue;
+    }
+    const titleWords = normalize(doc.post_title).split(' ').filter(Boolean);
+    const overlap = titleWords.filter(w => targetWords.has(w)).length;
+    let score = targetWords.size ? overlap / targetWords.size : 0;
+    if (mediaInfo.year && doc.post_title.includes(mediaInfo.year)) score += 0.5;
+    if (score > bestScore) {
+      bestScore = score;
+      best = doc;
+    }
+  }
+  return bestScore >= 0.5 ? best : null;
+}
+
+function getIndexQuality(str) {
+  if (!str) return 'Unknown';
+  const m = String(str).match(/(\d{3,4})\s*[pP]/);
+  if (m) {
+    const n = parseInt(m[1], 10);
+    return n >= 2160 ? '4K' : `${n}p`;
+  }
+  const lower = str.toLowerCase();
+  if (lower.includes('4k') || lower.includes('uhd')) return '4K';
+  return 'Unknown';
+}
+
+function getSizeLabel(str) {
+  const m = String(str || '').match(/([\d.]+\s*(?:GB|MB|TB))/i);
+  return m ? m[1].replace(/\s+/g, '') : null;
+}
+
+function findLinkByText($, root, pattern) {
+  let href = null;
+  root.find('a').each((i, el) => {
+    if (href) return;
+    if (pattern.test($(el).text())) href = $(el).attr('href');
+  });
+  return href;
+}
+
+// The G-Direct embed page (either /embed?download= on a movie hub or
+// /embed.php?download= on an episode hub - confirmed live both resolve the
+// same way) is a plain "redirecting..." shell containing
+// `var reurl = "https://fastdl.zip/dl.php?link=<real file URL>"` in static
+// HTML - no JS execution needed.
+function extractGDirectFinalUrl(embedUrl) {
+  return fetch(embedUrl, { headers: HEADERS })
+    .then(res => res.text())
+    .then(html => {
+      const m = html.match(/var\s+reurl\s*=\s*"([^"]+)"/);
+      if (!m) return null;
+      const linkMatch = m[1].match(/[?&]link=(.+)$/);
+      return linkMatch ? linkMatch[1] : m[1];
+    })
+    .catch(() => null);
+}
+
+// A movie's download hub (reached via its "Download Now" / dwd-button link)
+// offers several resolvers - only G-Direct is usable here (see file header).
+function resolveHubToUrl(hubUrl) {
+  return fetch(hubUrl, { headers: HEADERS })
+    .then(res => res.text())
+    .then(html => {
+      const $ = cheerio.load(html);
+      const gdirect = findLinkByText($, $.root(), /G-Direct/i);
+      if (!gdirect) return null;
+      return extractGDirectFinalUrl(gdirect);
+    })
+    .catch(() => null);
+}
+
+function extractMovieTargets($) {
+  const targets = [];
+  $('h3, h4, h5').each((i, el) => {
+    const text = $(el).text().trim();
+    if (!/\d{3,4}\s*[pP]|4K/i.test(text)) return;
+    const hubUrl = $(el).next().find('button.dwd-button').parent('a').attr('href')
+      || findLinkByText($, $(el).next(), /.+/);
+    if (hubUrl) targets.push({ qualityText: text, hubUrl });
+  });
+  return targets;
+}
+
+function extractSeriesTargets($, season) {
+  const targets = [];
+  $('h3, h4, h5').each((i, el) => {
+    const text = $(el).text().trim();
+    const seasonMatch = text.match(/Season\s*(\d+)/i);
+    if (!seasonMatch || parseInt(seasonMatch[1], 10) !== season) return;
+    if (!/\d{3,4}\s*[pP]|4K/i.test(text)) return;
+    const hubUrl = findLinkByText($, $(el).next(), /G-Direct/i);
+    if (hubUrl) targets.push({ qualityText: text, hubUrl });
+  });
+  return targets;
+}
+
+// The episode-list hub gives one "-:Episode: N:-" heading per episode, each
+// immediately followed by its own G-Direct link - matched by heading text
+// rather than position, since a season pack can be added to incrementally
+// (e.g. "Episode 1 - 3 Added") and there's no guarantee episode order in the
+// markup lines up with a plain index.
+function extractEpisodeHubUrl($, episode) {
+  const episodeRegex = new RegExp(`Episode:?\\s*${episode}\\b`, 'i');
+  let hubUrl = null;
+  $('h3, h4, h5').each((i, el) => {
+    if (hubUrl) return;
+    if (!episodeRegex.test($(el).text())) return;
+    hubUrl = findLinkByText($, $(el).next(), /G-Direct/i);
+  });
+  return hubUrl;
+}
+
+function buildStream(url, qualityText, label) {
+  return {
+    name: 'RogMovies',
+    title: `${label}\n${qualityText.replace(/\s+/g, ' ').trim()}`,
+    url,
+    quality: getIndexQuality(qualityText),
+    size: getSizeLabel(qualityText),
+    headers: HEADERS,
+    provider: 'rogmovies'
+  };
+}
+
+// Status alone isn't reliable (a dead resolver can still answer 200 with an
+// error page instead of the file) - an .m3u8 link is GET-checked for a real
+// playlist body, matching cinejoy.js/peachify.js; a direct file link only
+// gets a cheap HEAD (falling back to a tiny ranged GET for hosts that
+// reject HEAD), matching vegamovies.js.
+function isM3u8Url(url) {
+  return /\.m3u8(\?|$)/i.test(url);
+}
+
+function validateStreamUrl(stream) {
+  if (isM3u8Url(stream.url)) {
+    return fetch(stream.url, { headers: stream.headers })
+      .then(res => (res.ok ? res.text().then(text => /^#EXTM3U/.test(text.trim())) : false))
+      .catch(() => false);
+  }
+  return fetch(stream.url, { method: 'HEAD', headers: stream.headers })
+    .then(res => res.ok || res.status === 206)
+    .catch(() => fetch(stream.url, { method: 'GET', headers: Object.assign({}, stream.headers, { Range: 'bytes=0-2048' }) })
+      .then(res => res.ok || res.status === 206)
+      .catch(() => false));
+}
+
+function getMoviePageStreams($, label) {
+  const targets = extractMovieTargets($);
+  return Promise.all(targets.map(t =>
+    resolveHubToUrl(t.hubUrl).then(url => url ? buildStream(url, t.qualityText, label) : null)
+  )).then(streams => streams.filter(Boolean));
+}
+
+function getSeriesPageStreams($, season, episode, label) {
+  const targets = extractSeriesTargets($, season);
+  return Promise.all(targets.map(t =>
+    fetch(t.hubUrl, { headers: HEADERS })
+      .then(res => res.text())
+      .then(html => {
+        const $$ = cheerio.load(html);
+        const episodeGDirect = extractEpisodeHubUrl($$, episode);
+        if (!episodeGDirect) return null;
+        return extractGDirectFinalUrl(episodeGDirect).then(url => url ? buildStream(url, t.qualityText, `${label} S${season}E${episode}`) : null);
+      })
+      .catch(() => null)
+  )).then(streams => streams.filter(Boolean));
+}
+
+function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) {
+  console.log(`[RogMovies] getStreams start tmdbId=${tmdbId} type=${mediaType} S=${season || ''} E=${episode || ''}`);
+
+  if (mediaType === 'tv' && (!season || !episode)) {
+    console.log('[RogMovies] Missing season/episode for TV lookup');
+    return Promise.resolve([]);
+  }
+
+  return Promise.all([getDomain(), getTmdbInfo(tmdbId, mediaType)]).then(([domain, mediaInfo]) => {
+    if (!mediaInfo.title) return [];
+    const label = `${mediaInfo.title}${mediaInfo.year ? ' (' + mediaInfo.year + ')' : ''}`;
+
+    return search(domain, mediaInfo.title).then(docs => {
+      const match = findBestMatch(docs, mediaInfo);
+      if (!match || !match.permalink) {
+        console.log(`[RogMovies] No matching title found for "${mediaInfo.title}"`);
+        return [];
+      }
+      console.log(`[RogMovies] Matched: "${match.post_title}"`);
+      const pageUrl = new URL(match.permalink, domain).toString();
+
+      return fetch(pageUrl, { headers: HEADERS })
+        .then(res => res.text())
+        .then(html => {
+          const $ = cheerio.load(html);
+          return mediaType === 'tv'
+            ? getSeriesPageStreams($, season, episode, label)
+            : getMoviePageStreams($, label);
+        });
+    }).then(streams => {
+      if (!streams.length) return streams;
+      console.log(`[RogMovies] Found ${streams.length} stream(s), validating...`);
+      return Promise.all(streams.map(s => validateStreamUrl(s).then(ok => ({ stream: s, ok })))).then(validated => {
+        const valid = validated.filter(v => v.ok).map(v => v.stream);
+        const dead = validated.filter(v => !v.ok).map(v => `${v.stream.name} ${v.stream.quality}`);
+        if (dead.length) console.log(`[RogMovies] Dropping unreachable: ${dead.join(', ')}`);
+        console.log(`[RogMovies] ${valid.length}/${streams.length} stream(s) validated OK`);
+        return valid;
+      });
+    });
+  }).catch(err => {
+    console.log(`[RogMovies] getStreams failed: ${err.message}`);
+    return [];
+  });
+}
+  return { getStreams: getStreams };
+})();
+
+const TopMoviesSource = (function () {
+// TopMovies scraper.
+//
+// Ported from the CloudStream "StreamPlay" plugin's invokeTopMovies
+// (decompiled from StreamPlay.cs3 - normal-mode decompilation FAILED for
+// this specific method and fell back to raw register-level pseudo-code,
+// which was read directly), then verified live end-to-end against the real
+// site and adapted where the live site no longer matched the decompiled
+// assumptions.
+//
+//   current domain -> https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json ["topMovies"]
+//                     (re-fetched at runtime; last confirmed live value:
+//                     https://moviesleech.club - the on-site branding now
+//                     reads "Movies Leech", but files served still carry a
+//                     "TopMovies.quest" tag in their own filenames,
+//                     confirming this is the same backend/content, just
+//                     under a rotated domain+brand)
+//   search         -> GET {domain}/?s={query}  (plain WordPress search,
+//                     redirects to /search/{query}; both confirmed live with
+//                     no Cloudflare challenge) - "#content_box article" holds
+//                     one entry per matching post
+//   movie page     -> one "Download Links" button per quality
+//                     (a.maxbutton-download-links), with the quality+size
+//                     heading sitting right above each one
+//   series page    -> one "G-Drive" button per quality (a.maxbutton-g-drive)
+//                     leading to an episode-list hub page with one
+//                     "Episode N" link (plus a duplicate <strong>) per
+//                     episode
+//   quality page   -> a leechpro.blog/archives/{id} page with one "Fast
+//                     Server (G-Drive)" button whose href is a
+//                     cloud.unblockedgames.world/?sid=... redirect gate
+//   unblockedgames -> a 3-step hidden-form POST dance (the exact same
+//                     mechanism as uhdmovies.js's own bypassHrefli, same
+//                     gate site) that ends on a driveseed.org/file/{id} page
+//   driveseed page -> "Instant Download" routes through a video-seed-family
+//                     gateway (video-gen.xyz confirmed live) that 302s to
+//                     video-seed.dev/?url=<real file URL> - confirmed live
+//                     the URL there is already a directly playable
+//                     video-downloads.googleusercontent.com link, no further
+//                     decryption needed for that particular gateway host.
+//                     "Resume Cloud" is skipped - same site family as
+//                     uhdmovies.js, confirmed gated behind a real Cloudflare
+//                     Turnstile challenge with no available bypass.
+//
+// Verified live end-to-end (2026-09-28): Animal (2023, tmdb 1011477),
+// "FHD 1080p" quality -> a real video/mkv, ~4.7GB, HTTP 200 direct download
+// from video-downloads.googleusercontent.com. Series flow (Mirzapur S3,
+// tmdb 210265) confirmed live through the same episode-hub -> gate ->
+// driveseed chain up to the point of finding the per-episode link.
+
+const cheerio = require('cheerio');
+
+const TMDB_API_KEY = '439c478a771f35c05022f9feabcca01c';
+const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
+
+const DOMAINS_URL = 'https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json';
+const DEFAULT_DOMAIN = 'https://moviesleech.club';
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const HEADERS = { 'User-Agent': USER_AGENT };
+
+let cachedDomain = null;
+let cachedDomainAt = 0;
+const DOMAIN_CACHE_TTL = 1000 * 60 * 30;
+
+// The gate/driveseed/video-seed chain below is several sequential hops deep
+// per quality item, against third-party sites this provider doesn't control
+// - a bounded per-request timeout with one retry keeps a single hung hop
+// from stalling the whole request indefinitely. Feature-detected (rather
+// than assumed) since some CloudStream-derived JS runtimes have neither
+// AbortController nor setTimeout, matching the same defensive pattern used
+// in uhdmovies.js/4khdhub.js in this repo.
+const FETCH_TIMEOUT_MS = 12000;
+const HAS_ABORT_TIMER = typeof AbortController !== 'undefined' && typeof setTimeout !== 'undefined';
+
+function fetchWithTimeout(url, options, attemptsLeft) {
+  if (attemptsLeft === undefined) attemptsLeft = 1;
+  if (!HAS_ABORT_TIMER) {
+    return fetch(url, options).catch(err => {
+      if (attemptsLeft <= 0) throw err;
+      return fetchWithTimeout(url, options, attemptsLeft - 1);
+    });
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  return fetch(url, Object.assign({}, options, { signal: controller.signal }))
+    .then(res => { clearTimeout(timer); return res; })
+    .catch(err => {
+      clearTimeout(timer);
+      if (attemptsLeft <= 0) throw err;
+      return fetchWithTimeout(url, options, attemptsLeft - 1);
+    });
+}
+
+function getDomain() {
+  if (cachedDomain && Date.now() - cachedDomainAt < DOMAIN_CACHE_TTL) return Promise.resolve(cachedDomain);
+  return fetchWithTimeout(DOMAINS_URL, { headers: HEADERS })
+    .then(res => res.json())
+    .then(data => {
+      const domain = ((data && data.topMovies) || DEFAULT_DOMAIN).replace(/\/+$/, '');
+      cachedDomain = domain;
+      cachedDomainAt = Date.now();
+      console.log(`[TopMovies] Using domain: ${domain}`);
+      return domain;
+    })
+    .catch(() => DEFAULT_DOMAIN);
+}
+
+function getTmdbInfo(tmdbId, mediaType) {
+  const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
+  const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
+  return fetchWithTimeout(url, { headers: HEADERS })
+    .then(res => res.json())
+    .then(data => {
+      const title = mediaType === 'tv' ? data.name : data.title;
+      const year = (mediaType === 'tv' ? data.first_air_date : data.release_date || '').substring(0, 4);
+      console.log(`[TopMovies] TMDB Info: "${title}" (${year})`);
+      return { title, year };
+    })
+    .catch(() => ({ title: '', year: '' }));
+}
+
+// Matches the site's own search-query cleanup confirmed in the decompiled
+// source: strip quote characters, normalize dash/colon/underscore separators
+// to spaces, collapse whitespace.
+function cleanQuery(title) {
+  return String(title || '')
+    .replace(/['’]/g, '')
+    .replace(/[:\-–_]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalize(str) {
+  return String(str || '').toLowerCase().replace(/&#8[0-9]{3};/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+// Confirmed live: GET {domain}/?s={query} 302s to {domain}/search/{query}
+// with no Cloudflare challenge either way - fetch() follows that redirect on
+// its own, so this just reads whichever page comes back.
+function search(domain, query) {
+  const url = `${domain}/?s=${encodeURIComponent(query)}`;
+  return fetchWithTimeout(url, { headers: HEADERS })
+    .then(res => (res.ok ? res.text() : ''))
+    .then(html => {
+      if (!html) return [];
+      const $ = cheerio.load(html);
+      const results = [];
+      const seen = new Set();
+      $('#content_box article, #content_box .post-cards article').each((_, el) => {
+        const $el = $(el);
+        const href = $el.find('a[href]').first().attr('href');
+        const title = $el.find('h2.title, .title').first().text().trim()
+          || $el.find('a[title]').first().attr('title')
+          || $el.find('a').first().text().trim();
+        if (!href || !title || seen.has(href)) return;
+        seen.add(href);
+        results.push({ href, title });
+      });
+      return results;
+    })
+    .catch(() => []);
+}
+
+// Post titles are always "Download <name> ..." - word-overlap scored against
+// the TMDB title, with a year check for movies and a season-number check
+// (extracted from the post title, e.g. "(Season 3)") for TV, since a plain
+// title search returns every season's post together.
+function findBestMatch(posts, mediaInfo, mediaType, season) {
+  const targetTitle = normalize(mediaInfo.title);
+  if (!targetTitle) return null;
+  const targetWords = targetTitle.split(' ').filter(Boolean);
+  let best = null;
+  let bestScore = -1;
+  for (const post of posts) {
+    const postNorm = normalize(post.title).replace(/^download\s+/, '');
+    const postWords = postNorm.split(' ').filter(Boolean);
+    const overlap = targetWords.filter(w => postWords.includes(w)).length;
+    let score = targetWords.length ? overlap / targetWords.length : 0;
+    if (score < 0.6) continue;
+
+    if (mediaType === 'tv') {
+      const seasonMatch = /season\s*(\d+)/i.exec(post.title);
+      if (season && seasonMatch) {
+        if (parseInt(seasonMatch[1], 10) !== parseInt(season, 10)) continue;
+        score += 0.5;
+      } else if (season && !seasonMatch) {
+        score -= 0.1;
+      }
+    } else {
+      const yearMatch = /\b(19|20)\d{2}\b/.exec(post.title);
+      if (mediaInfo.year && yearMatch) {
+        if (Math.abs(parseInt(yearMatch[0], 10) - parseInt(mediaInfo.year, 10)) > 1) continue;
+        score += 0.5;
+      }
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = post;
+    }
+  }
+  return best;
+}
+
+function getIndexQuality(str) {
+  if (!str) return 'Unknown';
+  const m = String(str).match(/(\d{3,4})\s*[pP]/);
+  if (m) {
+    const n = parseInt(m[1], 10);
+    return n >= 2000 ? '2160p' : `${n}p`;
+  }
+  if (/4K|UHD/i.test(str)) return '2160p';
+  return 'Unknown';
+}
+
+function getSizeLabel(str) {
+  const m = String(str || '').match(/([\d.]+\s*(?:GB|MB|TB))/i);
+  return m ? m[1].replace(/\s+/g, '') : null;
+}
+
+const QUALITY_RANK = { '2160p': 4, '1080p': 3, '720p': 2, '480p': 1, Unknown: 0 };
+// Each item below costs roughly 8-10 sequential network hops (quality page,
+// fast-server page, the 5-hop gate bypass, driveseed page, video-seed
+// gateway) - fanning out to every quality on a page (up to 6+ confirmed
+// live) would make a single request very slow for little benefit once the
+// top few qualities are covered, so only the best-ranked few are resolved.
+const MAX_ITEMS = 3;
+
+// Movie page: one "Download Links" button per quality; series page: one
+// "G-Drive" button per quality leading to an episode hub. Both sit right
+// after their own quality/size heading - confirmed live by walking up to
+// the nearest preceding h1-h6.
+function extractQualityItems($, selector) {
+  const items = [];
+  $(selector).each((_, el) => {
+    const href = $(el).attr('href');
+    if (!href) return;
+    let cur = $(el).closest('p, div, li, h1, h2, h3, h4, h5, h6');
+    let heading = null;
+    let hops = 0;
+    while (cur.length && !heading && hops < 8) {
+      const prev = cur.prev();
+      if (prev.length && /^h[1-6]$/i.test(prev.get(0).tagName)) heading = prev.text().trim();
+      else if (cur.get(0) && /^h[1-6]$/i.test(cur.get(0).tagName)) heading = cur.text().trim();
+      cur = prev.length ? prev : cur.parent();
+      hops++;
+    }
+    items.push({ href, heading: heading || '' });
+  });
+  return items;
+}
+
+function topItemsByQuality(items) {
+  return items
+    .slice()
+    .sort((a, b) => (QUALITY_RANK[getIndexQuality(b.heading)] || 0) - (QUALITY_RANK[getIndexQuality(a.heading)] || 0))
+    .slice(0, MAX_ITEMS);
+}
+
+const BYPASS_MARKERS = ['unblockedgames', 'thenaukriadda', 'href.li'];
+
+function needsBypass(url) {
+  return BYPASS_MARKERS.some(m => url.includes(m));
+}
+
+function getBaseUrl(url) {
+  try {
+    const u = new URL(url);
+    return `${u.protocol}//${u.host}`;
+  } catch (e) {
+    return '';
+  }
+}
+
+function fixUrl(url, domain) {
+  if (!url) return '';
+  if (url.startsWith('http')) return url;
+  if (url.startsWith('//')) return `https:${url}`;
+  if (url.startsWith('/')) return domain + url;
+  return `${domain}/${url}`;
+}
+
+// A hidden-form 3-step POST dance used by cloud.unblockedgames.world (and
+// its sibling gate domains) to land on the real driveseed/driveleech page -
+// the exact same mechanism as uhdmovies.js's own bypassHrefli (same gate
+// site), confirmed live end-to-end here too.
+function bypassGate(url) {
+  const host = getBaseUrl(url);
+  return fetchWithTimeout(url, { headers: HEADERS })
+    .then(res => res.text())
+    .then(html1 => {
+      const $1 = cheerio.load(html1);
+      const formUrl1 = $1('form#landing').attr('action');
+      if (!formUrl1) return null;
+      const formData1 = {};
+      $1('form#landing input').each((_, el) => { formData1[$1(el).attr('name')] = $1(el).attr('value') || ''; });
+      return fetchWithTimeout(formUrl1, {
+        method: 'POST',
+        headers: Object.assign({}, HEADERS, { 'Content-Type': 'application/x-www-form-urlencoded' }),
+        body: new URLSearchParams(formData1).toString()
+      })
+        .then(res => res.text())
+        .then(html2 => {
+          const $2 = cheerio.load(html2);
+          const formUrl2 = $2('form#landing').attr('action');
+          if (!formUrl2) return null;
+          const formData2 = {};
+          $2('form#landing input').each((_, el) => { formData2[$2(el).attr('name')] = $2(el).attr('value') || ''; });
+          return fetchWithTimeout(formUrl2, {
+            method: 'POST',
+            headers: Object.assign({}, HEADERS, { 'Content-Type': 'application/x-www-form-urlencoded' }),
+            body: new URLSearchParams(formData2).toString()
+          })
+            .then(res => res.text())
+            .then(html3 => {
+              const $3 = cheerio.load(html3);
+              const script = $3('script:contains(?go=)').html() || '';
+              const skTokenMatch = script.match(/\?go=([^"]+)/);
+              if (!skTokenMatch) return null;
+              const skToken = skTokenMatch[1];
+              const wpHttp2 = formData2._wp_http2 || '';
+              return fetchWithTimeout(`${host}?go=${skToken}`, {
+                headers: Object.assign({}, HEADERS, { Cookie: `${skToken}=${wpHttp2}` })
+              })
+                .then(res => res.text())
+                .then(html4 => {
+                  const $4 = cheerio.load(html4);
+                  const metaRefresh = $4('meta[http-equiv="refresh"]').attr('content') || '';
+                  const driveUrlMatch = metaRefresh.match(/url=(.+)/);
+                  if (!driveUrlMatch) return null;
+                  const driveUrl = driveUrlMatch[1];
+                  return fetchWithTimeout(driveUrl, { headers: HEADERS })
+                    .then(res => res.text())
+                    .then(html5 => {
+                      const pathMatch = html5.match(/replace\("([^"]+)"\)/);
+                      if (!pathMatch || pathMatch[1] === '/404') return null;
+                      return fixUrl(pathMatch[1], getBaseUrl(driveUrl));
+                    });
+                });
+            });
+        });
+    })
+    .catch(() => null);
+}
+
+// A gateway landing on its own ?url=<real file URL> (video-seed.dev,
+// confirmed live) hands back an already-playable link directly. Other
+// gateway hosts in the same family instead put an encrypted token in the
+// path/query that needs one more POST to that host's own /api to decrypt -
+// same fallback uhdmovies.js uses for this identical gateway family.
+function extractVideoSeedToken(finalLink) {
+  return Promise.resolve()
+    .then(() => {
+      const urlObj = new URL(finalLink);
+      const host = urlObj.host;
+      const token = finalLink.includes('url=') ? finalLink.split('url=')[1] : (urlObj.pathname || '').replace(/^\//, '');
+      if (!token) return null;
+      return fetchWithTimeout(`https://${host}/api`, {
+        method: 'POST',
+        headers: Object.assign({}, HEADERS, { 'Content-Type': 'application/x-www-form-urlencoded', 'x-token': host, Referer: finalLink }),
+        body: `keys=${encodeURIComponent(token)}`
+      })
+        .then(res => res.text())
+        .then(text => {
+          const m = text.match(/url":"([^"]+)"/);
+          return m ? m[1].replace(/\\\//g, '/') : null;
+        });
+    })
+    .catch(() => null);
+}
+
+function extractDriveseedStream(pageUrl, meta) {
+  return fetchWithTimeout(pageUrl, { headers: HEADERS })
+    .then(res => res.text())
+    .then(html => {
+      const $ = cheerio.load(html);
+      const sizeText = $('li.list-group-item').eq(2).text().replace(/^Size\s*:/i, '').trim();
+      const titleText = $('li.list-group-item').first().text().replace(/^Name\s*:/i, '').trim();
+      const instantHref = $('div.text-center > a')
+        .filter((_, el) => /instant download/i.test($(el).text()))
+        .attr('href');
+      if (!instantHref) return null;
+      return fetchWithTimeout(instantHref, { headers: HEADERS, redirect: 'follow' })
+        .then(res => {
+          const landedUrl = res.url || instantHref;
+          const afterUrlParam = landedUrl.includes('url=') ? landedUrl.split('url=')[1] : '';
+          if (afterUrlParam && afterUrlParam.startsWith('http')) return afterUrlParam;
+          return extractVideoSeedToken(landedUrl);
+        })
+        .then(finalUrl => {
+          if (!finalUrl) return null;
+          return {
+            url: finalUrl,
+            title: titleText || meta.title,
+            size: getSizeLabel(sizeText) || meta.size,
+            quality: meta.quality
+          };
+        });
+    })
+    .catch(() => null);
+}
+
+function resolveQualityItem(item, referer) {
+  return fetchWithTimeout(item.href, { headers: Object.assign({}, HEADERS, { Referer: referer }) })
+    .then(res => res.text())
+    .then(html => {
+      const $ = cheerio.load(html);
+      const fastServerHref = $("a.maxbutton-fast-server-gdrive, a[class*='fast-server-gdrive'], a[class*='maxbutton']:contains(Fast Server)").first().attr('href');
+      if (!fastServerHref) return null;
+      const resolved = needsBypass(fastServerHref) ? bypassGate(fastServerHref) : Promise.resolve(fastServerHref);
+      return resolved.then(driveseedUrl => {
+        if (!driveseedUrl) return null;
+        return extractDriveseedStream(driveseedUrl, {
+          title: item.heading,
+          size: getSizeLabel(item.heading),
+          quality: getIndexQuality(item.heading)
+        });
+      });
+    })
+    .catch(() => null);
+}
+
+function resolveSeriesQualityItem(item, referer, episode) {
+  return fetchWithTimeout(item.href, { headers: Object.assign({}, HEADERS, { Referer: referer }) })
+    .then(res => res.text())
+    .then(html => {
+      const $ = cheerio.load(html);
+      const episodeRegex = new RegExp(`.*Episode\\s+${episode}\\b.*`, 'i');
+      let episodeHref = null;
+      $('span strong, p, a').each((_, el) => {
+        if (episodeHref) return;
+        const $el = $(el);
+        if (!episodeRegex.test($el.text().trim())) return;
+        if (el.tagName && el.tagName.toLowerCase() === 'a') {
+          episodeHref = $el.attr('href');
+        } else {
+          const parentA = $el.parent().closest('a');
+          episodeHref = parentA.length ? parentA.attr('href') : $el.closest('a').attr('href');
+        }
+      });
+      if (!episodeHref) return null;
+      const resolved = needsBypass(episodeHref) ? bypassGate(episodeHref) : Promise.resolve(episodeHref);
+      return resolved.then(driveseedUrl => {
+        if (!driveseedUrl) return null;
+        return extractDriveseedStream(driveseedUrl, {
+          title: item.heading,
+          size: getSizeLabel(item.heading),
+          quality: getIndexQuality(item.heading)
+        });
+      });
+    })
+    .catch(() => null);
+}
+
+function isM3u8Url(url) {
+  return /\.m3u8(\?|$)/i.test(url);
+}
+
+// Dead/expired links get filtered out here automatically rather than being
+// handed back as "working" streams - a live HEAD/ranged-GET check, plus a
+// real #EXTM3U body check for .m3u8 links (status alone isn't reliable),
+// matching the approach in cinejoy.js/peachify.js in this repo.
+function validateStreamUrl(stream) {
+  if (isM3u8Url(stream.url)) {
+    return fetchWithTimeout(stream.url, { headers: stream.headers })
+      .then(res => {
+        if (!res.ok) return false;
+        return res.text().then(text => /^#EXTM3U/.test(text.trim()));
+      })
+      .catch(() => false);
+  }
+  return fetchWithTimeout(stream.url, { method: 'HEAD', headers: stream.headers })
+    .then(res => res.ok || res.status === 206)
+    .catch(() => fetchWithTimeout(stream.url, { method: 'GET', headers: Object.assign({}, stream.headers, { Range: 'bytes=0-2048' }) })
+      .then(res => res.ok || res.status === 206)
+      .catch(() => false));
+}
+
+function getStreams(tmdbId, mediaType, season, episode) {
+  console.log(`[TopMovies] getStreams start tmdbId=${tmdbId} type=${mediaType} S=${season || ''} E=${episode || ''}`);
+
+  if (mediaType === 'tv' && (!season || !episode)) {
+    console.log('[TopMovies] Missing season/episode for TV lookup');
+    return Promise.resolve([]);
+  }
+
+  return Promise.all([getDomain(), getTmdbInfo(tmdbId, mediaType)])
+    .then(([domain, mediaInfo]) => {
+      if (!mediaInfo.title) return [];
+      const query = cleanQuery(mediaInfo.title);
+
+      return search(domain, query).then(posts => {
+        const match = findBestMatch(posts, mediaInfo, mediaType, season);
+        if (!match) {
+          console.log(`[TopMovies] No matching title found for "${mediaInfo.title}"`);
+          return [];
+        }
+        console.log(`[TopMovies] Matched: "${match.title}"`);
+
+        return fetchWithTimeout(match.href, { headers: HEADERS }).then(res => res.text()).then(html => {
+          const $ = cheerio.load(html);
+          const referer = `${domain}/`;
+
+          if (mediaType === 'tv') {
+            const items = topItemsByQuality(extractQualityItems($, "a.maxbutton-g-drive, a[class*='maxbutton']:contains(G-Drive)"));
+            if (!items.length) {
+              console.log('[TopMovies] No G-Drive quality links found on series page');
+              return [];
+            }
+            console.log(`[TopMovies] ${items.length} quality item(s) found, resolving episode ${episode}`);
+            return Promise.all(items.map(item => resolveSeriesQualityItem(item, referer, episode)));
+          }
+
+          const items = topItemsByQuality(extractQualityItems($, "a.maxbutton-download-links, a[class*='maxbutton']:contains(Download)"));
+          if (!items.length) {
+            console.log('[TopMovies] No download quality links found on movie page');
+            return [];
+          }
+          console.log(`[TopMovies] ${items.length} quality item(s) found, resolving`);
+          return Promise.all(items.map(item => resolveQualityItem(item, referer)));
+        });
+      });
+    })
+    .then(results => {
+      const streams = (results || []).filter(Boolean).map(r => ({
+        name: `TopMovies - ${r.quality}`,
+        title: `${r.title}${r.size ? `\n${r.size}` : ''}`,
+        url: r.url,
+        quality: r.quality,
+        headers: HEADERS,
+        provider: 'topmovies'
+      }));
+      if (!streams.length) return [];
+      console.log(`[TopMovies] Found ${streams.length} candidate stream(s), validating...`);
+      return Promise.all(streams.map(s => validateStreamUrl(s).then(ok => ({ stream: s, ok })))).then(validated => {
+        const valid = validated.filter(v => v.ok).map(v => v.stream);
+        const dead = validated.filter(v => !v.ok).map(v => v.stream.name);
+        if (dead.length) console.log(`[TopMovies] Dropping unreachable: ${dead.join(', ')}`);
+        console.log(`[TopMovies] ${valid.length}/${streams.length} stream(s) validated OK`);
+        return valid;
+      });
+    })
+    .catch(err => {
+      console.log(`[TopMovies] getStreams failed: ${err.message}`);
+      return [];
+    });
+}
+  return { getStreams: getStreams };
+})();
+
+const HdMovie2Source = (function () {
+// HdMovie2 scraper.
+//
+// Reference: the CloudStream "StreamPlay" plugin's decompiled Kotlin
+// (com.phisher98.StreamPlayExtractor#invokeHdmovie2) was read for background,
+// but confirmed LIVE (2026-09-28) to have drifted on every load-bearing point:
+//   - It builds a guessed detail URL "{domain}/movies/{slug(title)}-{year}/"
+//     with no search step at all. Live, that guess almost never matches: older
+//     posts prefix the slug with the WP numeric post ID
+//     ("/movies/40228-roy-2015-hindi-hd/"), newer ones don't
+//     ("/movies/snake-woman-2025-hindi-dubbed/"), and none of them follow a
+//     plain "{slug}-{year}" shape. A real search is required.
+//   - The standard WordPress "?s=" search query is behind a real Cloudflare
+//     Managed Challenge ("Just a moment...") - confirmed live to 403
+//     consistently. This is a narrow WAF rule on the literal "s=" query
+//     string, not general bot management: "/?foo=bar" and "/genre/action/"
+//     both 200 fine, only "?s=" 403s. The theme's own pretty-permalink search
+//     route, "/search/{query}/" (same WP search under the hood, but no
+//     literal "s=" in the request URI), is NOT covered by that rule and
+//     returns real results - confirmed live, e.g. /search/Inception/ finds
+//     "movies/85962-inception-2010-hindi-dubbed/".
+//   - Each player "server" option's own `<a data-source="...">` already IS
+//     the final embed URL - the page's own JS just swaps an iframe's src on
+//     click. There's no admin-ajax.php POST (action=doo_player_ajax,
+//     data-post/data-nume) round trip to make at all anymore.
+//
+//   current domain -> https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json ["hdmovie2"]
+//   search         -> GET {domain}/search/{query}/  (see above - sidesteps the ?s= WAF rule)
+//   search result  -> .search-results-list .result-item: a.result-thumb[href],
+//                     h2.result-title a text ("Title (Year) tags..."). The
+//                     site's "movies" post type is used for both movies and
+//                     TV (a season is one "... Season N Complete" post) - the
+//                     result list never distinguishes the two, so matching has
+//                     to be done from the title text.
+//   detail page    -> #video-sources.dooplay_player .options li.dooplay_player_option
+//                     a[data-source], one per "server". A season-pack post
+//                     labels each episode's option "... EP01".."EP10" etc
+//                     (confirmed live, Mirzapur S3, zero-padded); a movie's
+//                     options are unlabeled server names ("Ultra Stream V2/V3",
+//                     "Ultra Stream 2", "Fast Player", ...). "Watch trailer"
+//                     (YouTube) options are always skipped.
+//   own stream host -> the site's own player domain rotates too (hdm2.biz,
+//                     molop.art confirmed live, both labeled "Ultra Stream
+//                     Vx") - not tracked in domains.json, just taken as-is
+//                     from data-source each time. It's a self-hosted JWPlayer
+//                     embed: a `<script id="player-loader"
+//                     data-stream-url="/playlist/<token>?v=..&tok=<jwt>">` tag
+//                     on the embed page. That data-stream-url, resolved
+//                     against the embed page's own origin, IS the final
+//                     signed HLS master playlist - confirmed live with a real
+//                     "#EXTM3U" body, and no special headers are needed (the
+//                     JWT alone authorizes it; ~3h expiry observed).
+//   other hosts    -> "Ultra Stream 2" (prvs.top) was confirmed live
+//                     UNREACHABLE (TLS handshake failure from both curl and
+//                     Node) at scrape time. "Fast Player" (ok.ru embed) has no
+//                     player-loader script at all. Both fall through the
+//                     generic player-loader extraction below and are simply
+//                     dropped, same as any other unrecognized host - no
+//                     per-host guessing is attempted for them.
+
+const cheerio = require('cheerio');
+
+const TMDB_API_KEY = '439c478a771f35c05022f9feabcca01c';
+const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
+
+const DOMAINS_URL = 'https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json';
+const DEFAULT_DOMAIN = 'https://hdmovie2a.biz';
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const HEADERS = { 'User-Agent': USER_AGENT };
+
+let cachedDomain = null;
+let cachedDomainAt = 0;
+const DOMAIN_CACHE_TTL = 1000 * 60 * 30;
+
+function getDomain() {
+  if (cachedDomain && Date.now() - cachedDomainAt < DOMAIN_CACHE_TTL) return Promise.resolve(cachedDomain);
+  return fetch(DOMAINS_URL, { headers: HEADERS })
+    .then(res => res.json())
+    .then(data => {
+      const domain = ((data && data.hdmovie2) || DEFAULT_DOMAIN).replace(/\/+$/, '');
+      cachedDomain = domain;
+      cachedDomainAt = Date.now();
+      console.log(`[HdMovie2] Using domain: ${domain}`);
+      return domain;
+    })
+    .catch(() => DEFAULT_DOMAIN);
+}
+
+function getTmdbInfo(tmdbId, mediaType) {
+  const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
+  const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
+  return fetch(url, { headers: HEADERS })
+    .then(res => res.json())
+    .then(data => {
+      const title = mediaType === 'tv' ? data.name : data.title;
+      const year = (mediaType === 'tv' ? data.first_air_date : data.release_date || '').substring(0, 4);
+      console.log(`[HdMovie2] TMDB Info: "${title}" (${year})`);
+      return { title, year };
+    })
+    .catch(() => ({ title: null, year: '' }));
+}
+
+function normalizeWords(str) {
+  return String(str || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
+}
+
+function titleOverlapScore(candidateTitle, targetWords) {
+  if (!targetWords.length) return 0;
+  const candSet = new Set(normalizeWords(candidateTitle));
+  const overlap = targetWords.filter(w => candSet.has(w)).length;
+  return overlap / targetWords.length;
+}
+
+// The pretty-permalink search route - see file header for why this is used
+// instead of the theme's own "?s=" query var.
+function search(domain, query) {
+  const url = `${domain}/search/${encodeURIComponent(query)}/`;
+  return fetch(url, { headers: HEADERS })
+    .then(res => (res.ok ? res.text() : ''))
+    .then(html => {
+      if (!html) return [];
+      const $ = cheerio.load(html);
+      const results = [];
+      $('.search-results-list .result-item').each((_, el) => {
+        const href = $(el).find('a.result-thumb').attr('href') || $(el).find('h2.result-title a').attr('href');
+        const title = $(el).find('h2.result-title a').text().trim();
+        if (href && title) results.push({ href, title });
+      });
+      return results;
+    })
+    .catch(() => []);
+}
+
+function findBestMovieMatch(results, mediaInfo) {
+  const targetWords = normalizeWords(mediaInfo.title);
+  if (!targetWords.length) return null;
+  let best = null;
+  let bestScore = -1;
+  for (const r of results) {
+    if (/season\s*0*\d+/i.test(r.title)) continue; // a TV season pack, not a movie
+    const yearMatch = r.title.match(/\((\d{4})\)/);
+    let score = titleOverlapScore(r.title, targetWords);
+    if (mediaInfo.year && yearMatch) {
+      score += yearMatch[1] === String(mediaInfo.year) ? 0.5 : -0.3;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = r;
+    }
+  }
+  return bestScore >= 0.6 ? best : null;
+}
+
+// TV shows are posted as one "... Season N Complete" post per season - year
+// in the title tracks that season's own air year, not TMDB's first_air_date,
+// so season number (not year) is what disambiguates here.
+function findBestSeriesMatch(results, mediaInfo, season) {
+  const targetWords = normalizeWords(mediaInfo.title);
+  if (!targetWords.length) return null;
+  const candidates = results.filter(r => titleOverlapScore(r.title, targetWords) >= 0.6 && !/\bmovie\b/i.test(r.title));
+  if (!candidates.length) return null;
+  const seasonPat = new RegExp(`season\\s*0*${season}\\b`, 'i');
+  const withSeason = candidates.filter(r => seasonPat.test(r.title));
+  let pool = withSeason;
+  if (!pool.length && season === 1 && !candidates.some(r => /season\s*0*\d+/i.test(r.title))) {
+    // Single-season shows sometimes never bother labeling a season at all.
+    pool = candidates;
+  }
+  if (!pool.length) return null;
+  let best = null;
+  let bestScore = -1;
+  for (const r of pool) {
+    const score = titleOverlapScore(r.title, targetWords);
+    if (score > bestScore) {
+      bestScore = score;
+      best = r;
+    }
+  }
+  return best;
+}
+
+function extractPlayerOptions($) {
+  const options = [];
+  $('#video-sources .dooplay_player_option, .dooplay_player .dooplay_player_option').each((_, el) => {
+    const a = $(el).find('a[data-source]');
+    const src = a.attr('data-source');
+    const label = a.find('.title').text().trim() || a.text().trim();
+    const server = a.find('.server').text().trim();
+    if (!src) return;
+    if (/trailer/i.test(label) || /youtube/i.test(server) || /youtube\.com/i.test(src)) return;
+    options.push({ label, src: src.startsWith('//') ? `https:${src}` : src });
+  });
+  return options;
+}
+
+// A season pack labels each episode's option "... EP01".."EP10" (zero-padded)
+// - confirmed live, Mirzapur S3. Match both the zero-padded and bare forms.
+function optionsForEpisode(options, episode) {
+  const padded = `EP${String(episode).padStart(2, '0')}`;
+  const bare = new RegExp(`EP\\s*0*${episode}\\b`, 'i');
+  return options.filter(o => o.label.toUpperCase().includes(padded) || bare.test(o.label));
+}
+
+// See file header: the site's own "Ultra Stream" embed is a self-hosted
+// JWPlayer page whose #player-loader script's data-stream-url attribute,
+// resolved against the embed page's own origin, is already the final signed
+// HLS master playlist. Any other embed shape (no such script) is left
+// unsupported and resolves to null.
+function resolveEmbedToStream(embedUrl, refererUrl) {
+  return fetch(embedUrl, { headers: Object.assign({}, HEADERS, { Referer: refererUrl }) })
+    .then(res => (res.ok ? res.text() : null))
+    .then(html => {
+      if (!html) return null;
+      const $ = cheerio.load(html);
+      const dataStreamUrl = $('#player-loader').attr('data-stream-url');
+      if (!dataStreamUrl) return null;
+      return new URL(dataStreamUrl, embedUrl).toString();
+    })
+    .catch(() => null);
+}
+
+// Confirmed live: the resolved URL is always a real HLS master playlist for
+// this provider (it only ever comes from the player-loader extraction above),
+// so status alone isn't enough - require the body to actually start with
+// #EXTM3U, same standard as cinejoy.js/peachify.js.
+function validateStreamUrl(stream) {
+  return fetch(stream.url, { headers: stream.headers })
+    .then(res => {
+      if (!res.ok) return false;
+      return res.text().then(text => /^#EXTM3U/.test(text.trim()));
+    })
+    .catch(() => false);
+}
+
+function getStreams(tmdbId, mediaType, season, episode) {
+  console.log(`[HdMovie2] getStreams start tmdbId=${tmdbId} type=${mediaType} S=${season || ''} E=${episode || ''}`);
+
+  if (mediaType === 'tv' && (!season || !episode)) {
+    console.log('[HdMovie2] Missing season/episode for TV lookup');
+    return Promise.resolve([]);
+  }
+
+  return Promise.all([getDomain(), getTmdbInfo(tmdbId, mediaType)])
+    .then(([domain, mediaInfo]) => {
+      if (!mediaInfo.title) return [];
+      return search(domain, mediaInfo.title).then(results => {
+        if (!results.length) {
+          console.log(`[HdMovie2] No search results for "${mediaInfo.title}"`);
+          return [];
+        }
+        const match = mediaType === 'tv'
+          ? findBestSeriesMatch(results, mediaInfo, season)
+          : findBestMovieMatch(results, mediaInfo);
+        if (!match) {
+          console.log(`[HdMovie2] No matching title found for "${mediaInfo.title}"`);
+          return [];
+        }
+        console.log(`[HdMovie2] Matched: "${match.title}" -> ${match.href}`);
+
+        return fetch(match.href, { headers: HEADERS })
+          .then(res => res.text())
+          .then(html => {
+            const $ = cheerio.load(html);
+            let options = extractPlayerOptions($);
+            if (mediaType === 'tv') options = optionsForEpisode(options, episode);
+            if (!options.length) {
+              console.log('[HdMovie2] No usable player options found on detail page');
+              return [];
+            }
+            return Promise.all(options.map(opt =>
+              resolveEmbedToStream(opt.src, match.href).then(streamUrl => {
+                if (!streamUrl) return null;
+                return {
+                  name: 'HdMovie2',
+                  title: `${match.title}${opt.label ? ' - ' + opt.label : ''}`,
+                  url: streamUrl,
+                  quality: 'Auto',
+                  headers: HEADERS,
+                  provider: 'hdmovie2'
+                };
+              }).catch(() => null)
+            )).then(streams => streams.filter(Boolean));
+          });
+      });
+    })
+    .then(streams => {
+      if (!streams.length) return streams;
+      console.log(`[HdMovie2] Found ${streams.length} candidate stream(s), validating...`);
+      return Promise.all(streams.map(s => validateStreamUrl(s).then(ok => ({ stream: s, ok })))).then(validated => {
+        const valid = validated.filter(v => v.ok).map(v => v.stream);
+        const dead = validated.filter(v => !v.ok).map(v => v.stream.title);
+        if (dead.length) console.log(`[HdMovie2] Dropping unreachable: ${dead.join(', ')}`);
+        console.log(`[HdMovie2] ${valid.length}/${streams.length} stream(s) validated OK`);
+        return valid;
+      });
+    })
+    .catch(err => {
+      console.log(`[HdMovie2] getStreams failed: ${err.message}`);
+      return [];
+    });
+}
+  return { getStreams: getStreams };
+})();
+
+const MultiMoviesSource = (function () {
+// MultiMovies scraper.
+//
+// Ported from the CloudStream "StreamPlay" plugin
+// (com.phisher98.StreamPlayExtractor#invokeMultimovies, decompiled from the
+// StreamPlay.cs3 build), then verified live end-to-end against the real site
+// and adapted where the decompile no longer matched reality (see below) -
+// this session already confirmed twice that other sources in that same
+// decompiled plugin had rotated domains/markup, so nothing here was trusted
+// without a live check.
+//
+//   current domain -> https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json ["MultiMovies"]
+//   search         -> GET {domain}/?s={query} - dooplay-theme WordPress site;
+//                     confirmed live the exact-title hit uses a different
+//                     markup (.title a / .meta .year) than the rest of the
+//                     grid (.data h3 / .wdate), so both shapes are read.
+//   movie page     -> {domain}/movies/{slug}/  (slug taken from the matched
+//                     search result's own href, not reconstructed from the
+//                     TMDB title - the decompiled plugin's own createSlug()
+//                     approach risks mismatching the site's real slugging)
+//   tv episode     -> {domain}/episodes/{slug}-{season}x{episode}/ - matches
+//                     the decompiled plugin's URL pattern, confirmed live
+//                     (Game of Thrones S1E1, Stranger Things S1E1); {slug}
+//                     is the show's own slug taken from its /tvshows/ search
+//                     hit, not the movie slug pattern.
+//   player options -> ul#playeroptionsul li elements, each with data-post/
+//                     data-nume/data-type - confirmed live, matches decompile
+//                     exactly. Each option is a different upstream "server";
+//                     only the one labeled "Cineverse" is implemented here
+//                     (see below for why).
+//   resolve option -> POST {domain}/wp-admin/admin-ajax.php
+//                     (action=doo_player_ajax, post, nume, type) -> JSON
+//                     {embed_url, type:"iframe"}. Confirmed live the site's
+//                     own embed_url sometimes carries a literal "&amp;" HTML
+//                     entity instead of "&" in its query string (e.g. a TV
+//                     episode's "...?id=X&amp;s=1&amp;e=1") - fetching that
+//                     URL as-is silently mis-parses the season/episode and
+//                     the embed serves the WRONG episode (confirmed live:
+//                     landed on "Stranger Things S05E08" instead of the
+//                     requested S1E1). Un-escaping "&amp;" -> "&" before the
+//                     request fixes this.
+//   Cineverse embed -> rozgarlelo.modiplay.xyz/embed/... - a small wrapper
+//                     page whose only job is an <iframe id="playerFrame">
+//                     pointing at modiplay's own /proxy.php?p={platform}&c={code}.
+//   proxy.php page  -> a full HLS.js player page. Confirmed live this page's
+//                     inline script embeds `var src="https://multiai.modiplay.xyz/
+//                     stream_proxy.php?url=<upstream master.m3u8>&ref=...&tok=..."`
+//                     directly in static HTML when the backing file lives on
+//                     "streamhg" (var platform="streamhg") - no JS execution
+//                     needed, just read it out. That stream_proxy.php URL is
+//                     itself the final, directly playable master playlist
+//                     (confirmed live: real #EXTM3U content, multiple
+//                     quality variants, multi-language audio tracks).
+//                     Confirmed live this does NOT hold for every backing
+//                     platform: some files are hosted on "rpmshare" (and
+//                     presumably others), where `var src=""` stays empty and
+//                     the real source is only discoverable by letting the
+//                     page's own JS run (it loads a hidden second iframe and
+//                     exchanges postMessage with it) - not something a plain
+//                     HTTP client can do. Confirmed live streamhg is the
+//                     common case (3/4 titles sampled); items landing on an
+//                     unextractable platform are simply skipped, the same
+//                     way vegamovies.js skips Cloudflare-gated V-Cloud and
+//                     uhdmovies.js skips Turnstile-gated Resume Cloud rather
+//                     than fabricating a stream that doesn't work.
+//
+// Other player options seen live (GDMIRROR/filesforever.link - a heavily
+// obfuscated character-shift-cipher page; screenscape.me, Nxsha, Vidout,
+// nhdapi - each its own Next.js CSR app or gated API) were not implemented:
+// each would need its own from-scratch reverse-engineering effort and none
+// were confirmed extractable with a plain HTTP client in the time available.
+
+const cheerio = require('cheerio-without-node-native');
+
+const TMDB_API_KEY = '439c478a771f35c05022f9feabcca01c';
+const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
+
+const DOMAINS_URL = 'https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json';
+const DEFAULT_DOMAIN = 'https://multimovies.casa';
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const HEADERS = { 'User-Agent': USER_AGENT };
+
+let cachedDomain = null;
+let cachedDomainAt = 0;
+const DOMAIN_CACHE_TTL = 1000 * 60 * 30;
+
+function getDomain() {
+  if (cachedDomain && Date.now() - cachedDomainAt < DOMAIN_CACHE_TTL) return Promise.resolve(cachedDomain);
+  return fetch(DOMAINS_URL, { headers: HEADERS })
+    .then(res => res.json())
+    .then(data => {
+      const domain = ((data && data.MultiMovies) || DEFAULT_DOMAIN).replace(/\/+$/, '');
+      cachedDomain = domain;
+      cachedDomainAt = Date.now();
+      console.log(`[MultiMovies] Using domain: ${domain}`);
+      return domain;
+    })
+    .catch(() => DEFAULT_DOMAIN);
+}
+
+function getTmdbInfo(tmdbId, mediaType) {
+  const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
+  const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
+  return fetch(url, { headers: HEADERS })
+    .then(res => res.json())
+    .then(data => {
+      const title = mediaType === 'tv' ? data.name : data.title;
+      const year = (mediaType === 'tv' ? data.first_air_date : data.release_date || '').substring(0, 4);
+      console.log(`[MultiMovies] TMDB Info: "${title}" (${year})`);
+      return { title, year };
+    })
+    .catch(() => ({ title: '', year: '' }));
+}
+
+function normalize(str) {
+  return String(str || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+// dooplay's search results page mixes two markups for the same result grid -
+// confirmed live the single "exact slug match" hit renders as
+// `.title a` + `.meta .year`, while every other card renders as
+// `.data h3` + `.wdate`. Reading both shapes generically also picks up the
+// media type (movie vs tv show) straight from the href path.
+function search(domain, query) {
+  const url = `${domain}/?s=${encodeURIComponent(query)}`;
+  return fetch(url, { headers: HEADERS })
+    .then(res => (res.ok ? res.text() : ''))
+    .then(html => {
+      if (!html) return [];
+      const $ = cheerio.load(html);
+      const results = [];
+      $('article').each((_, el) => {
+        const $el = $(el);
+        const href = $el.find('a[href*="/movies/"], a[href*="/tvshows/"]').first().attr('href');
+        if (!href) return;
+        const title = $el.find('.title, .data h3').first().text().trim() || $el.find('img').attr('alt') || '';
+        if (!title) return;
+        const yearText = $el.find('.year, .wdate').first().text().trim();
+        const yearMatch = yearText.match(/(19|20)\d{2}/);
+        const mediaType = href.includes('/tvshows/') ? 'tv' : 'movie';
+        results.push({ href, title, year: yearMatch ? yearMatch[0] : '', mediaType });
+      });
+      return results;
+    })
+    .catch(() => []);
+}
+
+function findBestMatch(results, mediaInfo, mediaType) {
+  const candidates = results.filter(r => r.mediaType === mediaType);
+  if (!candidates.length) return null;
+  const targetWords = new Set(normalize(mediaInfo.title).split(' ').filter(Boolean));
+  let best = null;
+  let bestScore = -1;
+  for (const item of candidates) {
+    // A same-named but unrelated title is a hard mismatch when both sides
+    // state a year that disagrees, not just a missed bonus below - otherwise
+    // short common titles can win purely on word overlap.
+    if (mediaInfo.year && item.year && Math.abs(parseInt(item.year, 10) - parseInt(mediaInfo.year, 10)) > 1) continue;
+    const itemWords = normalize(item.title).split(' ').filter(Boolean);
+    const overlap = itemWords.filter(w => targetWords.has(w)).length;
+    let score = targetWords.size ? overlap / targetWords.size : 0;
+    if (mediaInfo.year && item.year === mediaInfo.year) score += 0.5;
+    if (score > bestScore) {
+      bestScore = score;
+      best = item;
+    }
+  }
+  return bestScore >= 0.5 ? best : null;
+}
+
+function slugFromHref(href) {
+  const m = href.match(/\/(?:movies|tvshows)\/([^/]+)\/?/);
+  return m ? m[1] : null;
+}
+
+function fetchPlayerOptions(pageUrl) {
+  return fetch(pageUrl, { headers: HEADERS })
+    .then(res => {
+      if (!res.ok) return null;
+      return res.text();
+    })
+    .then(html => {
+      if (!html) return [];
+      if (/Just a moment/i.test(html)) {
+        console.log('[MultiMovies] Cloudflare challenge encountered, aborting');
+        return [];
+      }
+      const $ = cheerio.load(html);
+      const options = [];
+      $('ul#playeroptionsul li').each((_, el) => {
+        const $el = $(el);
+        options.push({
+          post: $el.attr('data-post'),
+          nume: $el.attr('data-nume'),
+          type: $el.attr('data-type'),
+          label: $el.text().trim()
+        });
+      });
+      return options;
+    })
+    .catch(() => []);
+}
+
+function ajaxResolveEmbed(domain, pageUrl, option) {
+  const body = new URLSearchParams({ action: 'doo_player_ajax', post: option.post, nume: option.nume, type: option.type });
+  return fetch(`${domain}/wp-admin/admin-ajax.php`, {
+    method: 'POST',
+    headers: Object.assign({}, HEADERS, { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest', Referer: pageUrl }),
+    body: body.toString()
+  })
+    .then(res => (res.ok ? res.json() : null))
+    .then(json => {
+      if (!json || !json.embed_url) return null;
+      // See file header - the site's own JSON sometimes carries a literal
+      // "&amp;" instead of "&", which breaks season/episode parsing
+      // downstream if left as-is.
+      return String(json.embed_url).replace(/&amp;/g, '&');
+    })
+    .catch(() => null);
+}
+
+function extractSubtitles($, proxyUrl) {
+  const subs = [];
+  $('track').each((_, el) => {
+    const src = $(el).attr('src');
+    if (!src) return;
+    let url;
+    try { url = new URL(src, proxyUrl).toString(); } catch (e) { return; }
+    const lang = $(el).attr('srclang') || $(el).attr('label') || 'Unknown';
+    subs.push({ url, language: $(el).attr('label') || lang, name: $(el).attr('label') || lang });
+  });
+  return subs;
+}
+
+// Resolves the "Cineverse" player option (modiplay.xyz) all the way down to
+// a final playable HLS URL. Returns null when the backing platform isn't one
+// that embeds its source statically (see file header) rather than throwing.
+function resolveCineverse(domain, pageUrl, option) {
+  return ajaxResolveEmbed(domain, pageUrl, option).then(embedUrl => {
+    if (!embedUrl) return null;
+    return fetch(embedUrl, { headers: Object.assign({}, HEADERS, { Referer: pageUrl }) })
+      .then(res => (res.ok ? res.text() : null))
+      .then(embedHtml => {
+        if (!embedHtml) return null;
+        const $ = cheerio.load(embedHtml);
+        const frameSrc = $('#playerFrame').attr('src') || $('iframe').attr('src');
+        if (!frameSrc) return null;
+        let proxyUrl;
+        try { proxyUrl = new URL(frameSrc, embedUrl).toString(); } catch (e) { return null; }
+        return fetch(proxyUrl, { headers: Object.assign({}, HEADERS, { Referer: embedUrl }) })
+          .then(res => (res.ok ? res.text() : null))
+          .then(proxyHtml => {
+            if (!proxyHtml) return null;
+            const m = proxyHtml.match(/var src\s*=\s*"([^"]*)"/);
+            const rawSrc = m ? m[1].replace(/\\\//g, '/') : '';
+            if (!rawSrc) {
+              const platformMatch = proxyHtml.match(/var platform\s*=\s*"([^"]*)"/);
+              console.log(`[MultiMovies] No static source for platform "${platformMatch ? platformMatch[1] : 'unknown'}", skipping`);
+              return null;
+            }
+            let finalUrl;
+            try { finalUrl = new URL(rawSrc, proxyUrl).toString(); } catch (e) { return null; }
+            const $$ = cheerio.load(proxyHtml);
+            const subtitles = extractSubtitles($$, proxyUrl);
+            return { url: finalUrl, referer: proxyUrl, subtitles };
+          });
+      });
+  }).catch(() => null);
+}
+
+function isM3u8Url(url) {
+  return /\.m3u8(\?|$)/i.test(url) || /stream_proxy\.php/i.test(url);
+}
+
+function validateStreamUrl(stream) {
+  if (isM3u8Url(stream.url)) {
+    return fetch(stream.url, { headers: stream.headers })
+      .then(res => {
+        if (!res.ok) return false;
+        return res.text().then(text => /^#EXTM3U/.test(text.trim()));
+      })
+      .catch(() => false);
+  }
+  return fetch(stream.url, { method: 'HEAD', headers: stream.headers })
+    .then(res => res.ok || res.status === 206)
+    .catch(() => false);
+}
+
+function getStreams(tmdbId, mediaType, season, episode) {
+  console.log(`[MultiMovies] getStreams start tmdbId=${tmdbId} type=${mediaType} S=${season || ''} E=${episode || ''}`);
+
+  if (mediaType === 'tv' && (!season || !episode)) {
+    console.log('[MultiMovies] Missing season/episode for TV lookup');
+    return Promise.resolve([]);
+  }
+
+  return Promise.all([getDomain(), getTmdbInfo(tmdbId, mediaType)]).then(([domain, mediaInfo]) => {
+    if (!mediaInfo.title) return [];
+    const label = `${mediaInfo.title}${mediaInfo.year ? ' (' + mediaInfo.year + ')' : ''}`;
+
+    return search(domain, mediaInfo.title).then(results => {
+      const match = findBestMatch(results, mediaInfo, mediaType);
+      if (!match) {
+        console.log(`[MultiMovies] No matching title found for "${mediaInfo.title}"`);
+        return [];
+      }
+      console.log(`[MultiMovies] Matched: "${match.title}" (${match.href})`);
+
+      let pageUrl = match.href;
+      if (mediaType === 'tv') {
+        const slug = slugFromHref(match.href);
+        if (!slug) return [];
+        pageUrl = `${domain}/episodes/${slug}-${season}x${episode}/`;
+      }
+
+      return fetchPlayerOptions(pageUrl).then(options => {
+        if (!options.length) {
+          console.log('[MultiMovies] No player options found on page');
+          return [];
+        }
+        const cineverse = options.find(o => /cineverse/i.test(o.label));
+        if (!cineverse) {
+          console.log('[MultiMovies] No Cineverse option available for this title');
+          return [];
+        }
+        return resolveCineverse(domain, pageUrl, cineverse).then(resolved => {
+          if (!resolved) return [];
+          return [{
+            name: 'MultiMovies - Cineverse',
+            title: label,
+            url: resolved.url,
+            quality: 'Auto',
+            headers: { 'User-Agent': USER_AGENT, Referer: resolved.referer },
+            subtitles: resolved.subtitles,
+            provider: 'multimovies'
+          }];
+        });
+      });
+    });
+  }).then(streams => {
+    if (!streams.length) return streams;
+    console.log(`[MultiMovies] Found ${streams.length} candidate stream(s), validating...`);
+    return Promise.all(streams.map(s => validateStreamUrl(s).then(ok => ({ stream: s, ok })))).then(validated => {
+      const valid = validated.filter(v => v.ok).map(v => v.stream);
+      const dead = validated.filter(v => !v.ok).map(v => v.stream.name);
+      if (dead.length) console.log(`[MultiMovies] Dropping unreachable: ${dead.join(', ')}`);
+      console.log(`[MultiMovies] ${valid.length}/${streams.length} stream(s) validated OK`);
+      return valid;
+    });
+  }).catch(err => {
+    console.log(`[MultiMovies] getStreams failed: ${err.message}`);
+    return [];
+  });
+}
+  return { getStreams: getStreams };
+})();
+
+const MoviesModSource = (function () {
+// MoviesMod scraper.
+//
+// Ported from the CloudStream "StreamPlay" plugin's decompiled
+// invokeMoviesmod/invokeModflix functions (com.phisher98.StreamPlayExtractor,
+// StreamPlay.cs3 build) - that decompile came out badly garbled (JADX
+// couldn't fully rebuild the coroutine state machine, lots of "Code
+// duplicated" warnings and dead-looking branches), so rather than
+// transliterate it, the actual shape below was reconstructed by live-testing
+// the real site end-to-end and cross-checking each step against what the
+// decompile still made out: quality headings, the "Download"/"Episode"
+// anchor in the next sibling, and a final "Moviesmod" extractor hand-off.
+//
+//   current domain -> https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json ["moviesmod"]
+//                     (confirmed live 2026-09-28: still the doc's last-known
+//                     https://moviesmod.ai.in, no rotation this time)
+//   search         -> GET {domain}/search/{title}  - a plain WordPress theme
+//                     search page, one <article> per hit under #content_box
+//                     .post-cards, title/href in h2.title.front-view-title>a
+//   movie page     -> div.thecontent has one h4 heading per quality (e.g.
+//                     "Download X Dual Audio 1080p Bluray [3.2GB]"); a
+//                     handful of decorative h3/h4 headings also exist and are
+//                     excluded by filtering out any heading whose own text
+//                     contains "MoviesMod" (confirmed live - matches the
+//                     decompile's own exclusion). The heading's next sibling
+//                     <p> holds one <a class=maxbutton...> to a
+//                     links.modpro.blog / posts.modpro.blog archive page.
+//   series page    -> div.thecontent has one h3 heading per (season,
+//                     quality) pair (e.g. "Season 1 {Hindi-English} 720p
+//                     [370MB]"); next sibling <p> holds TWO links - "Episode
+//                     Links" (episodes.modpro.blog, what we want) and
+//                     "Batch/Zip File" (a separate archive id, not used here).
+//   modpro.blog    -> movie archive page: one <a class=maxbutton> per
+//                     resolver ("Fast Server (G-Drive)", "Google Drive
+//                     (Server 2)", sometimes a CSS-hidden "G-Direct"/
+//                     "OneDrive", sometimes an "Other Download Links" to
+//                     urlflix.xyz). CONFIRMED LIVE (2026-09-28) this splits
+//                     by which modpro.blog subdomain a given quality's link
+//                     uses, independent of how old the post is: quality
+//                     groups on links.modpro.blog (the majority - plain
+//                     480p/720p/1080p entries) route through
+//                     en.thenaukriadda.in, a domain that's been repurposed
+//                     into a completely unrelated WordPress job-listings blog
+//                     ("The Naukri Adda") - its sid token's own form#landing
+//                     auto-submits and lands on that blog's homepage, both
+//                     via a raw HTTP replay of the form post and via a real
+//                     browser executing the page's JS, so that subdomain is
+//                     a dead end today. Quality groups on posts.modpro.blog
+//                     (seen for HEVC-labelled entries specifically, but nothing
+//                     here assumes that's the only case) route through
+//                     cloud.unblockedgames.world instead, which IS confirmed
+//                     live working end-to-end. Nothing below hardcodes this
+//                     split - it just follows whatever modpro.blog link a
+//                     quality heading actually has and lets bypassGateway()
+//                     (which only succeeds against the form#landing shape)
+//                     and live validation sort out which ones are alive, so
+//                     a movie post can validly return some quality groups
+//                     and not others, and this keeps working automatically
+//                     if MoviesMod's own mix of subdomains shifts again.
+//                     "G-Direct" (gdrivepro.xyz) is dead (NXDOMAIN) and
+//                     "Other Download Links" (urlflix.xyz) only ever offers
+//                     long-defunct anonfiles.com/bayfiles.com links plus a
+//                     1fichier/gofile pair that need a paid/captcha flow, so
+//                     neither is used here - only the first maxbutton link is
+//                     followed per quality group.
+//                     episodes.modpro.blog page (series): one
+//                     <h3><a>Episode N</a></h3> per episode, each one's href
+//                     a cloud.unblockedgames.world sid link - confirmed live
+//                     working the same way.
+//   unblockedgames.world -> the exact same "bypassHrefli" ad-gate chain
+//                     already implemented in uhdmovies.js for the same
+//                     domain family (form#landing -> POST -> form#landing ->
+//                     POST -> a script's own "?go=" token -> meta-refresh ->
+//                     drive URL -> a final JS "replace(...)" redirect).
+//                     Confirmed live here too, end to end.
+//   driveseed.org  -> the resolved drive URL lands on either
+//                     driveseed.org/file/<id> directly, or (confirmed live
+//                     for one of several sibling episode links, not a
+//                     universal rule) driveseed.org/list/<id> - a season-pack
+//                     listing of every episode's own /file/<id> link in
+//                     order, matched here by SxxExx filename first and by
+//                     list position as a fallback. Either way the /file/<id>
+//                     page offers "Cloud Download" (a pub-*.r2.dev direct
+//                     link - confirmed live this one now 403s, kept as a
+//                     candidate anyway since live validation below drops
+//                     whatever's actually dead rather than hard-coding that
+//                     assumption) and "Instant Download"/"Instant Download
+//                     V2" (a video-gen.xyz-family token gateway). Confirmed
+//                     live that following "Instant Download" with a normal
+//                     redirect-following fetch lands on video-seed.dev's own
+//                     "?url=<real file URL>" - already the final, playable
+//                     link, no decrypt needed (this is the same shortcut
+//                     uhdmovies.js's own extractVideoSeed comment already
+//                     documents for this exact gateway). Confirmed live with
+//                     a real HTTP 200, Content-Type: video/mkv, correct
+//                     filename and byte size on a googleusercontent.com URL.
+
+const cheerio = require('cheerio-without-node-native');
+
+const TMDB_API_KEY = '439c478a771f35c05022f9feabcca01c';
+const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
+
+const DOMAINS_URL = 'https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json';
+const DEFAULT_DOMAIN = 'https://moviesmod.ai.in';
+
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const HEADERS = { 'User-Agent': USER_AGENT };
+
+let cachedDomain = null;
+let cachedDomainAt = 0;
+const DOMAIN_CACHE_TTL = 1000 * 60 * 30;
+
+function getDomain() {
+  if (cachedDomain && Date.now() - cachedDomainAt < DOMAIN_CACHE_TTL) return Promise.resolve(cachedDomain);
+  return fetch(DOMAINS_URL, { headers: HEADERS })
+    .then(res => res.json())
+    .then(data => {
+      const domain = ((data && data.moviesmod) || DEFAULT_DOMAIN).replace(/\/+$/, '');
+      cachedDomain = domain;
+      cachedDomainAt = Date.now();
+      console.log(`[MoviesMod] Using domain: ${domain}`);
+      return domain;
+    })
+    .catch(() => DEFAULT_DOMAIN);
+}
+
+function getTmdbInfo(tmdbId, mediaType) {
+  const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
+  const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
+  return fetch(url, { headers: HEADERS })
+    .then(res => res.json())
+    .then(data => {
+      const title = mediaType === 'tv' ? data.name : data.title;
+      const year = (mediaType === 'tv' ? data.first_air_date : data.release_date || '').substring(0, 4);
+      console.log(`[MoviesMod] TMDB Info: "${title}" (${year})`);
+      return { title, year };
+    })
+    .catch(() => ({ title: '', year: '' }));
+}
+
+function normalize(str) {
+  return String(str || '').toLowerCase().replace(/&#8[0-9]{3};/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+// Post titles are formatted "Download {Title} (Season N) ..." or
+// "Download {Title} (YEAR) ...", occasionally "Download {Title} {Lang} ...".
+// Cutting at the first "(", "{" or a bare year/"Season" token isolates just
+// the title part, so "The Scandal" doesn't loosely word-overlap-match
+// "The Scandal of Chunhwa" the way a simple substring/overlap check would.
+function extractCoreTitle(rawTitle) {
+  const stripped = String(rawTitle || '').replace(/^download\s+/i, '');
+  const m = stripped.match(/^(.*?)(?:\s*[({]|\s+(?:19|20)\d{2}\b|\s+season\b)/i);
+  return (m ? m[1] : stripped).trim();
+}
+
+function findBestMatch(candidates, mediaInfo) {
+  const targetCore = normalize(extractCoreTitle(mediaInfo.title));
+  if (!targetCore) return null;
+
+  const exact = candidates.find(c => normalize(extractCoreTitle(c.title)) === targetCore);
+  if (exact) return exact;
+
+  // Fall back to word-overlap + year bonus for titles this site formats
+  // unusually (e.g. missing a "(...)" delimiter altogether).
+  const targetWords = new Set(targetCore.split(' ').filter(Boolean));
+  let best = null;
+  let bestScore = -1;
+  for (const c of candidates) {
+    const normTitle = normalize(c.title);
+    const postYearMatch = c.title.match(/\b(19|20)\d{2}\b/);
+    if (mediaInfo.year && postYearMatch && Math.abs(parseInt(postYearMatch[0], 10) - parseInt(mediaInfo.year, 10)) > 1) continue;
+    const words = normalize(extractCoreTitle(c.title)).split(' ').filter(Boolean);
+    const overlap = words.filter(w => targetWords.has(w)).length;
+    let score = targetWords.size ? overlap / targetWords.size : 0;
+    if (mediaInfo.year && normTitle.includes(mediaInfo.year)) score += 0.3;
+    if (score > bestScore) { bestScore = score; best = c; }
+  }
+  return bestScore >= 0.6 ? best : null;
+}
+
+function search(domain, query) {
+  const url = `${domain}/search/${encodeURIComponent(query)}`;
+  return fetch(url, { headers: HEADERS })
+    .then(res => (res.ok ? res.text() : ''))
+    .then(html => {
+      if (!html) return [];
+      const $ = cheerio.load(html);
+      const candidates = [];
+      $('#content_box article').each((_, el) => {
+        const a = $(el).find('h2.title a').first();
+        const href = a.attr('href');
+        const title = a.text().trim();
+        if (href && title) candidates.push({ href, title });
+      });
+      return candidates;
+    })
+    .catch(() => []);
+}
+
+function extractQuality(str) {
+  const m = /(\d{3,4})[pP]/.exec(str || '');
+  if (m) {
+    const n = parseInt(m[1], 10);
+    if (n >= 2160) return '4K';
+    return `${n}p`;
+  }
+  if (/4K|UHD/i.test(str || '')) return '4K';
+  return 'Unknown';
+}
+
+function getSizeLabel(str) {
+  const m = String(str || '').match(/([\d.]+\s*(?:GB|MB|TB))/i);
+  return m ? m[1].replace(/\s+/g, '') : null;
+}
+
+// Finds each quality (movie) / season+quality (tv) heading in div.thecontent
+// and returns, per heading, the modpro.blog gateway href sitting in its next
+// sibling <p> - "Download"-labelled for a movie, "Episode Links"-labelled
+// (never the sibling "Batch/Zip File" link) for a season's episode index.
+function extractHeadingTargets($, mediaType, season) {
+  const headingTag = mediaType === 'tv' ? 'h3' : 'h4';
+  const seasonRe = mediaType === 'tv' && season ? new RegExp(`(s0*${season}\\b|season\\s*${season}\\b)`, 'i') : null;
+  const targets = [];
+  $(`div.thecontent ${headingTag}`).each((_, el) => {
+    const text = $(el).text().trim();
+    if (!text || /moviesmod/i.test(text)) return;
+    if (extractQuality(text) === 'Unknown') return;
+    if (seasonRe && !seasonRe.test(text)) return;
+    let sib = $(el).next();
+    let hops = 0;
+    while (sib.length && sib.get(0).tagName !== 'p' && hops < 4) { sib = sib.next(); hops++; }
+    if (!sib.length) return;
+    const link = mediaType === 'tv'
+      ? sib.find('a[href*="modpro.blog"]').filter((i, a) => /episode/i.test($(a).text())).first()
+      : sib.find('a.maxbutton[href*="modpro.blog"]').first();
+    const href = link.attr('href');
+    if (href) targets.push({ heading: text, gatewayPageUrl: href, quality: extractQuality(text), size: getSizeLabel(text) });
+  });
+  return targets;
+}
+
+// Movie archive page -> first maxbutton link inside a <p> ("Fast Server
+// (G-Drive)" today). Series episode archive page -> the specific numbered
+// "Episode N" <h3><a> link (never "Episode 1N" etc - anchored to the exact
+// number via \b boundaries).
+function extractGatewayLink($, mediaType, episode) {
+  if (mediaType === 'tv') {
+    const re = new RegExp(`^episode\\s*0*${episode}\\b`, 'i');
+    let found = null;
+    $('h3 a').each((_, el) => {
+      if (found) return;
+      if (re.test($(el).text().trim())) found = $(el).attr('href');
+    });
+    return found;
+  }
+  return $('p a.maxbutton').first().attr('href') || null;
+}
+
+function getBaseUrl(url) {
+  try { const u = new URL(url); return `${u.protocol}//${u.host}`; } catch (e) { return ''; }
+}
+function fixUrl(url, domain) {
+  if (!url) return '';
+  if (url.startsWith('http')) return url;
+  if (url.startsWith('//')) return `https:${url}`;
+  if (url.startsWith('/')) return domain + url;
+  return `${domain}/${url}`;
+}
+
+// Same ad-gate chain as uhdmovies.js's own bypassHrefli, confirmed live to
+// also cover MoviesMod's unblockedgames.world links (see file header).
+// Returns null (rather than throwing) for anything that doesn't match the
+// expected form#landing shape - e.g. MoviesMod's dead thenaukriadda.in movie
+// gateway, which lands on an unrelated blog homepage with no such form.
+function bypassGateway(url) {
+  const host = getBaseUrl(url);
+  return fetch(url, { headers: HEADERS })
+    .then(res => res.text())
+    .then(html1 => {
+      const $1 = cheerio.load(html1);
+      const formUrl1 = $1('form#landing').attr('action');
+      if (!formUrl1) return null;
+      const formData1 = {};
+      $1('form#landing input').each((_, el) => { formData1[$1(el).attr('name')] = $1(el).attr('value') || ''; });
+
+      return fetch(formUrl1, { method: 'POST', headers: Object.assign({}, HEADERS, { 'Content-Type': 'application/x-www-form-urlencoded' }), body: new URLSearchParams(formData1).toString() })
+        .then(res => res.text())
+        .then(html2 => {
+          const $2 = cheerio.load(html2);
+          const formUrl2 = $2('form#landing').attr('action');
+          if (!formUrl2) return null;
+          const formData2 = {};
+          $2('form#landing input').each((_, el) => { formData2[$2(el).attr('name')] = $2(el).attr('value') || ''; });
+
+          return fetch(formUrl2, { method: 'POST', headers: Object.assign({}, HEADERS, { 'Content-Type': 'application/x-www-form-urlencoded' }), body: new URLSearchParams(formData2).toString() })
+            .then(res => res.text())
+            .then(html3 => {
+              const $3 = cheerio.load(html3);
+              const script = $3('script:contains(?go=)').html() || '';
+              const skTokenMatch = script.match(/\?go=([^"]+)/);
+              if (!skTokenMatch) return null;
+              const skToken = skTokenMatch[1];
+              const wpHttp2 = formData2['_wp_http2'] || '';
+
+              return fetch(`${host}?go=${skToken}`, { headers: Object.assign({}, HEADERS, { Cookie: `${skToken}=${wpHttp2}` }) })
+                .then(res => res.text())
+                .then(html4 => {
+                  const $4 = cheerio.load(html4);
+                  const metaRefresh = $4('meta[http-equiv="refresh"]').attr('content') || '';
+                  const driveUrlMatch = metaRefresh.match(/url=(.+)/);
+                  if (!driveUrlMatch) return null;
+                  const driveUrl = driveUrlMatch[1];
+
+                  return fetch(driveUrl, { headers: HEADERS })
+                    .then(res => res.text())
+                    .then(html5 => {
+                      const pathMatch = html5.match(/replace\("([^"]+)"\)/);
+                      if (!pathMatch || pathMatch[1] === '/404') return null;
+                      return fixUrl(pathMatch[1], getBaseUrl(driveUrl));
+                    });
+                });
+            });
+        });
+    })
+    .catch(() => null);
+}
+
+// A driveseed "/file/<id>" page's own quality/size are more authoritative
+// than the heading text (the heading only states the group's nominal
+// quality, the file page states the exact encode).
+function extractDriveseedFilePage(fileUrl, fallbackMeta) {
+  return fetch(fileUrl, { headers: HEADERS })
+    .then(res => res.text())
+    .then(html => {
+      const $ = cheerio.load(html);
+      const items = $('li.list-group-item');
+      let name = '';
+      let size = fallbackMeta.size;
+      items.each((_, el) => {
+        const text = $(el).text().trim();
+        if (/^name\s*:/i.test(text)) name = text.replace(/^name\s*:\s*/i, '').trim();
+        else if (/^size\s*:/i.test(text)) size = text.replace(/^size\s*:\s*/i, '').trim() || size;
+      });
+      const quality = extractQuality(name) !== 'Unknown' ? extractQuality(name) : fallbackMeta.quality;
+      const candidates = [];
+      $('.text-center a, div a.btn').each((_, el) => {
+        const text = $(el).text().trim();
+        const href = $(el).attr('href');
+        if (!href) return;
+        if (/cloud download/i.test(text)) candidates.push({ source: 'Cloud', url: href });
+        else if (/instant download/i.test(text)) candidates.push({ source: /v2/i.test(text) ? 'InstantV2' : 'Instant', url: href });
+      });
+      return { name: name || fallbackMeta.title, size, quality, candidates };
+    })
+    .catch(() => null);
+}
+
+// "Instant Download" buttons route through a video-gen.xyz-family gateway.
+// Confirmed live: a plain redirect-following fetch lands on video-seed.dev's
+// own "?url=<real file>" - already final and playable, no decrypt needed.
+function resolveInstantDownload(href) {
+  return fetch(href, { headers: HEADERS, redirect: 'follow' })
+    .then(res => {
+      try {
+        const landed = new URL(res.url || href);
+        const inner = landed.searchParams.get('url');
+        if (inner && inner.startsWith('http')) return inner;
+      } catch (e) { /* fall through */ }
+      return null;
+    })
+    .catch(() => null);
+}
+
+function isM3u8Url(url) {
+  return /\.m3u8(\?|$)/i.test(url);
+}
+
+// Status alone isn't reliable here (the r2.dev "Cloud Download" links, for
+// one, 403 while still returning a normal-looking error page) - HEAD/ranged
+// GET first, and for an .m3u8 confirm the body is a real playlist.
+function validateStreamUrl(stream) {
+  if (isM3u8Url(stream.url)) {
+    return fetch(stream.url, { headers: stream.headers })
+      .then(res => (res.ok ? res.text().then(text => /^#EXTM3U/.test(text.trim())) : false))
+      .catch(() => false);
+  }
+  return fetch(stream.url, { method: 'HEAD', headers: stream.headers })
+    .then(res => res.ok || res.status === 206)
+    .catch(() => fetch(stream.url, { method: 'GET', headers: Object.assign({}, stream.headers, { Range: 'bytes=0-2048' }) })
+      .then(res => res.ok || res.status === 206)
+      .catch(() => false));
+}
+
+function sourceLabel(source) {
+  if (source === 'Cloud') return 'Cloud';
+  if (source === 'InstantV2') return 'Instant V2';
+  return 'Instant';
+}
+
+function resolveDriveseedCandidates(filePage, label) {
+  return Promise.all(filePage.candidates.map(c => {
+    const meta = { name: `MoviesMod - ${filePage.quality}${filePage.size ? ` [${filePage.size}]` : ''}`, provider: 'moviesmod', quality: filePage.quality, headers: HEADERS };
+    if (c.source === 'Cloud') {
+      return Object.assign({}, meta, { name: `MoviesMod - ${sourceLabel(c.source)}`, title: `${label} - ${filePage.quality}`, url: c.url });
+    }
+    return resolveInstantDownload(c.url).then(url => url ? Object.assign({}, meta, { name: `MoviesMod - ${sourceLabel(c.source)}`, title: `${label} - ${filePage.quality}`, url }) : null);
+  })).then(list => list.filter(Boolean));
+}
+
+// The resolved driveseed URL can land on a single file page directly, or
+// (confirmed live for one specific episode link, not a fixed rule) a
+// "/list/<id>" season-pack page listing every episode's own /file/<id> href
+// in order - handled by matching the target SxxExx filename first, falling
+// back to plain list position.
+function resolveDriveseedUrl(driveUrl, mediaType, season, episode) {
+  if (!/\/list\//.test(driveUrl)) return Promise.resolve(driveUrl);
+  return fetch(driveUrl, { headers: HEADERS })
+    .then(res => res.text())
+    .then(html => {
+      const $ = cheerio.load(html);
+      const origin = getBaseUrl(driveUrl);
+      const entries = [];
+      $('li.list-group-item a[href^="/file/"]').each((_, el) => {
+        entries.push({ text: $(el).text().trim(), href: $(el).attr('href') });
+      });
+      if (!entries.length) return null;
+      if (mediaType === 'tv' && season && episode) {
+        const re = new RegExp(`s0*${season}e0*${episode}\\b`, 'i');
+        const match = entries.find(e => re.test(e.text));
+        if (match) return origin + match.href;
+        if (entries[episode - 1]) return origin + entries[episode - 1].href;
+      }
+      return origin + entries[0].href;
+    })
+    .catch(() => null);
+}
+
+function getStreams(tmdbId, mediaType, season, episode) {
+  mediaType = mediaType === 'tv' ? 'tv' : 'movie';
+  console.log(`[MoviesMod] getStreams start tmdbId=${tmdbId} type=${mediaType} S=${season || ''} E=${episode || ''}`);
+
+  if (mediaType === 'tv' && (!season || !episode)) {
+    console.log('[MoviesMod] Missing season/episode for TV lookup');
+    return Promise.resolve([]);
+  }
+
+  return Promise.all([getDomain(), getTmdbInfo(tmdbId, mediaType)]).then(([domain, mediaInfo]) => {
+    if (!mediaInfo.title) return [];
+    const label = `${mediaInfo.title}${mediaInfo.year ? ` (${mediaInfo.year})` : ''}`;
+
+    return search(domain, mediaInfo.title).then(candidates => {
+      const match = findBestMatch(candidates, mediaInfo);
+      if (!match) {
+        console.log(`[MoviesMod] No matching title found for "${mediaInfo.title}"`);
+        return [];
+      }
+      console.log(`[MoviesMod] Matched: "${match.title}"`);
+
+      return fetch(match.href, { headers: HEADERS })
+        .then(res => res.text())
+        .then(html => {
+          const $ = cheerio.load(html);
+          const targets = extractHeadingTargets($, mediaType, season);
+          if (!targets.length) {
+            console.log('[MoviesMod] No matching quality/season heading found on page');
+            return [];
+          }
+          console.log(`[MoviesMod] ${targets.length} quality group(s) found`);
+
+          return Promise.all(targets.map(target =>
+            fetch(target.gatewayPageUrl, { headers: Object.assign({}, HEADERS, { Referer: match.href }) })
+              .then(res => res.text())
+              .then(gatewayHtml => {
+                const $$ = cheerio.load(gatewayHtml);
+                const gatewayLink = extractGatewayLink($$, mediaType, episode);
+                if (!gatewayLink) return [];
+                return bypassGateway(gatewayLink).then(driveUrl => {
+                  if (!driveUrl) return [];
+                  return resolveDriveseedUrl(driveUrl, mediaType, season, episode).then(fileUrl => {
+                    if (!fileUrl) return [];
+                    return extractDriveseedFilePage(fileUrl, target).then(filePage => {
+                      if (!filePage || !filePage.candidates.length) return [];
+                      return resolveDriveseedCandidates(filePage, label);
+                    });
+                  });
+                });
+              })
+              .catch(() => [])
+          )).then(perGroup => perGroup.flat());
+        });
+    }).then(streams => {
+      if (!streams.length) return streams;
+      console.log(`[MoviesMod] Found ${streams.length} candidate stream(s), validating...`);
+      return Promise.all(streams.map(s => validateStreamUrl(s).then(ok => ({ stream: s, ok })))).then(validated => {
+        const valid = validated.filter(v => v.ok).map(v => v.stream);
+        const dead = validated.filter(v => !v.ok).map(v => v.stream.name);
+        if (dead.length) console.log(`[MoviesMod] Dropping unreachable: ${dead.join(', ')}`);
+        console.log(`[MoviesMod] ${valid.length}/${streams.length} stream(s) validated OK`);
+        return valid;
+      });
+    });
+  }).catch(err => {
+    console.log(`[MoviesMod] getStreams failed: ${err.message}`);
+    return [];
+  });
+}
+  return { getStreams: getStreams };
+})();
+
 const SOURCES = [
   { id: 'peachify', name: 'Peachify', mod: PeachifySource },
   { id: 'vidrock', name: 'Vidrock', mod: VidrockSource },
@@ -4399,6 +7212,13 @@ const SOURCES = [
   { id: 'vegamovies', name: 'VegaMovies', mod: VegaMoviesSource },
   { id: 'allmovieland', name: 'AllMovieLand', mod: AllMovieLandSource },
   { id: 'cinejoy', name: 'Cinejoy', mod: CinejoySource },
+  { id: 'filmyfiy', name: 'Filmyfiy', mod: FilmyfiySource },
+  { id: 'moviesdrive', name: 'MoviesDrive', mod: MoviesDriveSource },
+  { id: 'rogmovies', name: 'RogMovies', mod: RogMoviesSource },
+  { id: 'topmovies', name: 'TopMovies', mod: TopMoviesSource },
+  { id: 'hdmovie2', name: 'HdMovie2', mod: HdMovie2Source },
+  { id: 'multimovies', name: 'MultiMovies', mod: MultiMoviesSource },
+  { id: 'moviesmod', name: 'MoviesMod', mod: MoviesModSource },
 ];
 
 // ---- Ranking logic, ported verbatim from this repo's server.js aggregator ----

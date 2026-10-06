@@ -60,10 +60,14 @@ function parseSize(description) {
 // a non-seekable Google Drive link / dead Telegram-bot redirect. Not worth
 // reproducing that chain for a third-party addon we don't control, so these
 // are skipped; already-direct links (PixelDrain, R2, etc.) pass through.
+// HubDrive file pages (hubdrive.*/file/<id>) are the same kind of gateway:
+// re-verified live 2026-10-06 that HDHub4u's relay returns them as stream
+// URLs and each is just an HTML interstitial (200 text/html), not a video.
 function isUsableStream(s) {
   if (!s.url) return false;
   try {
-    return !new URL(s.url).hostname.includes("hubcloud");
+    const host = new URL(s.url).hostname;
+    return !host.includes("hubcloud") && !host.includes("hubdrive");
   } catch (e) {
     return false;
   }

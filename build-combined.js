@@ -31,7 +31,6 @@ const MANIFEST_PATH = path.join(__dirname, 'manifest.json');
 //   shared providers/external-addon.js factory instead of having their own
 //   provider file - see buildSourceBlocks() below for how these are inlined.
 const SOURCES = [
-  { id: 'peachify', varName: 'Peachify', name: 'Peachify' },
   { id: 'vidrock', varName: 'Vidrock', name: 'Vidrock' },
   { id: 'moviebox', varName: 'MovieBox', name: 'MovieBox' },
   { id: 'rivestream', varName: 'RiveStream', name: 'RiveStream' },
@@ -46,17 +45,13 @@ const SOURCES = [
   // every hostname it uses (a generic Fastly default-SNI cert instead of one
   // for its own domain, 421 Misdirected Request even bypassing that), with
   // no fix possible client-side.
-  { id: 'anime-dekho', varName: 'AnimeDekho', name: 'AnimeDekho' },
   { id: 'kickassanime', varName: 'KickassAnime', name: 'KickassAnime' },
-  { id: 'vegamovies', varName: 'VegaMovies', name: 'VegaMovies' },
   { id: 'allmovieland', varName: 'AllMovieLand', name: 'AllMovieLand' },
   { id: 'cinejoy', varName: 'Cinejoy', name: 'Cinejoy' },
   { id: 'filmyfiy', varName: 'Filmyfiy', name: 'Filmyfiy' },
   { id: 'moviesdrive', varName: 'MoviesDrive', name: 'MoviesDrive' },
-  { id: 'rogmovies', varName: 'RogMovies', name: 'RogMovies' },
   { id: 'topmovies', varName: 'TopMovies', name: 'TopMovies' },
   { id: 'hdmovie2', varName: 'HdMovie2', name: 'HdMovie2' },
-  { id: 'multimovies', varName: 'MultiMovies', name: 'MultiMovies' },
   { id: 'moviesmod', varName: 'MoviesMod', name: 'MoviesMod' },
 ];
 

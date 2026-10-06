@@ -48,6 +48,13 @@ function getTmdbInfo(tmdbId, mediaType) {
     .catch(() => ({ title: '', year: '' }));
 }
 
+function encVidfast(text, stage) {
+  return fetch(`${ENC_DEC_API}/enc-vidfast?text=${encodeURIComponent(text)}&stage=${stage}`)
+    .then(res => res.json())
+    .then(body => (body && body.status === 200 ? body.result : null))
+    .catch(() => null);
+}
+
 function decDec(text) {
   return fetch(`${ENC_DEC_API}/dec-vidfast`, {
     method: 'POST',
@@ -183,23 +190,38 @@ function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) 
           console.log('[VidFastPro] No token found on page');
           return [];
         }
-        return fetch(`${ENC_DEC_API}/enc-vidfast?text=${encodeURIComponent(m[1])}`)
-          .then(res => res.json())
-          .then(body => {
-            const result = body && body.result;
-            if (!result || !result.servers || !result.stream) return [];
-            const headers = Object.assign({}, REQUEST_HEADERS, { 'X-CSRF-Token': result.token });
+        // enc-dec.app's enc-vidfast became a two-stage exchange (re-verified
+        // live 2026-10-06 - the old single call now 400s "Expected query:
+        // text, stage"): stage 1 turns the page token into a first URL (+ a
+        // CSRF token) to POST to; stage 2 turns that response into the
+        // servers/stream URLs and the token the later requests need.
+        const baseHeaders = Object.assign({}, REQUEST_HEADERS, { 'X-Requested-With': 'XMLHttpRequest' });
+        return encVidfast(m[1], 1).then(stage1 => {
+          if (!stage1 || !stage1.stage1) {
+            console.log('[VidFastPro] enc-vidfast stage 1 failed');
+            return [];
+          }
+          return fetch(stage1.stage1, { method: 'POST', headers: Object.assign({}, baseHeaders, { 'X-CSRF-Token': stage1.token }) })
+            .then(res => res.text())
+            .then(text => encVidfast(text, 2))
+            .then(result => {
+              if (!result || !result.servers || !result.stream) {
+                console.log('[VidFastPro] enc-vidfast stage 2 failed');
+                return [];
+              }
+              const headers = Object.assign({}, baseHeaders, { 'X-CSRF-Token': result.token });
 
-            return fetch(result.servers, { method: 'POST', headers })
-              .then(res => res.text())
-              .then(encrypted => decDec(encrypted))
-              .then(servers => {
-                if (!Array.isArray(servers)) return [];
-                console.log(`[VidFastPro] Found ${servers.length} server(s), resolving...`);
-                return Promise.all(servers.map(s => resolveServer(result.stream, s, headers, label)))
-                  .then(results => results.filter(Boolean));
-              });
-          });
+              return fetch(result.servers, { method: 'POST', headers })
+                .then(res => res.text())
+                .then(encrypted => decDec(encrypted))
+                .then(servers => {
+                  if (!Array.isArray(servers)) return [];
+                  console.log(`[VidFastPro] Found ${servers.length} server(s), resolving...`);
+                  return Promise.all(servers.map(s => resolveServer(result.stream, s, headers, label)))
+                    .then(results => results.filter(Boolean));
+                });
+            });
+        });
       })
       .then(streams => {
         console.log(`[VidFastPro] Resolved ${streams.length} stream(s), validating...`);

@@ -52,18 +52,28 @@ let cachedDomain = null;
 let cachedDomainAt = 0;
 const DOMAIN_CACHE_TTL = 1000 * 60 * 30;
 
+// domains.json's value can itself be a stale alias that only redirects to the
+// real site - re-verified live 2026-10-06: "new5.moviesdrive.christmas" 302s
+// to "new1.moviesdrive.beer/?utm=2", and that redirect drops the request PATH,
+// so "{alias}/search.php?q=..." landed on the homepage HTML instead of the
+// JSON search API (no match, silently zero streams). Follow the redirect once
+// on the root URL and use the final origin for everything after.
 function getDomain() {
   if (cachedDomain && Date.now() - cachedDomainAt < DOMAIN_CACHE_TTL) return Promise.resolve(cachedDomain);
   return fetch(DOMAINS_URL, { headers: HEADERS })
     .then(res => res.json())
-    .then(data => {
-      const domain = ((data && data.moviesdrive) || DEFAULT_DOMAIN).replace(/\/+$/, '');
-      cachedDomain = domain;
-      cachedDomainAt = Date.now();
-      console.log(`[MoviesDrive] Using domain: ${domain}`);
-      return domain;
-    })
-    .catch(() => DEFAULT_DOMAIN);
+    .then(data => ((data && data.moviesdrive) || DEFAULT_DOMAIN).replace(/\/+$/, ''))
+    .catch(() => DEFAULT_DOMAIN)
+    .then(domain => fetch(domain + '/', { headers: HEADERS })
+      .then(res => {
+        let resolved = domain;
+        try { resolved = new URL(res.url || domain).origin; } catch (e) { /* keep the alias */ }
+        cachedDomain = resolved;
+        cachedDomainAt = Date.now();
+        console.log(`[MoviesDrive] Using domain: ${resolved}`);
+        return resolved;
+      })
+      .catch(() => domain));
 }
 
 function getTmdbInfo(tmdbId, mediaType) {

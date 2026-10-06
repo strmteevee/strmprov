@@ -205,15 +205,30 @@ function optionsForEpisode(options, episode) {
 // resolved against the embed page's own origin, is already the final signed
 // HLS master playlist. Any other embed shape (no such script) is left
 // unsupported and resolves to null.
+//
+// Re-verified live (2026-10-06): the embed URL on the site's own domain now
+// 302-redirects to the player's real origin ("/hdm2-player/<id>" ->
+// "https://hdm2.biz/play?v=<id>&auth=<jwt>"), so data-stream-url has to be
+// resolved against the FINAL (post-redirect) page URL, not the URL that was
+// requested - resolving against the original sends the playlist request to
+// the wrong host (404). The playlist itself also now rejects requests whose
+// Referer isn't the player's own origin ("Forbidden (Token/Referer
+// Invalid)"), and its token is bound to the User-Agent that loaded the player
+// page, so the returned stream carries both.
 function resolveEmbedToStream(embedUrl, refererUrl) {
   return fetch(embedUrl, { headers: Object.assign({}, HEADERS, { Referer: refererUrl }) })
-    .then(res => (res.ok ? res.text() : null))
-    .then(html => {
-      if (!html) return null;
-      const $ = cheerio.load(html);
-      const dataStreamUrl = $('#player-loader').attr('data-stream-url');
-      if (!dataStreamUrl) return null;
-      return new URL(dataStreamUrl, embedUrl).toString();
+    .then(res => {
+      if (!res.ok) return null;
+      const finalUrl = res.url || embedUrl;
+      return res.text().then(html => {
+        const $ = cheerio.load(html);
+        const dataStreamUrl = $('#player-loader').attr('data-stream-url');
+        if (!dataStreamUrl) return null;
+        return {
+          url: new URL(dataStreamUrl, finalUrl).toString(),
+          referer: `${new URL(finalUrl).origin}/`
+        };
+      });
     })
     .catch(() => null);
 }
@@ -267,14 +282,14 @@ function getStreams(tmdbId, mediaType, season, episode) {
               return [];
             }
             return Promise.all(options.map(opt =>
-              resolveEmbedToStream(opt.src, match.href).then(streamUrl => {
-                if (!streamUrl) return null;
+              resolveEmbedToStream(opt.src, match.href).then(resolved => {
+                if (!resolved) return null;
                 return {
                   name: 'HdMovie2',
                   title: `${match.title}${opt.label ? ' - ' + opt.label : ''}`,
-                  url: streamUrl,
+                  url: resolved.url,
                   quality: 'Auto',
-                  headers: HEADERS,
+                  headers: Object.assign({}, HEADERS, { Referer: resolved.referer }),
                   provider: 'hdmovie2'
                 };
               }).catch(() => null)

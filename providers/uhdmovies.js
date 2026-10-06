@@ -159,6 +159,57 @@ function fixUrl(url, domain) {
     return domain + url;
   return `${domain}/${url}`;
 }
+// The post's download buttons now point at a link-protector gateway
+// (en.thenaukriadda.in/?sid=...) whose markup changed from the old
+// form#landing -> ?go= flow (bypassHrefli below) to a three-stage one,
+// re-verified live 2026-10-06:
+//   1. GET ?sid=...        -> "Please wait..." page with form#lp-land
+//   2. POST it             -> a filler blog article carrying form#lp-s1-form
+//                             (hidden behind a 10s client-side countdown - the
+//                             server doesn't actually enforce it)
+//   3. POST that           -> another article whose script holds the final
+//                             `?lp_go=lp-<id>` URL plus the cookie JS would set
+//                             for it (`sc("lp-<id>","<value>",...)`, after a
+//                             second 6s client-side timer, also unenforced)
+//   4. GET ?lp_go=... with that cookie -> a tiny page whose
+//                             `replace("https:\/\/driveseed.org\/r?key=...")`
+//                             is the real destination.
+// No session cookies from steps 1-3 are needed, only the stage-3 cookie.
+function bypassLpGateway($1, landingForm, host) {
+  return __async(this, null, function* () {
+    const formBody = (form) => {
+      const data = {};
+      form.find("input").each((_, el) => {
+        data[el.attribs.name] = el.attribs.value || "";
+      });
+      return new URLSearchParams(data).toString();
+    };
+    const postForm = (action, body) => fetchWithTimeout(action, {
+      method: "POST",
+      headers: __spreadProps(__spreadValues({}, HEADERS), { "Content-Type": "application/x-www-form-urlencoded" }),
+      body
+    });
+    const res2 = yield postForm(landingForm.attr("action"), formBody(landingForm));
+    const $2 = import_cheerio_without_node_native.default.load(yield res2.text());
+    const hopForm = $2('form[id^="lp-s"]').first();
+    if (!hopForm.length)
+      return null;
+    const res3 = yield postForm(hopForm.attr("action"), formBody(hopForm));
+    const html3 = yield res3.text();
+    const goMatch = html3.match(/\?lp_go=(lp-[a-z0-9]+)/);
+    const cookieMatch = html3.match(/sc\("(lp-[a-z0-9]+)","([^"]+)"/);
+    if (!goMatch || !cookieMatch)
+      return null;
+    const res4 = yield fetchWithTimeout(`${host}?lp_go=${goMatch[1]}`, {
+      headers: __spreadProps(__spreadValues({}, HEADERS), { "Cookie": `${cookieMatch[1]}=${cookieMatch[2].replace(/\\\//g, "/")}` })
+    });
+    const html4 = yield res4.text();
+    const replaceMatch = html4.match(/replace\("([^"]+)"\)/);
+    if (!replaceMatch)
+      return null;
+    return replaceMatch[1].replace(/\\\//g, "/");
+  });
+}
 function bypassHrefli(url) {
   return __async(this, null, function* () {
     const host = getBaseUrl(url);
@@ -166,6 +217,9 @@ function bypassHrefli(url) {
       const res1 = yield fetchWithTimeout(url, { headers: HEADERS });
       const html1 = yield res1.text();
       const $1 = import_cheerio_without_node_native.default.load(html1);
+      const lpLanding = $1("form#lp-land");
+      if (lpLanding.length)
+        return yield bypassLpGateway($1, lpLanding, host);
       const formUrl1 = $1("form#landing").attr("action");
       const formData1 = {};
       $1("form#landing input").each((_, el) => {
@@ -446,7 +500,7 @@ function getStreams(tmdbId, mediaType, seasonNum = 1, episodeNum = 1) {
       }
       const resultGroups = yield Promise.all(allStreams.map((item) => __async(this, null, function* () {
         let finalLink = item.url;
-        if (finalLink.includes("unblockedgames")) {
+        if (finalLink.includes("unblockedgames") || /[?&]sid=/.test(finalLink)) {
           finalLink = yield bypassHrefli(finalLink);
         }
         if (!finalLink)

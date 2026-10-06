@@ -1,6 +1,6 @@
 {
   "name": "Yoru's Repo",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "scrapers": [
     {
       "id": "streamapi",
@@ -29,7 +29,7 @@
       "id": "allsources",
       "name": "All Sources",
       "description": "Combines every other scraper in this repo into one plugin, ranks the results (1080p/4K preferred for movies, everything shown for series, 30GB size cap), and returns after ~15s or once every source has answered, whichever comes first. The individual scrapers below still exist separately if you'd rather enable them one at a time.",
-      "version": "1.0.2",
+      "version": "1.0.3",
       "author": "Nuvio Team",
       "supportedTypes": [
         "movie",
@@ -50,27 +50,6 @@
         "te",
         "ml",
         "kn"
-      ]
-    },
-    {
-      "id": "peachify",
-      "name": "Peachify",
-      "description": "Peachify multi-server streaming (air, holly, multi) with subtitles",
-      "version": "1.1.1",
-      "author": "Nuvio Team",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "filename": "providers/peachify.js",
-      "enabled": true,
-      "formats": [
-        "m3u8"
-      ],
-      "logo": "https://peachify.top/favicon.ico",
-      "contentLanguage": [
-        "en",
-        "hi"
       ]
     },
     {
@@ -161,7 +140,7 @@
       "id": "uhdmovies",
       "name": "UHDMovies",
       "description": "UHD Movies streaming with multiple resolution. Its \"Instant Download\" path terminates at a video-downloads.googleusercontent.com Google Drive link; this used to never support HTTP Range at all, but re-verified live (2026-09-17) that's no longer uniformly true - some of these links now return a genuine 206 with fast end-of-file seeks (needed for many MKVs' seek index), though roughly half still silently ignore Range and hand back the full multi-GB file with a 200. lib/aggregate.js's dropUnplayable now live-probes each Google Drive link's actual Range support and only keeps the ones that pass, instead of the previous blanket domain-based drop. The other path (\"Resume Cloud\") is still gated behind a real Cloudflare Turnstile challenge and isn't used.",
-      "version": "1.4.0",
+      "version": "1.4.1",
       "author": "Nuvio Team",
       "supportedTypes": [
         "movie",
@@ -245,7 +224,7 @@
       "id": "hdhub4u",
       "name": "HDHub4u",
       "description": "Relays an external HDHub4u Stremio addon instead of scraping the site directly - see providers/external-addon.js.",
-      "version": "1.3.1",
+      "version": "1.3.2",
       "author": "Nuvio Team",
       "supportedTypes": [
         "movie",
@@ -272,7 +251,7 @@
       "id": "penguplay",
       "name": "PenguPlay",
       "description": "Relays the PenguPlay Stremio addon, itself a multi-source aggregator (4KHDHub, MovieBox, VegaMovies, HDHub4u, VidLink, VidFast, 2Peckle and others) - see providers/external-addon.js.",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": "Nuvio Team",
       "supportedTypes": [
         "movie",
@@ -299,26 +278,6 @@
       ]
     },
     {
-      "id": "anime-dekho",
-      "name": "AnimeDekho",
-      "description": "AnimeDekho anime streaming (sub/dub)",
-      "version": "1.1.2",
-      "author": "Nuvio Team",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "filename": "providers/anime-dekho.js",
-      "enabled": true,
-      "formats": [
-        "m3u8"
-      ],
-      "logo": "https://www.google.com/s2/favicons?domain=animedekho.app&sz=128",
-      "contentLanguage": [
-        "en"
-      ]
-    },
-    {
       "id": "kickassanime",
       "name": "KickassAnime",
       "description": "KickassAnime multi-server anime streaming (sub/dub)",
@@ -339,32 +298,10 @@
       ]
     },
     {
-      "id": "vegamovies",
-      "name": "VegaMovies",
-      "description": "Direct links via VegaMovies' G-Direct resolver (ported from the open-source CloudStream extension). Its original primary resolver, V-Cloud, is now behind a real Cloudflare challenge and unusable here; this uses the same download page's G-Direct option instead, which isn't protected - verified end-to-end.",
-      "version": "1.0.0",
-      "author": "Nuvio Team",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "filename": "providers/vegamovies.js",
-      "enabled": true,
-      "formats": [
-        "mkv",
-        "mp4"
-      ],
-      "logo": "https://www.google.com/s2/favicons?domain=vegamovies.mq&sz=128",
-      "contentLanguage": [
-        "en",
-        "hi"
-      ]
-    },
-    {
       "id": "vidfastpro",
       "name": "VidFastPro",
       "description": "Multi-server streaming (including a 4K server) via vidfast.vc, ported from the open-source CineStream CloudStream extension. TMDB-id based, no title search involved. Re-enabled 2026-09-20: re-tested the previously-suspected wrong-episode bug live (Breaking Bad S1E1 vs S1E2 - distinct tokens/URLs returned for each, not the same content twice); re-disable if it recurs.",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": "Nuvio Team",
       "supportedTypes": [
         "movie",
@@ -397,27 +334,6 @@
         "m3u8"
       ],
       "logo": "https://www.google.com/s2/favicons?domain=allmovieland.one&sz=128",
-      "contentLanguage": [
-        "en",
-        "hi"
-      ]
-    },
-    {
-      "id": "hindmoviez",
-      "name": "HindMoviez",
-      "description": "Direct links via HindMoviez's WordPress REST API through mvlink.blog -> hshare.lol -> gdshine.org's own API (GET /api/files/s/{id} then POST /api/downloads/{id}/via-worker for a fresh Cloudflare Worker direct link, confirmed live), plus a bonus embedded workers.dev link that can be intermittently dead (self-heals via the normal reachability probing every stream gets). Movies only; older posts' embedded links can point to reused/wrong content - a site-side link-rot issue, not fixable client-side.",
-      "version": "1.0.0",
-      "author": "Nuvio Team",
-      "supportedTypes": [
-        "movie"
-      ],
-      "filename": "providers/hindmoviez.js",
-      "enabled": true,
-      "formats": [
-        "mkv",
-        "mp4"
-      ],
-      "logo": "https://www.google.com/s2/favicons?domain=hindmovie.fit&sz=128",
       "contentLanguage": [
         "en",
         "hi"
@@ -489,7 +405,7 @@
       "id": "moviesdrive",
       "name": "MoviesDrive",
       "description": "Indian movie/TV WordPress-style blog with a Typesense JSON search API. Download links route through mdrive.lol to HubCloud, resolved via this repo's shared HubCloud extractor.",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": "Nuvio Team",
       "supportedTypes": [
         "movie",
@@ -502,28 +418,6 @@
         "mkv"
       ],
       "logo": "https://www.google.com/s2/favicons?domain=moviesdrive.christmas&sz=128",
-      "contentLanguage": [
-        "en",
-        "hi"
-      ]
-    },
-    {
-      "id": "rogmovies",
-      "name": "RogMovies",
-      "description": "Indian movie/TV blog sharing VegaMovies' own backend (Typesense search, same release naming). Resolves G-Direct links through a nexdrive.fit hub to a direct googleusercontent.com stream.",
-      "version": "1.0.0",
-      "author": "Nuvio Team",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "filename": "providers/rogmovies.js",
-      "enabled": true,
-      "formats": [
-        "mp4",
-        "mkv"
-      ],
-      "logo": "https://www.google.com/s2/favicons?domain=rogmovies.best&sz=128",
       "contentLanguage": [
         "en",
         "hi"
@@ -555,7 +449,7 @@
       "id": "hdmovie2",
       "name": "HdMovie2",
       "description": "Hindi/Bollywood-focused movie and TV blog, self-hosted JWPlayer streams - no download-host intermediary, resolves directly to signed HLS playlists.",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": "Nuvio Team",
       "supportedTypes": [
         "movie",
@@ -567,27 +461,6 @@
         "m3u8"
       ],
       "logo": "https://www.google.com/s2/favicons?domain=hdmovie2a.biz&sz=128",
-      "contentLanguage": [
-        "en",
-        "hi"
-      ]
-    },
-    {
-      "id": "multimovies",
-      "name": "MultiMovies",
-      "description": "Dooplay-theme movie/TV embed aggregator - resolves its \"Cineverse\" server option through an AJAX + proxy chain directly to an adaptive HLS master playlist, with multi-language audio and subtitle tracks.",
-      "version": "1.0.0",
-      "author": "Nuvio Team",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "filename": "providers/multimovies.js",
-      "enabled": true,
-      "formats": [
-        "m3u8"
-      ],
-      "logo": "https://www.google.com/s2/favicons?domain=multimovies.casa&sz=128",
       "contentLanguage": [
         "en",
         "hi"

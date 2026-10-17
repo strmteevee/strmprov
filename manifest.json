@@ -1,6 +1,6 @@
 {
   "name": "Yoru's Repo",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "scrapers": [
     {
       "id": "streamapi",
@@ -470,7 +470,7 @@
       "id": "moviesmod",
       "name": "MoviesMod",
       "description": "Indian movie/TV blog resolving through modpro.blog ad-gates to driveseed.org, landing on direct googleusercontent.com streams. Some quality groups route through a since-repurposed gateway domain and are filtered out live rather than guessed at.",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": "Nuvio Team",
       "supportedTypes": [
         "movie",

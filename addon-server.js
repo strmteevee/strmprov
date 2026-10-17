@@ -72,6 +72,7 @@ const indycar = require('./providers/indycar');
 const f1 = require('./providers/f1');
 const sportzx = require('./providers/sportzx');
 const fullraces = require('./providers/fullraces');
+const youtubeChannel = require('./providers/youtube-channel');
 
 const PORT = 3100;
 const CATALOG_SEED_COUNT = 10;
@@ -212,7 +213,7 @@ function buildManifest(profileId) {
         // resources, etc.) - some Stremio-protocol clients key their cached
         // manifest/catalog data on this and won't notice new catalogs on an
         // existing install (even after a reinstall) unless it changes.
-        version: '1.8.0',
+        version: '1.9.0',
         name: 'StrmProv',
         description: `Self-hosted multi-source streaming addon (profile ${profileId}) with a personalized "For You" catalog based on this profile's own watch history.`,
         logo: 'https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png',
@@ -242,7 +243,7 @@ function buildManifest(profileId) {
             // already has full TMDB access for every stream lookup, so it can
             // fill that gap itself - a TMDB-backed fallback for any movie/
             // series 'tt' id, not just this addon's own custom catalogs.
-            { name: 'meta', types: ['movie', 'series'], idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:'] },
+            { name: 'meta', types: ['movie', 'series'], idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:', 'ytlive:'] },
             // Scoped to real tt-id content only - neither IndyCar's nor
             // F1/F2/F3/Academy's/SportzX's own custom id schemes have a
             // subtitle concept, and Cinemeta already handles meta for the
@@ -255,7 +256,7 @@ function buildManifest(profileId) {
             { type: 'series', id: 'strmprov-foryou-series', name: 'For You' },
             ...buildNonPersonalizedCatalogs()
         ],
-        idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:'],
+        idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:', 'ytlive:'],
         behaviorHints: { configurable: false, configurationRequired: false }
     };
 }
@@ -301,7 +302,16 @@ function buildNonPersonalizedCatalogs() {
         // fullraces.com race replays (F1/F2/F3/NASCAR/IndyCar/Formula E/
         // others) - one combined catalog, same reasoning as SportzX's own
         // above (many distinct series, not worth a manifest entry each).
-        { type: 'movie', id: 'fullraces-videos', name: 'FullRaces' }
+        { type: 'movie', id: 'fullraces-videos', name: 'FullRaces' },
+        // YouTube channels' "Live" tabs (providers/youtube-channel.js): what
+        // is live / scheduled right now, and the channel's finished race
+        // broadcasts as a replay catalog. Playback is YouTube's own (ytId).
+        { type: 'movie', id: 'gtworld-live', name: 'GT World Live' },
+        { type: 'movie', id: 'gtworld-races', name: 'GT World Races' },
+        { type: 'movie', id: 'iracing-live', name: 'iRacing Live' },
+        { type: 'movie', id: 'iracing-races', name: 'iRacing Races' },
+        // DTM has no live streams, only highlight videos.
+        { type: 'movie', id: 'dtm-highlights', name: 'DTM Highlights' }
     ];
 }
 
@@ -317,17 +327,17 @@ function buildNonPersonalizedCatalogs() {
 function buildSimpleManifest() {
     return {
         id: 'com.strmprov.addon.simple',
-        version: '1.0.0',
+        version: '1.1.0',
         name: 'StrmProv Simple',
         description: 'Self-hosted multi-source streaming addon - raw aggregated streams from every enabled provider, unranked and untagged. No [PREFERRED] pick, no personalized "For You" catalog, no subtitle hash-matching - just the sources.',
         logo: 'https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png',
         resources: [
             'catalog', 'stream',
-            { name: 'meta', types: ['movie', 'series'], idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:'] }
+            { name: 'meta', types: ['movie', 'series'], idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:', 'ytlive:'] }
         ],
         types: ['movie', 'series'],
         catalogs: buildNonPersonalizedCatalogs(),
-        idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:'],
+        idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:', 'ytlive:'],
         behaviorHints: { configurable: false, configurationRequired: false }
     };
 }
@@ -1015,6 +1025,57 @@ function buildFullracesStreamResponse(id) {
     });
 }
 
+// YouTube channel catalogs (providers/youtube-channel.js) - live / upcoming
+// streams, finished race broadcasts and highlight videos. Same Meta Object
+// shape as the other custom catalogs; ids are `ytlive:<videoId>`.
+function formatDuration(seconds) {
+    if (!seconds) return null;
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m} min`;
+}
+
+function youtubeItemToMeta(item) {
+    const channel = (youtubeChannel.CHANNELS[item.channel] || {}).label;
+    const meta = {
+        id: `ytlive:${item.id}`,
+        type: 'movie',
+        poster: item.thumbnail,
+        posterShape: 'landscape'
+    };
+    if (item.status === 'live') {
+        meta.name = `\u{1F534} ${item.title}`;
+        meta.description = [channel, item.viewers ? `${item.viewers.toLocaleString('en-US')} watching` : 'Live now'].filter(Boolean).join('\n');
+    } else if (item.status === 'upcoming') {
+        meta.name = `\u{1F51C} ${item.title}`;
+        meta.description = [channel, item.scheduledText].filter(Boolean).join('\n');
+    } else {
+        meta.name = youtubeChannel.cleanTitle(item.title);
+        meta.description = [channel, formatDuration(item.durationSeconds)].filter(Boolean).join('\n') || undefined;
+        if (item.timestamp) meta.releaseInfo = new Date(item.timestamp).toISOString().substring(0, 10);
+        if (item.durationSeconds) meta.runtime = formatDuration(item.durationSeconds);
+    }
+    return meta;
+}
+
+function buildYoutubeCatalog(kind, channelKey) {
+    const list = kind === 'live' ? youtubeChannel.listLive(channelKey)
+        : kind === 'highlights' ? youtubeChannel.listHighlights(channelKey)
+            : youtubeChannel.listRaces(channelKey);
+    return list.then((items) => items.map(youtubeItemToMeta));
+}
+
+function buildYoutubeMeta(id) {
+    return youtubeChannel.getItem(id.slice('ytlive:'.length)).then((item) => (item ? youtubeItemToMeta(item) : null));
+}
+
+function buildYoutubeStreamResponse(id) {
+    return youtubeChannel.getStreams(id.slice('ytlive:'.length)).then((streams) => ({ streams })).catch((err) => {
+        console.error(`[addon-server] YouTube stream error for ${id}: ${err.message}`);
+        return { streams: [] };
+    });
+}
+
 // Merges the provider-embedded subtitles a stream already carries with the
 // (possibly hash-matched) results from lib/subtitles.js, deduping by
 // (lang, url) - the embedded ones are guaranteed to ship with this exact
@@ -1174,6 +1235,16 @@ function resolveNonPersonalizedCatalog(type, id) {
     if (id === 'fullraces-videos' && type === 'movie') {
         return buildFullracesCatalog();
     }
+    const youtubeCatalog = {
+        'gtworld-live': ['live', 'gtworld'],
+        'gtworld-races': ['races', 'gtworld'],
+        'iracing-live': ['live', 'iracing'],
+        'iracing-races': ['races', 'iracing'],
+        'dtm-highlights': ['highlights', 'dtm']
+    }[id];
+    if (youtubeCatalog && type === 'movie') {
+        return buildYoutubeCatalog(youtubeCatalog[0], youtubeCatalog[1]);
+    }
     const newCatalogType = { 'strmprov-new-movie': 'movie', 'strmprov-new-series': 'series' }[id];
     if (newCatalogType && type === newCatalogType) {
         const mediaType = type === 'series' ? 'tv' : 'movie';
@@ -1207,6 +1278,9 @@ function resolveMeta(type, id) {
     if (id.startsWith('fullraces:') && type === 'movie') {
         return buildFullracesMeta(id);
     }
+    if (id.startsWith('ytlive:') && type === 'movie') {
+        return buildYoutubeMeta(id);
+    }
     if (id.startsWith('tt') && (type === 'movie' || type === 'series')) {
         return buildTmdbFallbackMeta(id, type);
     }
@@ -1225,6 +1299,7 @@ function resolveCustomStreamResponse(id) {
     if (id.startsWith('f1:')) return buildF1StreamResponse(id);
     if (id.startsWith('sportzx:')) return buildSportzxStreamResponse(id);
     if (id.startsWith('fullraces:')) return buildFullracesStreamResponse(id);
+    if (id.startsWith('ytlive:')) return buildYoutubeStreamResponse(id);
     return null;
 }
 

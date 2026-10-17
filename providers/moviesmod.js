@@ -271,12 +271,59 @@ function fixUrl(url, domain) {
 // Returns null (rather than throwing) for anything that doesn't match the
 // expected form#landing shape - e.g. MoviesMod's dead thenaukriadda.in movie
 // gateway, which lands on an unrelated blog homepage with no such form.
+// The same gateway family also serves a newer three-stage shape (re-verified
+// live 2026-10-12; see providers/uhdmovies.js's bypassLpGateway for the full
+// walk-through): form#lp-land -> POST -> form#lp-s* hop -> POST -> a script
+// carrying `?lp_go=lp-<id>` plus the cookie JS would set for it -> GET with
+// that cookie -> `replace("<destination>")`. The client-side countdowns in
+// between aren't enforced server-side, and no session cookies are needed.
+function bypassLpGateway($1, landingForm, host) {
+  const formBody = (form) => {
+    const data = {};
+    form.find('input').each((_, el) => { data[el.attribs.name] = el.attribs.value || ''; });
+    return new URLSearchParams(data).toString();
+  };
+  const postForm = (action, body) => fetch(action, { method: 'POST', headers: Object.assign({}, HEADERS, { 'Content-Type': 'application/x-www-form-urlencoded' }), body });
+  return postForm(landingForm.attr('action'), formBody(landingForm))
+    .then(res => res.text())
+    .then(html2 => {
+      const hopForm = cheerio.load(html2)('form[id^="lp-s"]').first();
+      if (!hopForm.length) return null;
+      return postForm(hopForm.attr('action'), formBody(hopForm))
+        .then(res => res.text())
+        .then(html3 => {
+          const goMatch = html3.match(/\?lp_go=(lp-[a-z0-9]+)/);
+          const cookieMatch = html3.match(/sc\("(lp-[a-z0-9]+)","([^"]+)"/);
+          if (!goMatch || !cookieMatch) return null;
+          return fetch(`${host}?lp_go=${goMatch[1]}`, { headers: Object.assign({}, HEADERS, { Cookie: `${cookieMatch[1]}=${cookieMatch[2].replace(/\\\//g, '/')}` }) })
+            .then(res => res.text())
+            .then(html4 => {
+              const m = html4.match(/replace\("([^"]+)"\)/);
+              if (!m) return null;
+              // The destination is driveseed's own "/r?key=..." redirector,
+              // whose page in turn holds the real /file/ or /list/ path -
+              // the same last hop the older flow below already does.
+              const driveUrl = m[1].replace(/\\\//g, '/');
+              return fetch(driveUrl, { headers: HEADERS })
+                .then(res => res.text())
+                .then(html5 => {
+                  const pathMatch = html5.match(/replace\("([^"]+)"\)/);
+                  if (!pathMatch || pathMatch[1] === '/404') return null;
+                  return fixUrl(pathMatch[1].replace(/\\\//g, '/'), getBaseUrl(driveUrl));
+                });
+            });
+        });
+    });
+}
+
 function bypassGateway(url) {
   const host = getBaseUrl(url);
   return fetch(url, { headers: HEADERS })
     .then(res => res.text())
     .then(html1 => {
       const $1 = cheerio.load(html1);
+      const lpLanding = $1('form#lp-land');
+      if (lpLanding.length) return bypassLpGateway($1, lpLanding, host);
       const formUrl1 = $1('form#landing').attr('action');
       if (!formUrl1) return null;
       const formData1 = {};

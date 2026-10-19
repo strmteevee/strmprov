@@ -70,11 +70,10 @@ const gemini = require('./lib/gemini');
 const subtitles = require('./lib/subtitles');
 const indycar = require('./providers/indycar');
 const f1 = require('./providers/f1');
-const sportzx = require('./providers/sportzx');
 const fullraces = require('./providers/fullraces');
 const youtubeChannel = require('./providers/youtube-channel');
-// Retries hostnames the home router's DNS refuses (e.g. SportzX's events
-// server) via DNS-over-HTTPS - see lib/dnsFallback.js.
+// Retries hostnames the home router's DNS refuses via DNS-over-HTTPS - see
+// lib/dnsFallback.js.
 require('./lib/dnsFallback').install();
 
 const PORT = 3100;
@@ -216,7 +215,7 @@ function buildManifest(profileId) {
         // resources, etc.) - some Stremio-protocol clients key their cached
         // manifest/catalog data on this and won't notice new catalogs on an
         // existing install (even after a reinstall) unless it changes.
-        version: '1.10.0',
+        version: '1.11.0',
         name: 'StrmProv',
         description: `Self-hosted multi-source streaming addon (profile ${profileId}) with a personalized "For You" catalog based on this profile's own watch history.`,
         logo: 'https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png',
@@ -231,7 +230,7 @@ function buildManifest(profileId) {
         // (for indycar: originally, and the same fix reused for f1:).
         resources: [
             'catalog', 'stream',
-            // The live catalogs (SportzX, GT World Live, iRacing Live) are
+            // The live catalogs (GT World Live, iRacing Live) are
             // Stremio 'tv', by request (2026-10-19), so clients with a separate
             // live page put them there. Before that they were 'movie' because
             // it was unconfirmed whether Nuvio shows 'tv' catalogs at all.
@@ -243,9 +242,9 @@ function buildManifest(profileId) {
             // already has full TMDB access for every stream lookup, so it can
             // fill that gap itself - a TMDB-backed fallback for any movie/
             // series 'tt' id, not just this addon's own custom catalogs.
-            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:', 'ytlive:'] },
+            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:'] },
             // Scoped to real tt-id content only - neither IndyCar's nor
-            // F1/F2/F3/Academy's/SportzX's own custom id schemes have a
+            // F1/F2/F3/Academy's own custom id schemes have a
             // subtitle concept, and Cinemeta already handles meta for the
             // tt-id ones, so there's nothing for this resource to add there.
             { name: 'subtitles', types: ['movie', 'series'], idPrefixes: ['tt'] }
@@ -256,7 +255,7 @@ function buildManifest(profileId) {
             { type: 'series', id: 'strmprov-foryou-series', name: 'For You' },
             ...buildNonPersonalizedCatalogs()
         ],
-        idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:', 'ytlive:'],
+        idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:'],
         behaviorHints: { configurable: false, configurationRequired: false }
     };
 }
@@ -295,13 +294,9 @@ function buildNonPersonalizedCatalogs() {
         { type: 'movie', id: 'f2-highlights', name: 'F2 Race Highlights' },
         { type: 'movie', id: 'f3-highlights', name: 'F3 Race Highlights' },
         { type: 'movie', id: 'f1academy-highlights', name: 'F1 Academy Highlights' },
-        // One combined catalog rather than one per sport - see
-        // buildSportzxCatalog below for why. type: 'movie', not 'tv' -
-        // see the meta resource entry above for why.
-        { type: 'tv', id: 'sportzx-live', name: 'SportzX Live' },
         // fullraces.com race replays (F1/F2/F3/NASCAR/IndyCar/Formula E/
-        // others) - one combined catalog, same reasoning as SportzX's own
-        // above (many distinct series, not worth a manifest entry each).
+        // others) - one combined catalog (many distinct series, not worth a
+        // manifest entry each).
         { type: 'movie', id: 'fullraces-videos', name: 'FullRaces' },
         // YouTube channels' "Live" tabs (providers/youtube-channel.js): what
         // is live / scheduled right now, and the channel's finished race
@@ -327,17 +322,17 @@ function buildNonPersonalizedCatalogs() {
 function buildSimpleManifest() {
     return {
         id: 'com.strmprov.addon.simple',
-        version: '1.2.0',
+        version: '1.3.0',
         name: 'StrmProv Simple',
         description: 'Self-hosted multi-source streaming addon - raw aggregated streams from every enabled provider, unranked and untagged. No [PREFERRED] pick, no personalized "For You" catalog, no subtitle hash-matching - just the sources.',
         logo: 'https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png',
         resources: [
             'catalog', 'stream',
-            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:', 'ytlive:'] }
+            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:'] }
         ],
         types: ['movie', 'series', 'tv'],
         catalogs: buildNonPersonalizedCatalogs(),
-        idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:', 'ytlive:'],
+        idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:'],
         behaviorHints: { configurable: false, configurationRequired: false }
     };
 }
@@ -770,121 +765,6 @@ function buildF1StreamResponse(id) {
     });
 }
 
-// Same team-vs-team / plain-title display logic and 🔴/🔜/✅ status prefix
-// the real SportzX app itself uses for its own event list (recovered from
-// its decompiled source), so the catalog reads the same way the app's own
-// would - live events sort first, then upcoming, then everything else.
-// startTime/endTime ("2026/09/24 08:30:00 +0000") parse correctly as-is via
-// Date.parse (confirmed live) - see providers/sportzx.js's isEventLive for
-// why this must NOT be rewritten toward an ISO-ish shape first.
-function sportzxEventStatus(event) {
-    const info = event && event.eventInfo;
-    if (!info) return '';
-    const start = info.startTime ? Date.parse(info.startTime) : NaN;
-    const end = info.endTime ? Date.parse(info.endTime) : NaN;
-    const now = Date.now();
-    if (!Number.isNaN(end) && now >= end) return '✅';
-    if (Number.isNaN(start) || now < start) return Number.isNaN(start) ? '' : '\u{1F51C}';
-    return '\u{1F534}';
-}
-function sportzxDisplayTitle(event) {
-    const info = event && event.eventInfo;
-    if (info && info.teamA && info.teamB) {
-        return info.teamA === info.teamB ? info.teamA : `${info.teamA} vs ${info.teamB}`;
-    }
-    return event.title;
-}
-// SportzX's own startTime/endTime strings are UTC (the "+0000" suffix - see
-// sportzxEventStatus's comment above) but read as if they were already local,
-// so showing them as-is is 1-2 hours behind actual Amsterdam time depending
-// on the CET/CEST DST transition. Intl's own IANA-timezone support handles
-// that transition automatically - no manual +1/+2 offset math needed, and it
-// won't silently drift wrong across the DST boundary the way a fixed offset
-// would.
-const AMSTERDAM_TIME_PARTS = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Europe/Amsterdam',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', hour12: false
-});
-function formatAmsterdamTime(rawTime) {
-    if (!rawTime) return null;
-    const ts = Date.parse(rawTime);
-    if (Number.isNaN(ts)) return null;
-    const parts = {};
-    for (const part of AMSTERDAM_TIME_PARTS.formatToParts(new Date(ts))) parts[part.type] = part.value;
-    return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
-}
-function sportzxEventToMeta(event) {
-    const status = sportzxEventStatus(event);
-    const title = sportzxDisplayTitle(event);
-    const info = event.eventInfo || {};
-    const startLocal = formatAmsterdamTime(info.startTime);
-    const endLocal = formatAmsterdamTime(info.endTime);
-    const timeLine = startLocal
-        ? `${startLocal}${endLocal ? ` - ${endLocal}` : ''} (Amsterdam time)`
-        : null;
-    return {
-        id: `sportzx:${event.id}`,
-        type: 'tv',
-        name: status ? `${status} ${title}` : title,
-        poster: info.eventBanner || info.teamAFlag || undefined,
-        description: [info.eventName, timeLine].filter(Boolean).join('\n') || undefined
-    };
-}
-
-// By request: most of the 92-odd events events.json carries are hours-to-days
-// away, and their `formats` links are largely non-functional placeholders
-// until the event's own feed actually goes live - so a catalog full of every
-// event regardless of timing meant most clicks landed on something that
-// couldn't stream yet (this is also what turned out to explain "SportzX
-// isn't working": every event's start/end time was silently failing to parse
-// at all, from the same broken date rewrite fixed in providers/sportzx.js's
-// isEventLive - meaning live/upcoming status was never computed correctly
-// either). This keeps only events that are already live or start within the
-// next 30 minutes. Date.now()/Date.parse both operate in absolute UTC
-// regardless of this server's own timezone, so this needs no explicit
-// Amsterdam-time conversion - "half an hour from now" is the same instant in
-// every zone.
-const STARTING_SOON_WINDOW_MS = 30 * 60 * 1000;
-function sportzxStartTime(event) {
-    const info = event && event.eventInfo;
-    if (!info || !info.startTime) return NaN;
-    return Date.parse(info.startTime);
-}
-function isSportzxStartingSoonOrLive(event) {
-    const start = sportzxStartTime(event);
-    if (Number.isNaN(start)) return false;
-    const info = event.eventInfo;
-    const end = info.endTime ? Date.parse(info.endTime) : NaN;
-    const now = Date.now();
-    if (!Number.isNaN(end) && now >= end) return false; // already ended
-    return start <= now + STARTING_SOON_WINDOW_MS;
-}
-
-// One combined catalog rather than one per sport (events.json's own `cat`
-// field has dozens of distinct values, including several that are really
-// just regional channel bundles, not sports). Sorted first-to-last by actual
-// start time now (by request) - a live event naturally sorts ahead of one
-// still starting soon since it started earlier, so this alone still opens
-// with what's live right now without needing a separate status-based rank.
-function buildSportzxCatalog() {
-    return sportzx.listEvents().then((events) => {
-        const sorted = events.filter(isSportzxStartingSoonOrLive).sort((a, b) => {
-            const aStart = sportzxStartTime(a);
-            const bStart = sportzxStartTime(b);
-            return (Number.isNaN(aStart) ? Infinity : aStart) - (Number.isNaN(bStart) ? Infinity : bStart);
-        });
-        return sorted.map(sportzxEventToMeta);
-    });
-}
-
-// Same reasoning as buildIndycarMeta/buildF1Meta above - Cinemeta has no way
-// to resolve our own sportzx: id scheme.
-function buildSportzxMeta(id) {
-    const eventId = id.slice('sportzx:'.length);
-    return sportzx.getEvent(eventId).then((event) => (event ? sportzxEventToMeta(event) : null));
-}
-
 // TMDB-backed meta fallback for real 'tt' ids - added by request after
 // Cinemeta (and every other public meta addon tried) came up empty for a
 // genuinely real, recently-released movie (tt8814476) that just hadn't been
@@ -968,20 +848,6 @@ function buildTmdbFallbackMeta(imdbId, type) {
     }).catch(err => {
         console.error(`[addon-server] TMDB meta fallback failed for ${imdbId}: ${err.message}`);
         return null;
-    });
-}
-
-function buildSportzxStreamResponse(id) {
-    const eventId = id.slice('sportzx:'.length);
-    return sportzx.getEventStreams(eventId).then((streams) => ({
-        streams: streams.map((s) => {
-            const behaviorHints = { notWebReady: true };
-            if (s.headers && Object.keys(s.headers).length) behaviorHints.proxyHeaders = { request: s.headers };
-            return { name: s.name, title: s.quality || 'Live', url: s.url, behaviorHints };
-        })
-    })).catch((err) => {
-        console.error(`[addon-server] SportzX stream error for ${id}: ${err.message}`);
-        return { streams: [] };
     });
 }
 
@@ -1231,9 +1097,6 @@ function resolveNonPersonalizedCatalog(type, id) {
     if (f1CatalogSeries && type === 'movie') {
         return buildF1Catalog(f1CatalogSeries);
     }
-    if (id === 'sportzx-live' && type === 'tv') {
-        return buildSportzxCatalog();
-    }
     if (id === 'fullraces-videos' && type === 'movie') {
         return buildFullracesCatalog();
     }
@@ -1274,9 +1137,6 @@ function resolveMeta(type, id) {
     if (id.startsWith('f1:') && type === 'movie') {
         return buildF1Meta(id);
     }
-    if (id.startsWith('sportzx:') && (type === 'tv' || type === 'movie')) {
-        return buildSportzxMeta(id);
-    }
     if (id.startsWith('fullraces:') && type === 'movie') {
         return buildFullracesMeta(id);
     }
@@ -1289,7 +1149,7 @@ function resolveMeta(type, id) {
     return Promise.resolve(null);
 }
 
-// The custom-catalog id prefixes (indycar:/f1:/sportzx:/fullraces:) already
+// The custom-catalog id prefixes (indycar:/f1:/fullraces:) already
 // return plain, unranked streams with no personalization or subtitle
 // enrichment of any kind - identical for both routes. Only a real 'tt' id
 // differs, since that's the one case with a "full" (buildStreamResponse) and
@@ -1299,7 +1159,6 @@ function resolveMeta(type, id) {
 function resolveCustomStreamResponse(id) {
     if (id.startsWith('indycar:')) return buildIndycarStreamResponse(id);
     if (id.startsWith('f1:')) return buildF1StreamResponse(id);
-    if (id.startsWith('sportzx:')) return buildSportzxStreamResponse(id);
     if (id.startsWith('fullraces:')) return buildFullracesStreamResponse(id);
     if (id.startsWith('ytlive:')) return buildYoutubeStreamResponse(id);
     return null;
@@ -1528,13 +1387,6 @@ server.listen(PORT, () => {
     // already warm.
     indycar.listVideos(null).catch((err) => console.error(`[addon-server] IndyCar cache warm-up failed: ${err.message}`));
     f1.listVideos(null).catch((err) => console.error(`[addon-server] F1 cache warm-up failed: ${err.message}`));
-    // Same reasoning as the two crawls above - SportzX's cold start is a
-    // Firebase Remote Config round trip plus a decrypt, not a multi-page
-    // crawl, but it's still real network latency (and, confirmed live
-    // during development, this specific backend can be slow or transiently
-    // unreachable) that a real user's first catalog open shouldn't have to
-    // wait through.
-    sportzx.listEvents().catch((err) => console.error(`[addon-server] SportzX cache warm-up failed: ${err.message}`));
     // Same reasoning as the warm-up calls above - a 15-category crawl on a
     // real user's first catalog open would otherwise risk Nuvio's own
     // catalog-fetch timeout giving up before it finishes.

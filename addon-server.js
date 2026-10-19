@@ -213,7 +213,7 @@ function buildManifest(profileId) {
         // resources, etc.) - some Stremio-protocol clients key their cached
         // manifest/catalog data on this and won't notice new catalogs on an
         // existing install (even after a reinstall) unless it changes.
-        version: '1.9.0',
+        version: '1.10.0',
         name: 'StrmProv',
         description: `Self-hosted multi-source streaming addon (profile ${profileId}) with a personalized "For You" catalog based on this profile's own watch history.`,
         logo: 'https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png',
@@ -228,13 +228,10 @@ function buildManifest(profileId) {
         // (for indycar: originally, and the same fix reused for f1:).
         resources: [
             'catalog', 'stream',
-            // SportzX events are genuinely live/linear, not on-demand clips
-            // like IndyCar/F1's, but 'movie' is used here anyway rather than
-            // Stremio's own 'tv' catalog type - IndyCar/F1's 'movie' catalogs
-            // are confirmed working in Nuvio's UI, while 'tv' was untested
-            // and Nuvio's app surfaces are built around movie/series
-            // browsing, not a separate live-channel guide screen; there's no
-            // confirmation it renders a 'tv' catalog anywhere at all.
+            // The live catalogs (SportzX, GT World Live, iRacing Live) are
+            // Stremio 'tv', by request (2026-10-19), so clients with a separate
+            // live page put them there. Before that they were 'movie' because
+            // it was unconfirmed whether Nuvio shows 'tv' catalogs at all.
             // 'tt' ids added by request 2026-09-21: Cinemeta (and every other
             // public meta addon tried) had no metadata at all for a real,
             // valid, recently-released title (tt8814476 - confirmed live via
@@ -243,14 +240,14 @@ function buildManifest(profileId) {
             // already has full TMDB access for every stream lookup, so it can
             // fill that gap itself - a TMDB-backed fallback for any movie/
             // series 'tt' id, not just this addon's own custom catalogs.
-            { name: 'meta', types: ['movie', 'series'], idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:', 'ytlive:'] },
+            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:', 'ytlive:'] },
             // Scoped to real tt-id content only - neither IndyCar's nor
             // F1/F2/F3/Academy's/SportzX's own custom id schemes have a
             // subtitle concept, and Cinemeta already handles meta for the
             // tt-id ones, so there's nothing for this resource to add there.
             { name: 'subtitles', types: ['movie', 'series'], idPrefixes: ['tt'] }
         ],
-        types: ['movie', 'series'],
+        types: ['movie', 'series', 'tv'],
         catalogs: [
             { type: 'movie', id: 'strmprov-foryou-movie', name: 'For You' },
             { type: 'series', id: 'strmprov-foryou-series', name: 'For You' },
@@ -298,7 +295,7 @@ function buildNonPersonalizedCatalogs() {
         // One combined catalog rather than one per sport - see
         // buildSportzxCatalog below for why. type: 'movie', not 'tv' -
         // see the meta resource entry above for why.
-        { type: 'movie', id: 'sportzx-live', name: 'SportzX Live' },
+        { type: 'tv', id: 'sportzx-live', name: 'SportzX Live' },
         // fullraces.com race replays (F1/F2/F3/NASCAR/IndyCar/Formula E/
         // others) - one combined catalog, same reasoning as SportzX's own
         // above (many distinct series, not worth a manifest entry each).
@@ -306,9 +303,9 @@ function buildNonPersonalizedCatalogs() {
         // YouTube channels' "Live" tabs (providers/youtube-channel.js): what
         // is live / scheduled right now, and the channel's finished race
         // broadcasts as a replay catalog. Playback is YouTube's own (ytId).
-        { type: 'movie', id: 'gtworld-live', name: 'GT World Live' },
+        { type: 'tv', id: 'gtworld-live', name: 'GT World Live' },
         { type: 'movie', id: 'gtworld-races', name: 'GT World Races' },
-        { type: 'movie', id: 'iracing-live', name: 'iRacing Live' },
+        { type: 'tv', id: 'iracing-live', name: 'iRacing Live' },
         { type: 'movie', id: 'iracing-races', name: 'iRacing Races' },
         // DTM has no live streams, only highlight videos.
         { type: 'movie', id: 'dtm-highlights', name: 'DTM Highlights' }
@@ -327,15 +324,15 @@ function buildNonPersonalizedCatalogs() {
 function buildSimpleManifest() {
     return {
         id: 'com.strmprov.addon.simple',
-        version: '1.1.0',
+        version: '1.2.0',
         name: 'StrmProv Simple',
         description: 'Self-hosted multi-source streaming addon - raw aggregated streams from every enabled provider, unranked and untagged. No [PREFERRED] pick, no personalized "For You" catalog, no subtitle hash-matching - just the sources.',
         logo: 'https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png',
         resources: [
             'catalog', 'stream',
-            { name: 'meta', types: ['movie', 'series'], idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:', 'ytlive:'] }
+            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:', 'ytlive:'] }
         ],
-        types: ['movie', 'series'],
+        types: ['movie', 'series', 'tv'],
         catalogs: buildNonPersonalizedCatalogs(),
         idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'fullraces:', 'ytlive:'],
         behaviorHints: { configurable: false, configurationRequired: false }
@@ -825,7 +822,7 @@ function sportzxEventToMeta(event) {
         : null;
     return {
         id: `sportzx:${event.id}`,
-        type: 'movie',
+        type: 'tv',
         name: status ? `${status} ${title}` : title,
         poster: info.eventBanner || info.teamAFlag || undefined,
         description: [info.eventName, timeLine].filter(Boolean).join('\n') || undefined
@@ -1039,7 +1036,9 @@ function youtubeItemToMeta(item) {
     const channel = (youtubeChannel.CHANNELS[item.channel] || {}).label;
     const meta = {
         id: `ytlive:${item.id}`,
-        type: 'movie',
+        // Live and scheduled streams are Stremio 'tv' (clients with a live page
+        // list them there); finished races and highlights are on-demand 'movie'.
+        type: item.status === 'live' || item.status === 'upcoming' ? 'tv' : 'movie',
         poster: item.thumbnail,
         posterShape: 'landscape'
     };
@@ -1229,7 +1228,7 @@ function resolveNonPersonalizedCatalog(type, id) {
     if (f1CatalogSeries && type === 'movie') {
         return buildF1Catalog(f1CatalogSeries);
     }
-    if (id === 'sportzx-live' && type === 'movie') {
+    if (id === 'sportzx-live' && type === 'tv') {
         return buildSportzxCatalog();
     }
     if (id === 'fullraces-videos' && type === 'movie') {
@@ -1242,7 +1241,7 @@ function resolveNonPersonalizedCatalog(type, id) {
         'iracing-races': ['races', 'iracing'],
         'dtm-highlights': ['highlights', 'dtm']
     }[id];
-    if (youtubeCatalog && type === 'movie') {
+    if (youtubeCatalog && type === (youtubeCatalog[0] === 'live' ? 'tv' : 'movie')) {
         return buildYoutubeCatalog(youtubeCatalog[0], youtubeCatalog[1]);
     }
     const newCatalogType = { 'strmprov-new-movie': 'movie', 'strmprov-new-series': 'series' }[id];
@@ -1272,13 +1271,13 @@ function resolveMeta(type, id) {
     if (id.startsWith('f1:') && type === 'movie') {
         return buildF1Meta(id);
     }
-    if (id.startsWith('sportzx:') && type === 'movie') {
+    if (id.startsWith('sportzx:') && (type === 'tv' || type === 'movie')) {
         return buildSportzxMeta(id);
     }
     if (id.startsWith('fullraces:') && type === 'movie') {
         return buildFullracesMeta(id);
     }
-    if (id.startsWith('ytlive:') && type === 'movie') {
+    if (id.startsWith('ytlive:') && (type === 'tv' || type === 'movie')) {
         return buildYoutubeMeta(id);
     }
     if (id.startsWith('tt') && (type === 'movie' || type === 'series')) {

@@ -16,14 +16,18 @@
 //     `continuationItemRenderer` token at the end of the grid, exchanged via
 //     the InnerTube browse endpoint (no login needed for this call).
 //
-// What this deliberately does NOT do: resolve a direct media URL. Re-verified
-// the same day that every InnerTube `player` client (IOS, ANDROID_VR) and the
-// watch page itself answer "Sign in to confirm you're not a bot" from this
-// network for live and finished videos alike, so there is no stream URL to
-// extract. Playback therefore uses Stremio's native `ytId` stream type (the
-// client plays it through YouTube itself), the same approach
-// providers/indycar.js already uses for its full-race replays, plus an
-// `externalUrl` that opens the video in the YouTube app.
+// Playback: each video is resolved to its HLS master playlist (every quality
+// up to 1080p, audio included) the same way the Nuvio app resolves trailers
+// and `ytId` streams (NuvioMobile's InAppYouTubeExtractor): read the watch
+// page's INNERTUBE_API_KEY and VISITOR_DATA, then ask the InnerTube `player`
+// API as the visionOS client (falling back to Android, then iOS) with that
+// visitor id. Re-verified live 2026-10-19 for a finished video and a live
+// stream. A bare player call without the visitor id - what was tried first -
+// gets "Sign in to confirm you're not a bot" from this network instead.
+// The playlist URL is tied to the public IP that asked for it, which is fine
+// for devices on the same home network as the server; for anything else a
+// `ytId` stream (played through YouTube itself) and an `externalUrl` (opens
+// the YouTube app) are offered as well.
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const PAGE_HEADERS = {
@@ -272,13 +276,21 @@ function fetchContinuation(token, version, visitorData) {
 
 const cache = new Map(); // key -> { value, at, inflight }
 
-function cached(key, ttlMs, loader) {
+// emptyIsFailure: a channel's finished races/highlights are never really
+// empty, so an empty list means YouTube served an odd page (seen once live) -
+// keep the previous list and retry on the next request instead of caching
+// an empty catalog for the whole TTL. A live list can legitimately be empty.
+function cached(key, ttlMs, loader, emptyIsFailure) {
   const entry = cache.get(key) || { value: null, at: 0, inflight: null };
   cache.set(key, entry);
   if (entry.value && Date.now() - entry.at < ttlMs) return Promise.resolve(entry.value);
   if (entry.inflight) return entry.inflight;
   entry.inflight = loader()
     .then(value => {
+      if (emptyIsFailure && Array.isArray(value) && value.length === 0) {
+        console.error(`[YouTube] ${key} came back empty, not caching it`);
+        return entry.value || [];
+      }
       entry.value = value;
       entry.at = Date.now();
       return value;
@@ -339,7 +351,7 @@ function listPast(channelKey, cachePrefix, keep) {
             .map(i => Object.assign({ channel: channelKey }, i));
         });
     });
-  });
+  }, true);
 }
 
 // Finished race broadcasts, newest first.
@@ -370,16 +382,118 @@ function getItem(videoId) {
     .catch(() => null);
 }
 
-// Stremio stream objects: native YouTube playback plus an "open in the
-// YouTube app" fallback.
+// ---- HLS resolution (see file header) ----
+
+const PLAYER_CLIENTS = [
+  {
+    id: '101', version: '1.02',
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15',
+    context: { clientName: 'VISIONOS', clientVersion: '1.02', deviceMake: 'Apple', deviceModel: 'RealityDevice17,1', osName: 'visionOS', osVersion: '26.5.23O471', hl: 'en', gl: 'US' }
+  },
+  {
+    id: '3', version: '20.10.35',
+    userAgent: 'com.google.android.youtube/20.10.35 (Linux; U; Android 14; en_US) gzip',
+    context: { clientName: 'ANDROID', clientVersion: '20.10.35', osName: 'Android', osVersion: '14', platform: 'MOBILE', androidSdkVersion: 34, hl: 'en', gl: 'US' }
+  },
+  {
+    id: '5', version: '20.10.1',
+    userAgent: 'com.google.ios.youtube/20.10.1 (iPhone16,2; U; CPU iOS 17_4 like Mac OS X)',
+    context: { clientName: 'IOS', clientVersion: '20.10.1', deviceModel: 'iPhone16,2', osName: 'iPhone', osVersion: '17.4.0.21E219', platform: 'MOBILE', hl: 'en', gl: 'US' }
+  }
+];
+
+// Playlist URLs stay valid for hours; a short cache just avoids re-resolving
+// when a client asks for the same video's streams twice in a row.
+const HLS_CACHE_TTL_MS = 5 * 60 * 1000;
+const hlsCache = new Map(); // videoId -> { value, at }
+
+function requestPlayer(apiKey, visitorData, videoId, client) {
+  const headers = {
+    'accept-language': 'en-US,en;q=0.9',
+    'content-type': 'application/json',
+    origin: 'https://www.youtube.com',
+    'x-youtube-client-name': client.id,
+    'x-youtube-client-version': client.version,
+    'user-agent': client.userAgent
+  };
+  if (visitorData) headers['x-goog-visitor-id'] = visitorData;
+  return fetch(`https://www.youtube.com/youtubei/v1/player?key=${encodeURIComponent(apiKey)}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      videoId,
+      contentCheckOk: true,
+      racyCheckOk: true,
+      context: { client: client.context },
+      playbackContext: { contentPlaybackContext: { html5Preference: 'HTML5_PREF_WANTS' } }
+    })
+  }).then(res => (res.ok ? res.json() : null)).catch(() => null);
+}
+
+// Highest variant in the master playlist, for the stream's quality label.
+function maxHeight(masterUrl) {
+  return fetch(masterUrl)
+    .then(res => (res.ok ? res.text() : ''))
+    .then(text => {
+      if (!/^#EXTM3U/.test(text.trim())) return null;
+      const heights = [...text.matchAll(/RESOLUTION=\d+x(\d+)/g)].map(m => parseInt(m[1], 10));
+      return heights.length ? Math.max(...heights) : 0;
+    })
+    .catch(() => null);
+}
+
+// -> { url, height } or null.
+function resolveHls(videoId) {
+  const hit = hlsCache.get(videoId);
+  if (hit && Date.now() - hit.at < HLS_CACHE_TTL_MS) return Promise.resolve(hit.value);
+  return fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, { headers: { 'accept-language': 'en-US,en;q=0.9', 'user-agent': USER_AGENT } })
+    .then(res => (res.ok ? res.text() : ''))
+    .then(html => {
+      const apiKey = (/"INNERTUBE_API_KEY":"([^"]+)"/.exec(html) || [])[1];
+      const visitorData = (/"VISITOR_DATA":"([^"]+)"/.exec(html) || [])[1];
+      if (!apiKey) return null;
+      const tryClient = (i) => {
+        if (i >= PLAYER_CLIENTS.length) return Promise.resolve(null);
+        return requestPlayer(apiKey, visitorData, videoId, PLAYER_CLIENTS[i]).then(json => {
+          const url = json && json.streamingData && json.streamingData.hlsManifestUrl;
+          if (!url) return tryClient(i + 1);
+          // Playable playlist or bust - a URL that doesn't answer with a real
+          // master playlist is no use to a player.
+          return maxHeight(url).then(height => (height === null ? tryClient(i + 1) : { url, height }));
+        });
+      };
+      return tryClient(0);
+    })
+    .then(value => {
+      if (value) hlsCache.set(videoId, { value, at: Date.now() });
+      return value;
+    })
+    .catch(err => {
+      console.error(`[YouTube] HLS resolve failed for ${videoId}: ${err.message}`);
+      return null;
+    });
+}
+
+// Stremio stream objects: the direct HLS playlist first (plays in any
+// player), then YouTube's own playback (ytId) and an "open in the YouTube
+// app" link as fallbacks.
 function getStreams(videoId) {
-  return getItem(videoId).then(item => {
+  return Promise.all([getItem(videoId), resolveHls(videoId)]).then(([item, hls]) => {
     const kind = item && item.status === 'live' ? 'Live' : item && item.status === 'upcoming' ? 'Upcoming' : 'Replay';
-    return [
-      { name: `YouTube ${kind}`, title: item ? item.title : '', ytId: videoId },
-      { name: 'Open in YouTube', title: item ? item.title : '', externalUrl: `https://www.youtube.com/watch?v=${videoId}` }
-    ];
+    const title = item ? item.title : '';
+    const streams = [];
+    if (hls) {
+      streams.push({
+        name: `YouTube ${kind}`,
+        title: hls.height ? `${title}\nHLS up to ${hls.height}p` : title,
+        url: hls.url,
+        behaviorHints: { notWebReady: true }
+      });
+    }
+    streams.push({ name: hls ? `YouTube ${kind} (YouTube player)` : `YouTube ${kind}`, title, ytId: videoId });
+    streams.push({ name: 'Open in YouTube', title, externalUrl: `https://www.youtube.com/watch?v=${videoId}` });
+    return streams;
   });
 }
 
-module.exports = { CHANNELS, channelKeys, cleanTitle, listLive, listRaces, listHighlights, getItem, getStreams, parseRelativeAge, parseScheduled, parseDuration, parseViewers };
+module.exports = { CHANNELS, channelKeys, cleanTitle, listLive, listRaces, listHighlights, getItem, getStreams, resolveHls, parseRelativeAge, parseScheduled, parseDuration, parseViewers };

@@ -73,6 +73,9 @@ const f1 = require('./providers/f1');
 const sportzx = require('./providers/sportzx');
 const fullraces = require('./providers/fullraces');
 const youtubeChannel = require('./providers/youtube-channel');
+// Retries hostnames the home router's DNS refuses (e.g. SportzX's events
+// server) via DNS-over-HTTPS - see lib/dnsFallback.js.
+require('./lib/dnsFallback').install();
 
 const PORT = 3100;
 const CATALOG_SEED_COUNT = 10;

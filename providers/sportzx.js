@@ -235,13 +235,37 @@ function parseLinkAndHeaders(link) {
     return { url, headers };
 }
 
+// Confirmed live 2026-10-19 that an event's channel list mixes working feeds
+// with dead ones (403 even with the entry's own headers), so each is test-
+// fetched before it's offered: an HLS feed has to answer with a real
+// "#EXTM3U" playlist, anything else with a 2xx. Probed concurrently with a
+// short timeout, so it adds roughly one round trip, not one per feed.
+const PROBE_TIMEOUT_MS = 6000;
+
+function isPlayable(stream) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+    return fetch(stream.url, { headers: stream.headers || {}, signal: controller.signal })
+        .then((res) => {
+            if (!res.ok) return false;
+            const type = res.headers.get('content-type') || '';
+            if (/\.m3u8(\?|$)/i.test(stream.url) || /mpegurl/i.test(type)) {
+                return res.text().then((text) => /^#EXTM3U/.test(text.trim()));
+            }
+            if (res.body && typeof res.body.cancel === 'function') res.body.cancel().catch(() => {});
+            return true;
+        })
+        .catch(() => false)
+        .then((ok) => { clearTimeout(timer); return ok; });
+}
+
 function getEventStreams(eventId) {
     return fetchDecrypted(`/channels/${eventId}.json`)
         .then((channels) => (channels ? channels : fetchDecrypted(`/channels/${eventId}e.json`)))
         .then((channels) => {
             const list = Array.isArray(channels) ? channels : [];
             const playable = list.filter((c) => String(c.type) !== '1'); // skip ClearKey-DRM entries
-            return playable.map((c) => {
+            const streams = playable.map((c) => {
                 const { url, headers } = parseLinkAndHeaders(c.link);
                 return {
                     name: `SportzX - ${c.title || 'Live'}`,
@@ -250,6 +274,12 @@ function getEventStreams(eventId) {
                     quality: 'Live'
                 };
             }).filter((s) => s.url);
+            return Promise.all(streams.map(isPlayable)).then((results) => {
+                const working = streams.filter((_, i) => results[i]);
+                const dropped = streams.length - working.length;
+                if (dropped) console.log(`[SportzX] Event ${eventId}: dropped ${dropped}/${streams.length} unreachable stream(s)`);
+                return working;
+            });
         });
 }
 

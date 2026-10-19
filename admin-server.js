@@ -39,6 +39,9 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const aggregate = require('./lib/aggregate');
+// Same DNS-over-HTTPS fallback as addon-server.js, so provider tests run from
+// the dashboard see the same hosts the addon does.
+require('./lib/dnsFallback').install();
 const profileStore = require('./lib/profileStore');
 const subtitles = require('./lib/subtitles');
 const providerHealth = require('./lib/providerHealth');

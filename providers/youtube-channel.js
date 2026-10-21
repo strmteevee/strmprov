@@ -29,6 +29,9 @@
 // `ytId` stream (played through YouTube itself) and an `externalUrl` (opens
 // the YouTube app) are offered as well.
 
+const fs = require('fs');
+const path = require('path');
+
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const PAGE_HEADERS = {
   'User-Agent': USER_AGENT,
@@ -81,6 +84,45 @@ const CHANNELS = {
 
 function channelKeys() {
   return Object.keys(CHANNELS);
+}
+
+// On/off per channel, switched from the admin dashboard and shared by both
+// servers through this file. It holds the switched-off channels (so a newly
+// added channel starts on) plus a revision counter that goes up on every
+// change, which addon-server.js folds into its manifest version so clients
+// notice catalogs appearing/disappearing. Kept out of git (.gitignore) so a
+// `git pull` on the server never fights a local setting.
+const SETTINGS_PATH = path.join(__dirname, '..', 'config', 'youtube-channels.json');
+
+function readSettings() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+    return {
+      disabled: Array.isArray(raw.disabled) ? raw.disabled.filter((k) => typeof k === 'string') : [],
+      revision: Number.isInteger(raw.revision) && raw.revision >= 0 ? raw.revision : 0
+    };
+  } catch (e) {
+    return { disabled: [], revision: 0 };
+  }
+}
+
+function isChannelEnabled(key) {
+  return !readSettings().disabled.includes(key);
+}
+
+function setChannelEnabled(key, enabled) {
+  if (!CHANNELS[key]) throw new Error(`Unknown YouTube channel "${key}"`);
+  const settings = readSettings();
+  const disabled = new Set(settings.disabled);
+  if (enabled) disabled.delete(key); else disabled.add(key);
+  const next = { disabled: [...disabled], revision: settings.revision + 1 };
+  fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
+  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(next, null, 2));
+  return next;
+}
+
+function settingsRevision() {
+  return readSettings().revision;
 }
 
 // GT World titles every broadcast "LIVE | Race | ..." (or "LIVE I ..."/
@@ -496,4 +538,4 @@ function getStreams(videoId) {
   });
 }
 
-module.exports = { CHANNELS, channelKeys, cleanTitle, listLive, listRaces, listHighlights, getItem, getStreams, resolveHls, parseRelativeAge, parseScheduled, parseDuration, parseViewers };
+module.exports = { CHANNELS, channelKeys, isChannelEnabled, setChannelEnabled, settingsRevision, cleanTitle, listLive, listRaces, listHighlights, getItem, getStreams, resolveHls, parseRelativeAge, parseScheduled, parseDuration, parseViewers };

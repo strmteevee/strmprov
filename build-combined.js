@@ -50,7 +50,6 @@ const SOURCES = [
   { id: 'cinejoy', varName: 'Cinejoy', name: 'Cinejoy' },
   { id: 'filmyfiy', varName: 'Filmyfiy', name: 'Filmyfiy' },
   { id: 'moviesdrive', varName: 'MoviesDrive', name: 'MoviesDrive' },
-  { id: 'topmovies', varName: 'TopMovies', name: 'TopMovies' },
   { id: 'hdmovie2', varName: 'HdMovie2', name: 'HdMovie2' },
   { id: 'moviesmod', varName: 'MoviesMod', name: 'MoviesMod' },
 ];

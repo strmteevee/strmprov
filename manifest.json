@@ -1,6 +1,6 @@
 {
   "name": "Yoru's Repo",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "scrapers": [
     {
       "id": "streamapi",
@@ -418,28 +418,6 @@
         "mkv"
       ],
       "logo": "https://www.google.com/s2/favicons?domain=moviesdrive.christmas&sz=128",
-      "contentLanguage": [
-        "en",
-        "hi"
-      ]
-    },
-    {
-      "id": "topmovies",
-      "name": "TopMovies",
-      "description": "Indian/Bollywood movie and web-series blog (live under the \"Movies Leech\" brand). Resolves downloads through a driveseed.org gateway to a direct googleusercontent.com stream, same family as UHDMovies' own resolver.",
-      "version": "1.0.0",
-      "author": "Nuvio Team",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "filename": "providers/topmovies.js",
-      "enabled": true,
-      "formats": [
-        "mp4",
-        "mkv"
-      ],
-      "logo": "https://www.google.com/s2/favicons?domain=moviesleech.club&sz=128",
       "contentLanguage": [
         "en",
         "hi"

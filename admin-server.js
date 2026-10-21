@@ -39,12 +39,10 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const aggregate = require('./lib/aggregate');
-// Same DNS-over-HTTPS fallback as addon-server.js, so provider tests run from
-// the dashboard see the same hosts the addon does.
-require('./lib/dnsFallback').install();
 const profileStore = require('./lib/profileStore');
 const subtitles = require('./lib/subtitles');
 const providerHealth = require('./lib/providerHealth');
+const youtubeChannel = require('./providers/youtube-channel');
 
 const PORT = 3200;
 const ROOT_DIR = __dirname;
@@ -121,6 +119,27 @@ function handleToggleProvider(id, res) {
     entry.enabled = !entry.enabled;
     writeManifest(manifest);
     sendJson(res, 200, { id, enabled: entry.enabled });
+}
+
+// ---- YouTube channels ----
+// Each channel's catalogs (live / races / highlights) switch on and off
+// together; the addon server reads the same settings file.
+
+function handleGetYoutubeChannels(res) {
+    const channels = youtubeChannel.channelKeys().map((key) => ({
+        key,
+        label: youtubeChannel.CHANNELS[key].label,
+        path: youtubeChannel.CHANNELS[key].path,
+        enabled: youtubeChannel.isChannelEnabled(key)
+    }));
+    sendJson(res, 200, { channels });
+}
+
+function handleToggleYoutubeChannel(key, res) {
+    if (!youtubeChannel.CHANNELS[key]) return sendJson(res, 404, { error: `No YouTube channel "${key}"` });
+    const enabled = !youtubeChannel.isChannelEnabled(key);
+    youtubeChannel.setChannelEnabled(key, enabled);
+    sendJson(res, 200, { key, enabled });
 }
 
 function validateExternalAddonBody(body) {
@@ -517,6 +536,14 @@ const server = http.createServer((req, res) => {
     // /api/providers/:id/toggle
     if (parts[0] === 'api' && parts[1] === 'providers' && parts.length === 4 && parts[3] === 'toggle' && req.method === 'POST') {
         return handleToggleProvider(decodeURIComponent(parts[2]), res);
+    }
+    // /api/youtube-channels
+    if (parts[0] === 'api' && parts[1] === 'youtube-channels' && parts.length === 2 && req.method === 'GET') {
+        return handleGetYoutubeChannels(res);
+    }
+    // /api/youtube-channels/:key/toggle
+    if (parts[0] === 'api' && parts[1] === 'youtube-channels' && parts.length === 4 && parts[3] === 'toggle' && req.method === 'POST') {
+        return handleToggleYoutubeChannel(decodeURIComponent(parts[2]), res);
     }
     // /api/providers/external  (add)
     if (parts[0] === 'api' && parts[1] === 'providers' && parts[2] === 'external' && parts.length === 3 && req.method === 'POST') {

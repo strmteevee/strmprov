@@ -70,11 +70,7 @@ const gemini = require('./lib/gemini');
 const subtitles = require('./lib/subtitles');
 const indycar = require('./providers/indycar');
 const f1 = require('./providers/f1');
-const fullraces = require('./providers/fullraces');
 const youtubeChannel = require('./providers/youtube-channel');
-// Retries hostnames the home router's DNS refuses via DNS-over-HTTPS - see
-// lib/dnsFallback.js.
-require('./lib/dnsFallback').install();
 
 const PORT = 3100;
 const CATALOG_SEED_COUNT = 10;
@@ -215,7 +211,7 @@ function buildManifest(profileId) {
         // resources, etc.) - some Stremio-protocol clients key their cached
         // manifest/catalog data on this and won't notice new catalogs on an
         // existing install (even after a reinstall) unless it changes.
-        version: '1.11.0',
+        version: manifestVersion(MANIFEST_BASE_VERSION),
         name: 'StrmProv',
         description: `Self-hosted multi-source streaming addon (profile ${profileId}) with a personalized "For You" catalog based on this profile's own watch history.`,
         logo: 'https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png',
@@ -242,7 +238,7 @@ function buildManifest(profileId) {
             // already has full TMDB access for every stream lookup, so it can
             // fill that gap itself - a TMDB-backed fallback for any movie/
             // series 'tt' id, not just this addon's own custom catalogs.
-            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:'] },
+            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'ytlive:'] },
             // Scoped to real tt-id content only - neither IndyCar's nor
             // F1/F2/F3/Academy's own custom id schemes have a
             // subtitle concept, and Cinemeta already handles meta for the
@@ -255,7 +251,7 @@ function buildManifest(profileId) {
             { type: 'series', id: 'strmprov-foryou-series', name: 'For You' },
             ...buildNonPersonalizedCatalogs()
         ],
-        idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:'],
+        idPrefixes: ['tt', 'indycar:', 'f1:', 'ytlive:'],
         behaviorHints: { configurable: false, configurationRequired: false }
     };
 }
@@ -294,20 +290,33 @@ function buildNonPersonalizedCatalogs() {
         { type: 'movie', id: 'f2-highlights', name: 'F2 Race Highlights' },
         { type: 'movie', id: 'f3-highlights', name: 'F3 Race Highlights' },
         { type: 'movie', id: 'f1academy-highlights', name: 'F1 Academy Highlights' },
-        // fullraces.com race replays (F1/F2/F3/NASCAR/IndyCar/Formula E/
-        // others) - one combined catalog (many distinct series, not worth a
-        // manifest entry each).
-        { type: 'movie', id: 'fullraces-videos', name: 'FullRaces' },
-        // YouTube channels' "Live" tabs (providers/youtube-channel.js): what
-        // is live / scheduled right now, and the channel's finished race
-        // broadcasts as a replay catalog. Playback is YouTube's own (ytId).
-        { type: 'tv', id: 'gtworld-live', name: 'GT World Live' },
-        { type: 'movie', id: 'gtworld-races', name: 'GT World Races' },
-        { type: 'tv', id: 'iracing-live', name: 'iRacing Live' },
-        { type: 'movie', id: 'iracing-races', name: 'iRacing Races' },
-        // DTM has no live streams, only highlight videos.
-        { type: 'movie', id: 'dtm-highlights', name: 'DTM Highlights' }
+        // YouTube channel catalogs - only the channels switched on in the
+        // admin dashboard (see YOUTUBE_CATALOGS below).
+        ...enabledYoutubeCatalogs().map(({ type, id, name }) => ({ type, id, name }))
     ];
+}
+
+// YouTube channels' "Live" tabs (providers/youtube-channel.js): what is live /
+// scheduled right now, and the channel's finished race broadcasts as a
+// replay catalog. Each channel can be switched off from the admin dashboard,
+// which drops its catalogs from the manifest and empties them.
+const YOUTUBE_CATALOGS = [
+    { type: 'tv', id: 'gtworld-live', name: 'GT World Live', kind: 'live', channel: 'gtworld' },
+    { type: 'movie', id: 'gtworld-races', name: 'GT World Races', kind: 'races', channel: 'gtworld' },
+    { type: 'tv', id: 'iracing-live', name: 'iRacing Live', kind: 'live', channel: 'iracing' },
+    { type: 'movie', id: 'iracing-races', name: 'iRacing Races', kind: 'races', channel: 'iracing' },
+    // DTM has no live streams, only highlight videos.
+    { type: 'movie', id: 'dtm-highlights', name: 'DTM Highlights', kind: 'highlights', channel: 'dtm' }
+];
+function enabledYoutubeCatalogs() {
+    return YOUTUBE_CATALOGS.filter((c) => youtubeChannel.isChannelEnabled(c.channel));
+}
+// Clients cache a manifest by version, so switching a channel on/off has to
+// change it: the patch number is the switch file's revision counter.
+const MANIFEST_BASE_VERSION = '1.13';
+const SIMPLE_MANIFEST_BASE_VERSION = '1.5';
+function manifestVersion(base) {
+    return `${base}.${youtubeChannel.settingsRevision()}`;
 }
 
 // By request: a second, non-profile-scoped manifest that skips every layer
@@ -322,17 +331,17 @@ function buildNonPersonalizedCatalogs() {
 function buildSimpleManifest() {
     return {
         id: 'com.strmprov.addon.simple',
-        version: '1.3.0',
+        version: manifestVersion(SIMPLE_MANIFEST_BASE_VERSION),
         name: 'StrmProv Simple',
         description: 'Self-hosted multi-source streaming addon - raw aggregated streams from every enabled provider, unranked and untagged. No [PREFERRED] pick, no personalized "For You" catalog, no subtitle hash-matching - just the sources.',
         logo: 'https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png',
         resources: [
             'catalog', 'stream',
-            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:'] }
+            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'ytlive:'] }
         ],
         types: ['movie', 'series', 'tv'],
         catalogs: buildNonPersonalizedCatalogs(),
-        idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:'],
+        idPrefixes: ['tt', 'indycar:', 'f1:', 'ytlive:'],
         behaviorHints: { configurable: false, configurationRequired: false }
     };
 }
@@ -851,46 +860,6 @@ function buildTmdbFallbackMeta(imdbId, type) {
     });
 }
 
-// Same shape as indycarVideoToMeta/f1VideoToMeta - a Stremio Meta Object is a
-// superset of a catalog preview item.
-function fullracesVideoToMeta(v) {
-    return {
-        id: v.id,
-        type: 'movie',
-        name: v.title,
-        poster: v.poster,
-        description: v.description,
-        releaseInfo: v.timestamp ? new Date(v.timestamp).toISOString().substring(0, 10) : undefined
-    };
-}
-
-function buildFullracesCatalog() {
-    return fullraces.listVideos().then((videos) => videos.map(fullracesVideoToMeta));
-}
-
-// Same reasoning as buildIndycarMeta/buildF1Meta above - Cinemeta has no way
-// to resolve our own fullraces: id scheme.
-function buildFullracesMeta(id) {
-    return fullraces.listVideos().then((videos) => {
-        const video = videos.find((v) => v.id === id);
-        return video ? fullracesVideoToMeta(video) : null;
-    });
-}
-
-function buildFullracesStreamResponse(id) {
-    const path = `/${id.slice('fullraces:'.length)}`;
-    return fullraces.getVideoStreams(path).then((streams) => ({
-        streams: streams.map((s) => {
-            const stream = { name: s.name, title: s.quality || '', url: s.url };
-            if (s.headers && Object.keys(s.headers).length) stream.behaviorHints = { proxyHeaders: { request: s.headers } };
-            return stream;
-        })
-    })).catch((err) => {
-        console.error(`[addon-server] FullRaces stream error for ${id}: ${err.message}`);
-        return { streams: [] };
-    });
-}
-
 // YouTube channel catalogs (providers/youtube-channel.js) - live / upcoming
 // streams, finished race broadcasts and highlight videos. Same Meta Object
 // shape as the other custom catalogs; ids are `ytlive:<videoId>`.
@@ -1097,18 +1066,12 @@ function resolveNonPersonalizedCatalog(type, id) {
     if (f1CatalogSeries && type === 'movie') {
         return buildF1Catalog(f1CatalogSeries);
     }
-    if (id === 'fullraces-videos' && type === 'movie') {
-        return buildFullracesCatalog();
-    }
-    const youtubeCatalog = {
-        'gtworld-live': ['live', 'gtworld'],
-        'gtworld-races': ['races', 'gtworld'],
-        'iracing-live': ['live', 'iracing'],
-        'iracing-races': ['races', 'iracing'],
-        'dtm-highlights': ['highlights', 'dtm']
-    }[id];
-    if (youtubeCatalog && type === (youtubeCatalog[0] === 'live' ? 'tv' : 'movie')) {
-        return buildYoutubeCatalog(youtubeCatalog[0], youtubeCatalog[1]);
+    const youtubeCatalog = YOUTUBE_CATALOGS.find((c) => c.id === id && c.type === type);
+    if (youtubeCatalog) {
+        // A client still holding an older manifest may ask for a switched-
+        // off channel's catalog; it just gets nothing.
+        if (!youtubeChannel.isChannelEnabled(youtubeCatalog.channel)) return Promise.resolve([]);
+        return buildYoutubeCatalog(youtubeCatalog.kind, youtubeCatalog.channel);
     }
     const newCatalogType = { 'strmprov-new-movie': 'movie', 'strmprov-new-series': 'series' }[id];
     if (newCatalogType && type === newCatalogType) {
@@ -1137,9 +1100,6 @@ function resolveMeta(type, id) {
     if (id.startsWith('f1:') && type === 'movie') {
         return buildF1Meta(id);
     }
-    if (id.startsWith('fullraces:') && type === 'movie') {
-        return buildFullracesMeta(id);
-    }
     if (id.startsWith('ytlive:') && (type === 'tv' || type === 'movie')) {
         return buildYoutubeMeta(id);
     }
@@ -1149,7 +1109,7 @@ function resolveMeta(type, id) {
     return Promise.resolve(null);
 }
 
-// The custom-catalog id prefixes (indycar:/f1:/fullraces:) already
+// The custom-catalog id prefixes (indycar:/f1:/ytlive:) already
 // return plain, unranked streams with no personalization or subtitle
 // enrichment of any kind - identical for both routes. Only a real 'tt' id
 // differs, since that's the one case with a "full" (buildStreamResponse) and
@@ -1159,7 +1119,6 @@ function resolveMeta(type, id) {
 function resolveCustomStreamResponse(id) {
     if (id.startsWith('indycar:')) return buildIndycarStreamResponse(id);
     if (id.startsWith('f1:')) return buildF1StreamResponse(id);
-    if (id.startsWith('fullraces:')) return buildFullracesStreamResponse(id);
     if (id.startsWith('ytlive:')) return buildYoutubeStreamResponse(id);
     return null;
 }
@@ -1387,8 +1346,4 @@ server.listen(PORT, () => {
     // already warm.
     indycar.listVideos(null).catch((err) => console.error(`[addon-server] IndyCar cache warm-up failed: ${err.message}`));
     f1.listVideos(null).catch((err) => console.error(`[addon-server] F1 cache warm-up failed: ${err.message}`));
-    // Same reasoning as the warm-up calls above - a 15-category crawl on a
-    // real user's first catalog open would otherwise risk Nuvio's own
-    // catalog-fetch timeout giving up before it finishes.
-    fullraces.listVideos().catch((err) => console.error(`[addon-server] FullRaces cache warm-up failed: ${err.message}`));
 });

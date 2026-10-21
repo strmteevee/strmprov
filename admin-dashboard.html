@@ -229,6 +229,15 @@
     </details>
   </section>
 
+  <section class="panel" id="youtube-panel">
+    <h2>YouTube channels</h2>
+    <p class="desc">Switch a channel off to remove its catalogs (live, races, highlights) from the addon. Clients pick up the change the next time they reload the addon.</p>
+    <table>
+      <thead><tr><th>On</th><th>Channel</th><th>YouTube</th></tr></thead>
+      <tbody id="youtube-body"><tr><td colspan="3" class="muted">Loading…</td></tr></tbody>
+    </table>
+  </section>
+
   <section class="panel" id="ranking-panel">
     <h2>Stream ranking</h2>
     <p class="desc">CloudStream-style scoring: a stream's score is its provider's points plus its quality's points. A score of 11+ confidently wins the <span class="mono">[PREFERRED]</span> tag; if nothing reaches that, the single highest-scoring stream still gets it.</p>
@@ -494,6 +503,34 @@ window.toggleProvider = function (id) {
   api('POST', `/api/providers/${encodeURIComponent(id)}/toggle`)
     .then(() => { toast(`${id}: toggled`, 'ok'); loadProviders(); })
     .catch(e => { toast(e.message, 'error'); loadProviders(); });
+};
+
+// ---- YouTube channels ----
+
+function loadYoutubeChannels() {
+  return api('GET', '/api/youtube-channels').then(data => {
+    const body = document.getElementById('youtube-body');
+    if (!data.channels.length) {
+      body.innerHTML = '<tr><td colspan="3" class="muted">No YouTube channels configured.</td></tr>';
+      return;
+    }
+    body.innerHTML = data.channels.map(c => `<tr>
+      <td>
+        <label class="switch">
+          <input type="checkbox" ${c.enabled ? 'checked' : ''} onchange="toggleYoutubeChannel('${c.key}')" />
+          <span class="track"><span class="thumb"></span></span>
+        </label>
+      </td>
+      <td><strong>${escapeHtml(c.label)}</strong><div class="muted mono">${escapeHtml(c.key)}</div></td>
+      <td class="muted mono">youtube.com/${escapeHtml(c.path)}</td>
+    </tr>`).join('');
+  });
+}
+
+window.toggleYoutubeChannel = function (key) {
+  api('POST', `/api/youtube-channels/${encodeURIComponent(key)}/toggle`)
+    .then(data => { toast(`${key}: ${data.enabled ? 'on' : 'off'}`, 'ok'); loadYoutubeChannels(); })
+    .catch(e => { toast(e.message, 'error'); loadYoutubeChannels(); });
 };
 
 window.deleteProvider = function (id) {
@@ -941,7 +978,7 @@ function escapeHtml(str) {
   return String(str == null ? '' : str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-Promise.all([loadEnvKeys(), loadDeployConfig(), loadProviders(), loadRanking(), loadProviderHealth(), loadProfiles(), loadSubtitlesConfig(), loadCatalogManifest()]).catch(e => toast(e.message, 'error'));
+Promise.all([loadEnvKeys(), loadDeployConfig(), loadProviders(), loadYoutubeChannels(), loadRanking(), loadProviderHealth(), loadProfiles(), loadSubtitlesConfig(), loadCatalogManifest()]).catch(e => toast(e.message, 'error'));
 </script>
 
 </body>

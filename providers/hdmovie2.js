@@ -140,7 +140,10 @@ function findBestMovieMatch(results, mediaInfo) {
     const yearMatch = r.title.match(/\((\d{4})\)/);
     let score = titleOverlapScore(r.title, targetWords);
     if (mediaInfo.year && yearMatch) {
-      score += yearMatch[1] === String(mediaInfo.year) ? 0.5 : -0.3;
+      const off = Math.abs(parseInt(yearMatch[1], 10) - parseInt(mediaInfo.year, 10));
+      // A clearly different year is another film with the same name (a remake), never a match.
+      if (off > 1) continue;
+      score += off === 0 ? 0.5 : 0.2;
     }
     if (score > bestScore) {
       bestScore = score;

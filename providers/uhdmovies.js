@@ -438,10 +438,13 @@ function getStreams(tmdbId, mediaType, seasonNum = 1, episodeNum = 1) {
         const matches = title.toLowerCase().includes(queryLower) || details.imdbId && title.includes(details.imdbId);
         if (!matches)
           return;
-        if (!fallbackUrl)
-          fallbackUrl = href;
+        // A post whose title states a clearly different year is another film with the same name
+        // (a remake: The Lion King 1994 / 2019), never a fallback; one within a year counts as a match.
         const yearMatch = title.match(/(19|20)\d{2}/);
-        if (!targetUrl && details.year && yearMatch && yearMatch[0] === details.year) {
+        const yearOff = details.year && yearMatch ? Math.abs(parseInt(yearMatch[0], 10) - parseInt(details.year, 10)) : null;
+        if (!fallbackUrl && (yearOff == null || yearOff <= 1))
+          fallbackUrl = href;
+        if (!targetUrl && yearOff != null && yearOff <= 1) {
           targetUrl = href;
         }
       });

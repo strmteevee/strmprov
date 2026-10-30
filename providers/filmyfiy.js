@@ -139,14 +139,26 @@ function parseSearchResults(html) {
     return results;
 }
 
+// The year a post's title states: one in brackets, else the last plain 19xx/20xx in it; null when none.
+function titleYear(title) {
+    const bracketed = /[(\[]((?:19|20)\d{2})[)\]]/.exec(title || '');
+    if (bracketed) return parseInt(bracketed[1], 10);
+    const all = (title || '').match(/\b(?:19|20)\d{2}\b/g);
+    return all ? parseInt(all[all.length - 1], 10) : null;
+}
+
 function findBestMatch(results, mediaInfo) {
     const targetTitle = normalize(mediaInfo.title);
     if (!targetTitle) return null;
-    if (mediaInfo.year) {
-        const withYear = results.find(r => normalize(r.title).startsWith(targetTitle) && r.title.includes(String(mediaInfo.year)));
-        if (withYear) return withYear;
-    }
-    return results.find(r => normalize(r.title).startsWith(targetTitle)) || null;
+    const wantYear = parseInt(mediaInfo.year, 10);
+    const titled = results.filter(r => normalize(r.title).startsWith(targetTitle));
+    if (!wantYear) return titled[0] || null;
+    // A remake shares the title (The Lion King 1994 / 2019): the post with the requested year
+    // (+-1) first; one stating a clearly different year is another film and never taken.
+    const yearOff = (r) => { const y = titleYear(r.title); return y == null ? null : Math.abs(y - wantYear); };
+    return titled.find(r => yearOff(r) != null && yearOff(r) <= 1)
+        || titled.find(r => yearOff(r) == null)
+        || null;
 }
 
 function extractQuality(str) {

@@ -140,7 +140,7 @@
       "id": "uhdmovies",
       "name": "UHDMovies",
       "description": "UHD Movies streaming with multiple resolution. Its \"Instant Download\" path terminates at a video-downloads.googleusercontent.com Google Drive link; this used to never support HTTP Range at all, but re-verified live (2026-09-17) that's no longer uniformly true - some of these links now return a genuine 206 with fast end-of-file seeks (needed for many MKVs' seek index), though roughly half still silently ignore Range and hand back the full multi-GB file with a 200. lib/aggregate.js's dropUnplayable now live-probes each Google Drive link's actual Range support and only keeps the ones that pass, instead of the previous blanket domain-based drop. The other path (\"Resume Cloud\") is still gated behind a real Cloudflare Turnstile challenge and isn't used.",
-      "version": "1.4.1",
+      "version": "1.4.2",
       "author": "Nuvio Team",
       "supportedTypes": [
         "movie",
@@ -198,7 +198,7 @@
       "id": "castle",
       "name": "Castle",
       "description": "Multi Lang provider",
-      "version": "1.2.1",
+      "version": "1.2.2",
       "author": "Nuvio Team",
       "supportedTypes": [
         "movie",
@@ -384,7 +384,7 @@
       "id": "filmyfiy",
       "name": "Filmyfiy",
       "description": "FilmyFly (Filmyfiy's current live brand/domain) - Hindi/English dual-audio Hollywood/Bollywood movie downloads. Resolves through a linkmake.in link-protector to per-quality direct 10Gbps and HubCloud links (movies only, no TV).",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": "Nuvio Team",
       "supportedTypes": [
         "movie"
@@ -427,7 +427,7 @@
       "id": "hdmovie2",
       "name": "HdMovie2",
       "description": "Hindi/Bollywood-focused movie and TV blog, self-hosted JWPlayer streams - no download-host intermediary, resolves directly to signed HLS playlists.",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "author": "Nuvio Team",
       "supportedTypes": [
         "movie",

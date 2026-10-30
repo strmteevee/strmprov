@@ -331,14 +331,22 @@ function findCastleMovieId(securityKey, tmdbInfo, mediaType) {
     const searchTitle = tmdbInfo.title.toLowerCase();
     const candidates = rows.filter((item) => item.movieType === wantType);
 
-    let best = candidates.find((item) => (item.title || item.name || "").toLowerCase() === searchTitle);
+    // A remake shares its title with the original (The Lion King 1994 / 2019), so among same-title
+    // entries the release year decides: Castle's publishTime is the release date. One with the
+    // requested year (+-1) goes first; for a movie, one whose year is clearly another is never taken.
+    const wantYear = tmdbInfo.year;
+    const yearOf = (item) => item.publishTime ? new Date(item.publishTime).getUTCFullYear() : null;
+    const yearFits = (item) => wantYear && yearOf(item) != null && Math.abs(yearOf(item) - wantYear) <= 1;
+    const yearAllowed = (item) => mediaType === "tv" || !wantYear || yearOf(item) == null || yearFits(item);
+    const exact = candidates.filter((item) => (item.title || item.name || "").toLowerCase() === searchTitle);
+    let best = exact.find(yearFits) || exact.find(yearAllowed);
     if (!best) {
       // Only accept a "<title>: <subtitle>" style match here (e.g. a
       // reboot/special named "X: The Reunion"). A bare startsWith(`${searchTitle} `)
       // is too loose - it previously matched unrelated shows like "Friends from
       // College" or "Friends and Family" when searching for "Friends", silently
       // serving the wrong show's video.
-      best = candidates.find((item) => (item.title || item.name || "").toLowerCase().startsWith(`${searchTitle}:`));
+      best = candidates.find((item) => (item.title || item.name || "").toLowerCase().startsWith(`${searchTitle}:`) && yearAllowed(item));
     }
     if (!best) {
       throw new Error(`No matching ${mediaType === "tv" ? "TV show" : "movie"} found for "${tmdbInfo.title}"`);

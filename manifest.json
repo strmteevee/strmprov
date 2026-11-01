@@ -1,6 +1,6 @@
 {
   "name": "Yoru's Repo",
-  "version": "1.7.2",
+  "version": "1.9.0",
   "scrapers": [
     {
       "id": "streamapi",
@@ -464,6 +464,201 @@
       "contentLanguage": [
         "en",
         "hi"
+      ]
+    },
+    {
+      "id": "vegamovies",
+      "name": "VegaMovies",
+      "description": "Direct links via VegaMovies' G-Direct resolver (ported from the open-source CloudStream extension). Its original primary resolver, V-Cloud, is now behind a real Cloudflare challenge and unusable here; this uses the same download page's G-Direct option instead, which isn't protected - verified end-to-end.",
+      "version": "1.0.1",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/vegamovies.js",
+      "enabled": true,
+      "formats": [
+        "mkv",
+        "mp4"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=vegamovies.mq&sz=128",
+      "contentLanguage": [
+        "en",
+        "hi"
+      ]
+    },
+    {
+      "id": "rogmovies",
+      "name": "RogMovies",
+      "description": "Indian movie/TV blog sharing VegaMovies' own backend (Typesense search, same release naming). Resolves G-Direct links through a nexdrive.fit hub to a direct googleusercontent.com stream.",
+      "version": "1.0.1",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/rogmovies.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=rogmovies.best&sz=128",
+      "contentLanguage": [
+        "en",
+        "hi"
+      ]
+    },
+    {
+      "id": "novastream",
+      "name": "NovaStream",
+      "description": "Relays the NovaStream Stremio addon (HLS streams it proxies itself, mostly 720p/1080p) - see providers/external-addon.js.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/external-addon.js",
+      "config": {
+        "name": "NovaStream",
+        "addonBaseUrl": "https://novastream.sudolocal.qzz.io"
+      },
+      "enabled": true,
+      "formats": [
+        "mkv",
+        "mp4",
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=sudolocal.qzz.io&sz=128",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "desiflix",
+      "name": "DesiFlix",
+      "description": "Relays the DesiFlix Stremio addon: direct 480p-1080p files, strong on Indian films and web series but also carries English titles - see providers/external-addon.js.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/external-addon.js",
+      "config": {
+        "name": "DesiFlix",
+        "addonBaseUrl": "https://manifest.desitvhub.eu.org"
+      },
+      "enabled": true,
+      "formats": [
+        "mkv",
+        "mp4",
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=desitvhub.eu.org&sz=128",
+      "contentLanguage": [
+        "en",
+        "hi"
+      ]
+    },
+    {
+      "id": "cncverse",
+      "name": "CNCVerse",
+      "description": "Relays the CNCVerse Bridge Stremio addon (CloudStream plugins served as an addon: Netflix/Hotstar/Prime mirrors, HDHub4u, Castle and more). Slow on series - see providers/external-addon.js.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/external-addon.js",
+      "config": {
+        "name": "CNCVerse",
+        "addonBaseUrl": "https://cncverse.dpdns.org",
+        "seriesTimeoutMs": 12000
+      },
+      "enabled": true,
+      "formats": [
+        "mkv",
+        "mp4",
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=cncverse.pages.dev&sz=128",
+      "contentLanguage": [
+        "en",
+        "hi",
+        "ta"
+      ]
+    },
+    {
+      "id": "yastream",
+      "name": "yastream",
+      "description": "Relays the yastream Stremio addon (KissKH and other Asian-drama sources); also finds many western titles - see providers/external-addon.js.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/external-addon.js",
+      "config": {
+        "name": "yastream",
+        "addonBaseUrl": "https://yastream.tamthai.de"
+      },
+      "enabled": true,
+      "formats": [
+        "mkv",
+        "mp4",
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=tamthai.de&sz=128",
+      "contentLanguage": [
+        "en",
+        "ko",
+        "zh"
+      ]
+    },
+    {
+      "id": "vaplayer",
+      "name": "VaPlayer",
+      "description": "VaPlayer (nextgencloudfabric.com) data API: ready-to-play HLS master playlists by IMDb id, usually 1080p, for films and series. Fast (~1s) - see providers/vaplayer.js.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/vaplayer.js",
+      "enabled": true,
+      "formats": [
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=nextgencloudfabric.com&sz=128",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "kurage",
+      "name": "Kurage",
+      "description": "Kurage (kurage.live) anime: Japanese audio with English subs and the English dub where available, as direct MP4s. TMDB is mapped to AniList through arm.haglund.dev - see providers/kurage.js.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/kurage.js",
+      "enabled": true,
+      "formats": [
+        "mp4"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=kurage.live&sz=128",
+      "contentLanguage": [
+        "en",
+        "ja"
       ]
     }
   ]

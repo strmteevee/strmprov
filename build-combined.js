@@ -52,6 +52,10 @@ const SOURCES = [
   { id: 'moviesdrive', varName: 'MoviesDrive', name: 'MoviesDrive' },
   { id: 'hdmovie2', varName: 'HdMovie2', name: 'HdMovie2' },
   { id: 'moviesmod', varName: 'MoviesMod', name: 'MoviesMod' },
+  { id: 'vegamovies', varName: 'VegaMovies', name: 'VegaMovies' },
+  { id: 'rogmovies', varName: 'RogMovies', name: 'RogMovies' },
+  { id: 'vaplayer', varName: 'VaPlayer', name: 'VaPlayer' },
+  { id: 'kurage', varName: 'Kurage', name: 'Kurage' },
 ];
 
 // Strips a provider file's trailing `module.exports = ...` statement (or,

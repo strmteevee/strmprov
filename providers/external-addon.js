@@ -24,6 +24,11 @@
 //   and don't need one; others (HDHub4u's) aren't, so this repo has
 //   historically added "HDHub4u " itself - kept configurable rather than
 //   hardcoded so either style works without new code.
+// - timeoutMs / seriesTimeoutMs: optional cap on how long the addon's stream
+//   request may take (seriesTimeoutMs, when set, applies to episodes instead).
+//   For addons with a known "slow means empty" pattern - CNCVerse, confirmed
+//   live 2026-11-01, answers an episode either within ~4 s with links or
+//   after ~39 s with nothing, so waiting past that only holds up the search.
 const DEFAULT_TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 
@@ -92,6 +97,34 @@ function isForeignDubbedAudio(description) {
   return !!audioLine && !/\benglish\b/i.test(audioLine[1]);
 }
 
+// Third-party addons mix real links with dead ones (expired 502/403 links)
+// and non-video entries (donation or "go premium" pages, HTML interstitials) -
+// all confirmed live 2026-11-01 - so each link is test-fetched with the
+// headers the addon declared: an HLS playlist has to start with #EXTM3U,
+// anything else has to answer 2xx with something other than an HTML page.
+const PROBE_TIMEOUT_MS = 5000;
+
+function isReachable(stream) {
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS) : null;
+  const headers = Object.assign({ Range: "bytes=0-1024" }, stream.headers || {});
+  return fetch(stream.url, controller ? { headers, signal: controller.signal } : { headers })
+    .then((res) => {
+      if (!res.ok) return false;
+      const type = (res.headers.get("content-type") || "").toLowerCase();
+      if (/\.m3u8(\?|$)/i.test(stream.url) || /mpegurl/.test(type)) {
+        return res.text().then((text) => /^#EXTM3U/.test(text.trim()));
+      }
+      if (res.body && typeof res.body.cancel === "function") res.body.cancel().catch(() => {});
+      return !/text\/html/.test(type);
+    })
+    .catch(() => false)
+    .then((ok) => {
+      if (timer) clearTimeout(timer);
+      return ok;
+    });
+}
+
 function createProvider(config) {
   const addonBaseUrl = (config && config.addonBaseUrl || "").replace(/\/+$/, "");
   const configJson = config && config.configJson;
@@ -99,6 +132,8 @@ function createProvider(config) {
   const providerLabel = (config && config.name) || "ExternalAddon";
   const namePrefix = (config && config.namePrefix) || "";
   const configSegment = configJson ? `/${encodeURIComponent(JSON.stringify(configJson))}` : "";
+  const requestTimeoutMs = Number(config && config.timeoutMs) || 0;
+  const seriesTimeoutMs = Number(config && config.seriesTimeoutMs) || 0;
 
   function getStreams(tmdbId, mediaType = "movie", season = null, episode = null) {
     console.log(`[${providerLabel}] Fetching streams for TMDB: ${tmdbId}, Type: ${mediaType}`);
@@ -111,31 +146,49 @@ function createProvider(config) {
       if (type === "series" && (!season || !episode)) return [];
       const id = type === "series" ? `${imdbId}:${season}:${episode}` : imdbId;
 
-      return fetch(`${addonBaseUrl}${configSegment}/stream/${type}/${id}.json`, { headers: { "User-Agent": "Mozilla/5.0" } })
+      const timeoutMs = type === "series" ? (seriesTimeoutMs || requestTimeoutMs) : requestTimeoutMs;
+      const controller = timeoutMs && typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+      const options = { headers: { "User-Agent": "Mozilla/5.0" } };
+      if (controller) options.signal = controller.signal;
+      return fetch(`${addonBaseUrl}${configSegment}/stream/${type}/${id}.json`, options)
         .then((res) => {
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           return res.json();
         })
+        .catch((err) => {
+          throw controller && controller.signal.aborted ? new Error(`no answer within ${timeoutMs} ms`) : err;
+        })
+        .finally(() => { if (timer) clearTimeout(timer); })
         .then((data) => {
           const raw = Array.isArray(data.streams) ? data.streams : [];
           const seenUrls = new Set();
           const streams = [];
           for (const s of raw) {
-            if (!isUsableStream(s) || seenUrls.has(s.url) || isForeignDubbedAudio(s.description)) continue;
+            // Older addons put the details in `title`, newer ones in `description`.
+            const details = s.description || s.title || "";
+            if (!isUsableStream(s) || seenUrls.has(s.url) || isForeignDubbedAudio(details)) continue;
             seenUrls.add(s.url);
             const rawName = (s.name || "").replace(/\n/g, " ").trim();
             const name = `${namePrefix}${rawName}`.trim();
-            const description = (s.description || "").replace(/\n/g, " ").trim();
+            const description = details.replace(/\n/g, " ").trim();
+            const headers = s.behaviorHints && s.behaviorHints.proxyHeaders && s.behaviorHints.proxyHeaders.request;
             streams.push({
               name,
               title: description,
               url: s.url,
-              quality: parseQuality(name),
+              // Playback headers the addon says its link needs (e.g. a
+              // Referer) - addon-server.js passes them back out as proxyHeaders.
+              headers: headers && typeof headers === "object" && Object.keys(headers).length ? headers : undefined,
+              quality: parseQuality(`${name} ${description}`),
               size: parseSize(description)
             });
           }
-          console.log(`[${providerLabel}] Got ${streams.length} usable stream(s)`);
-          return streams;
+          return Promise.all(streams.map(isReachable)).then((alive) => {
+            const working = streams.filter((_, i) => alive[i]);
+            console.log(`[${providerLabel}] Got ${working.length} usable stream(s)` + (working.length < streams.length ? ` (dropped ${streams.length - working.length} dead or non-video)` : ""));
+            return working;
+          });
         });
     }).catch((err) => {
       console.error(`[${providerLabel}] Error: ${err.message}`);

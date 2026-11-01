@@ -479,7 +479,29 @@ ${formatBytes(link.meta.bytes || 0)}`,
       }
     }));
     const results = yield Promise.all(streamPromises);
-    return results.reduce((acc, val) => acc.concat(val), []);
+    const streams = results.reduce((acc, val) => acc.concat(val), []);
+    const checks = yield Promise.all(streams.map(isStreamReachable));
+    const alive = streams.filter((_, i) => checks[i]);
+    if (alive.length < streams.length) {
+      console.log(`[4KHDHub] Dropping ${streams.length - alive.length}/${streams.length} unreachable stream(s)`);
+    }
+    return alive;
+  });
+}
+// Confirmed live 2026-11-01 that some "Direct R2" worker links answer 403
+// while the HubCloud link from the same page plays, so every stream is
+// probed with a small ranged GET before it's returned (same idea as
+// providers/moviesdrive.js's validateStreamUrl).
+function isStreamReachable(stream) {
+  const controller = HAS_ABORT_TIMER ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), FETCH_TEXT_TIMEOUT_MS) : null;
+  const options = __spreadValues({ headers: { Range: "bytes=0-1024" } }, controller ? { signal: controller.signal } : {});
+  return fetch(stream.url, options).then((res) => {
+    if (res.body && typeof res.body.cancel === "function") res.body.cancel().catch(() => {});
+    return res.ok || res.status === 206;
+  }).catch(() => false).then((ok) => {
+    if (timer) clearTimeout(timer);
+    return ok;
   });
 }
 module.exports = { getStreams };

@@ -40,6 +40,11 @@ const ExternalAddonFactory = (function () {
 //   and don't need one; others (HDHub4u's) aren't, so this repo has
 //   historically added "HDHub4u " itself - kept configurable rather than
 //   hardcoded so either style works without new code.
+// - timeoutMs / seriesTimeoutMs: optional cap on how long the addon's stream
+//   request may take (seriesTimeoutMs, when set, applies to episodes instead).
+//   For addons with a known "slow means empty" pattern - CNCVerse, confirmed
+//   live 2026-11-01, answers an episode either within ~4 s with links or
+//   after ~39 s with nothing, so waiting past that only holds up the search.
 const DEFAULT_TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 
@@ -108,6 +113,34 @@ function isForeignDubbedAudio(description) {
   return !!audioLine && !/\benglish\b/i.test(audioLine[1]);
 }
 
+// Third-party addons mix real links with dead ones (expired 502/403 links)
+// and non-video entries (donation or "go premium" pages, HTML interstitials) -
+// all confirmed live 2026-11-01 - so each link is test-fetched with the
+// headers the addon declared: an HLS playlist has to start with #EXTM3U,
+// anything else has to answer 2xx with something other than an HTML page.
+const PROBE_TIMEOUT_MS = 5000;
+
+function isReachable(stream) {
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS) : null;
+  const headers = Object.assign({ Range: "bytes=0-1024" }, stream.headers || {});
+  return fetch(stream.url, controller ? { headers, signal: controller.signal } : { headers })
+    .then((res) => {
+      if (!res.ok) return false;
+      const type = (res.headers.get("content-type") || "").toLowerCase();
+      if (/\.m3u8(\?|$)/i.test(stream.url) || /mpegurl/.test(type)) {
+        return res.text().then((text) => /^#EXTM3U/.test(text.trim()));
+      }
+      if (res.body && typeof res.body.cancel === "function") res.body.cancel().catch(() => {});
+      return !/text\/html/.test(type);
+    })
+    .catch(() => false)
+    .then((ok) => {
+      if (timer) clearTimeout(timer);
+      return ok;
+    });
+}
+
 function createProvider(config) {
   const addonBaseUrl = (config && config.addonBaseUrl || "").replace(/\/+$/, "");
   const configJson = config && config.configJson;
@@ -115,6 +148,8 @@ function createProvider(config) {
   const providerLabel = (config && config.name) || "ExternalAddon";
   const namePrefix = (config && config.namePrefix) || "";
   const configSegment = configJson ? `/${encodeURIComponent(JSON.stringify(configJson))}` : "";
+  const requestTimeoutMs = Number(config && config.timeoutMs) || 0;
+  const seriesTimeoutMs = Number(config && config.seriesTimeoutMs) || 0;
 
   function getStreams(tmdbId, mediaType = "movie", season = null, episode = null) {
     console.log(`[${providerLabel}] Fetching streams for TMDB: ${tmdbId}, Type: ${mediaType}`);
@@ -127,31 +162,49 @@ function createProvider(config) {
       if (type === "series" && (!season || !episode)) return [];
       const id = type === "series" ? `${imdbId}:${season}:${episode}` : imdbId;
 
-      return fetch(`${addonBaseUrl}${configSegment}/stream/${type}/${id}.json`, { headers: { "User-Agent": "Mozilla/5.0" } })
+      const timeoutMs = type === "series" ? (seriesTimeoutMs || requestTimeoutMs) : requestTimeoutMs;
+      const controller = timeoutMs && typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+      const options = { headers: { "User-Agent": "Mozilla/5.0" } };
+      if (controller) options.signal = controller.signal;
+      return fetch(`${addonBaseUrl}${configSegment}/stream/${type}/${id}.json`, options)
         .then((res) => {
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           return res.json();
         })
+        .catch((err) => {
+          throw controller && controller.signal.aborted ? new Error(`no answer within ${timeoutMs} ms`) : err;
+        })
+        .finally(() => { if (timer) clearTimeout(timer); })
         .then((data) => {
           const raw = Array.isArray(data.streams) ? data.streams : [];
           const seenUrls = new Set();
           const streams = [];
           for (const s of raw) {
-            if (!isUsableStream(s) || seenUrls.has(s.url) || isForeignDubbedAudio(s.description)) continue;
+            // Older addons put the details in `title`, newer ones in `description`.
+            const details = s.description || s.title || "";
+            if (!isUsableStream(s) || seenUrls.has(s.url) || isForeignDubbedAudio(details)) continue;
             seenUrls.add(s.url);
             const rawName = (s.name || "").replace(/\n/g, " ").trim();
             const name = `${namePrefix}${rawName}`.trim();
-            const description = (s.description || "").replace(/\n/g, " ").trim();
+            const description = details.replace(/\n/g, " ").trim();
+            const headers = s.behaviorHints && s.behaviorHints.proxyHeaders && s.behaviorHints.proxyHeaders.request;
             streams.push({
               name,
               title: description,
               url: s.url,
-              quality: parseQuality(name),
+              // Playback headers the addon says its link needs (e.g. a
+              // Referer) - addon-server.js passes them back out as proxyHeaders.
+              headers: headers && typeof headers === "object" && Object.keys(headers).length ? headers : undefined,
+              quality: parseQuality(`${name} ${description}`),
               size: parseSize(description)
             });
           }
-          console.log(`[${providerLabel}] Got ${streams.length} usable stream(s)`);
-          return streams;
+          return Promise.all(streams.map(isReachable)).then((alive) => {
+            const working = streams.filter((_, i) => alive[i]);
+            console.log(`[${providerLabel}] Got ${working.length} usable stream(s)` + (working.length < streams.length ? ` (dropped ${streams.length - working.length} dead or non-video)` : ""));
+            return working;
+          });
         });
     }).catch((err) => {
       console.error(`[${providerLabel}] Error: ${err.message}`);
@@ -1391,7 +1444,29 @@ ${formatBytes(link.meta.bytes || 0)}`,
       }
     }));
     const results = yield Promise.all(streamPromises);
-    return results.reduce((acc, val) => acc.concat(val), []);
+    const streams = results.reduce((acc, val) => acc.concat(val), []);
+    const checks = yield Promise.all(streams.map(isStreamReachable));
+    const alive = streams.filter((_, i) => checks[i]);
+    if (alive.length < streams.length) {
+      console.log(`[4KHDHub] Dropping ${streams.length - alive.length}/${streams.length} unreachable stream(s)`);
+    }
+    return alive;
+  });
+}
+// Confirmed live 2026-11-01 that some "Direct R2" worker links answer 403
+// while the HubCloud link from the same page plays, so every stream is
+// probed with a small ranged GET before it's returned (same idea as
+// providers/moviesdrive.js's validateStreamUrl).
+function isStreamReachable(stream) {
+  const controller = HAS_ABORT_TIMER ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), FETCH_TEXT_TIMEOUT_MS) : null;
+  const options = __spreadValues({ headers: { Range: "bytes=0-1024" } }, controller ? { signal: controller.signal } : {});
+  return fetch(stream.url, options).then((res) => {
+    if (res.body && typeof res.body.cancel === "function") res.body.cancel().catch(() => {});
+    return res.ok || res.status === 206;
+  }).catch(() => false).then((ok) => {
+    if (timer) clearTimeout(timer);
+    return ok;
   });
 }
   return { getStreams: getStreams };
@@ -2509,14 +2584,22 @@ function findCastleMovieId(securityKey, tmdbInfo, mediaType) {
     const searchTitle = tmdbInfo.title.toLowerCase();
     const candidates = rows.filter((item) => item.movieType === wantType);
 
-    let best = candidates.find((item) => (item.title || item.name || "").toLowerCase() === searchTitle);
+    // A remake shares its title with the original (The Lion King 1994 / 2019), so among same-title
+    // entries the release year decides: Castle's publishTime is the release date. One with the
+    // requested year (+-1) goes first; for a movie, one whose year is clearly another is never taken.
+    const wantYear = tmdbInfo.year;
+    const yearOf = (item) => item.publishTime ? new Date(item.publishTime).getUTCFullYear() : null;
+    const yearFits = (item) => wantYear && yearOf(item) != null && Math.abs(yearOf(item) - wantYear) <= 1;
+    const yearAllowed = (item) => mediaType === "tv" || !wantYear || yearOf(item) == null || yearFits(item);
+    const exact = candidates.filter((item) => (item.title || item.name || "").toLowerCase() === searchTitle);
+    let best = exact.find(yearFits) || exact.find(yearAllowed);
     if (!best) {
       // Only accept a "<title>: <subtitle>" style match here (e.g. a
       // reboot/special named "X: The Reunion"). A bare startsWith(`${searchTitle} `)
       // is too loose - it previously matched unrelated shows like "Friends from
       // College" or "Friends and Family" when searching for "Friends", silently
       // serving the wrong show's video.
-      best = candidates.find((item) => (item.title || item.name || "").toLowerCase().startsWith(`${searchTitle}:`));
+      best = candidates.find((item) => (item.title || item.name || "").toLowerCase().startsWith(`${searchTitle}:`) && yearAllowed(item));
     }
     if (!best) {
       throw new Error(`No matching ${mediaType === "tv" ? "TV show" : "movie"} found for "${tmdbInfo.title}"`);
@@ -3664,14 +3747,26 @@ function parseSearchResults(html) {
     return results;
 }
 
+// The year a post's title states: one in brackets, else the last plain 19xx/20xx in it; null when none.
+function titleYear(title) {
+    const bracketed = /[(\[]((?:19|20)\d{2})[)\]]/.exec(title || '');
+    if (bracketed) return parseInt(bracketed[1], 10);
+    const all = (title || '').match(/\b(?:19|20)\d{2}\b/g);
+    return all ? parseInt(all[all.length - 1], 10) : null;
+}
+
 function findBestMatch(results, mediaInfo) {
     const targetTitle = normalize(mediaInfo.title);
     if (!targetTitle) return null;
-    if (mediaInfo.year) {
-        const withYear = results.find(r => normalize(r.title).startsWith(targetTitle) && r.title.includes(String(mediaInfo.year)));
-        if (withYear) return withYear;
-    }
-    return results.find(r => normalize(r.title).startsWith(targetTitle)) || null;
+    const wantYear = parseInt(mediaInfo.year, 10);
+    const titled = results.filter(r => normalize(r.title).startsWith(targetTitle));
+    if (!wantYear) return titled[0] || null;
+    // A remake shares the title (The Lion King 1994 / 2019): the post with the requested year
+    // (+-1) first; one stating a clearly different year is another film and never taken.
+    const yearOff = (r) => { const y = titleYear(r.title); return y == null ? null : Math.abs(y - wantYear); };
+    return titled.find(r => yearOff(r) != null && yearOff(r) <= 1)
+        || titled.find(r => yearOff(r) == null)
+        || null;
 }
 
 function extractQuality(str) {
@@ -4412,7 +4507,10 @@ function findBestMovieMatch(results, mediaInfo) {
     const yearMatch = r.title.match(/\((\d{4})\)/);
     let score = titleOverlapScore(r.title, targetWords);
     if (mediaInfo.year && yearMatch) {
-      score += yearMatch[1] === String(mediaInfo.year) ? 0.5 : -0.3;
+      const off = Math.abs(parseInt(yearMatch[1], 10) - parseInt(mediaInfo.year, 10));
+      // A clearly different year is another film with the same name (a remake), never a match.
+      if (off > 1) continue;
+      score += off === 0 ? 0.5 : 0.2;
     }
     if (score > bestScore) {
       bestScore = score;
@@ -5144,6 +5242,994 @@ function getStreams(tmdbId, mediaType, season, episode) {
   return { getStreams: getStreams };
 })();
 
+const VegaMoviesSource = (function () {
+// VegaMovies scraper for Nuvio Local Scrapers
+//
+// Ported from the open-source CloudStream extension (SaurabhKaperwan/CSX,
+// VegaMovies/src/main/kotlin/com/megix/VegaMoviesProvider.kt + Extractors.kt -
+// real Kotlin source, no decompilation needed this time) with one deliberate
+// change: the original's primary resolver, "V-Cloud" (vcloud.fit), is now
+// behind a real Cloudflare managed challenge ("Just a moment...") - verified
+// directly, not assumed - which no plain HTTP client can solve without a
+// browser executing JS. This scraper instead uses the same download page's
+// "G-Direct [Instant]" button, which isn't Cloudflare-protected: its embed
+// page contains a plain `var reurl = "https://fastdl.zip/dl.php?link=<real
+// googleusercontent.com URL>"` in static HTML, no JS execution required to
+// read it. Verified end-to-end: HEAD on the extracted URL returns a real
+// video/mkv file. "Filepress" is also Cloudflare-gated; "DropGalaxy" needs a
+// JS-execution-proof redirect dance that isn't worth chasing when G-Direct
+// already works cleanly.
+//
+//   current domain -> https://raw.githubusercontent.com/SaurabhKaperwan/Utils/refs/heads/main/urls.json ["vegamovies"]
+//   search         -> GET {baseUrl}/search.php?q={query}&page=1  (Typesense-style JSON, no auth)
+//   movie page     -> one "Download Now" button per quality, each leading to a
+//                     nexdrive.fit-style hub page with a "G-Direct" link
+//   series page    -> one "Episode Links" hub per (season, quality) pair; that
+//                     hub lists one "G-Direct" link per episode, in order, so
+//                     the Nth G-Direct link is episode N for that quality
+
+const cheerio = require('cheerio-without-node-native');
+
+const TMDB_API_KEY = '439c478a771f35c05022f9feabcca01c';
+const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
+
+const DOMAINS_CONFIG_URLS = [
+  'https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json',
+  'https://raw.githubusercontent.com/SaurabhKaperwan/Utils/refs/heads/main/urls.json'
+];
+const DEFAULT_BASE_URL = 'https://vegamovies.mq';
+
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const HEADERS = { 'User-Agent': USER_AGENT };
+
+let cachedBaseUrl = null;
+let cachedBaseUrlAt = 0;
+const BASE_URL_CACHE_TTL = 1000 * 60 * 30;
+
+function getBaseUrl() {
+  if (cachedBaseUrl && Date.now() - cachedBaseUrlAt < BASE_URL_CACHE_TTL) {
+    return Promise.resolve(cachedBaseUrl);
+  }
+  // Two community domain lists track VegaMovies and they drift apart -
+  // confirmed 2026-11-01 that one still pointed at a dead domain (404 page
+  // from the search endpoint) while the other had the live one. Each
+  // candidate is tried in turn and the first whose search endpoint answers
+  // with JSON wins.
+  const readList = (url) => fetch(url, { headers: HEADERS })
+    .then(res => res.json())
+    .then(cfg => (cfg && cfg.vegamovies) || null)
+    .catch(() => null);
+  return Promise.all(DOMAINS_CONFIG_URLS.map(readList)).then(found => {
+    const candidates = [...new Set([...found.filter(Boolean), DEFAULT_BASE_URL].map(u => u.replace(/\/+$/, '')))];
+    const tryNext = (i) => {
+      if (i >= candidates.length) return candidates[0];
+      return fetch(`${candidates[i]}/search.php?q=test&page=1`, { headers: HEADERS })
+        .then(res => (res.ok ? res.json() : null))
+        .then(json => (json && Array.isArray(json.hits) ? candidates[i] : tryNext(i + 1)))
+        .catch(() => tryNext(i + 1));
+    };
+    return tryNext(0);
+  }).then(url => {
+    cachedBaseUrl = url;
+    cachedBaseUrlAt = Date.now();
+    console.log(`[VegaMovies] Using domain: ${url}`);
+    return url;
+  });
+}
+
+function getTmdbInfo(tmdbId, mediaType) {
+  const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
+  const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}&append_to_response=external_ids`;
+  return fetch(url, { headers: HEADERS })
+    .then(res => res.json())
+    .then(data => {
+      const title = mediaType === 'tv' ? data.name : data.title;
+      const year = (mediaType === 'tv' ? data.first_air_date : data.release_date || '').substring(0, 4);
+      const imdbId = data.imdb_id || (data.external_ids && data.external_ids.imdb_id) || null;
+      console.log(`[VegaMovies] TMDB Info: "${title}" (${year}) imdb=${imdbId || 'none'}`);
+      return { title, year, imdbId };
+    })
+    .catch(() => ({ title: '', year: '', imdbId: null }));
+}
+
+function normalize(str) {
+  return String(str || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+// Prefers an exact IMDb id match (the search index carries one per hit) since
+// that's unambiguous; falls back to word-overlap scoring against the title
+// (and a bonus for the release year appearing in the post title) when the
+// site's own imdb_id field is missing for a given hit.
+function findBestMatch(hits, mediaInfo) {
+  if (!hits.length) return null;
+  if (mediaInfo.imdbId) {
+    const exact = hits.find(h => h.document.imdb_id === mediaInfo.imdbId);
+    if (exact) return exact.document;
+  }
+  const targetWords = new Set(normalize(mediaInfo.title).split(' ').filter(Boolean));
+  let best = null;
+  let bestScore = -1;
+  for (const hit of hits) {
+    const doc = hit.document;
+    // A post title carrying its own distinct release year that conflicts
+    // with the target's is a hard mismatch, not just a missed bonus below -
+    // otherwise a same-named but unrelated title (e.g. "The Office" (2005)
+    // vs. an unrelated 2024 remake also called "The Office") wins purely on
+    // word overlap, since short common titles overlap 100% either way.
+    const postYearMatch = doc.post_title.match(/\b(19|20)\d{2}\b/);
+    if (mediaInfo.year && postYearMatch && Math.abs(parseInt(postYearMatch[0], 10) - parseInt(mediaInfo.year, 10)) > 1) {
+      continue;
+    }
+    const titleWords = normalize(doc.post_title).split(' ').filter(Boolean);
+    const overlap = titleWords.filter(w => targetWords.has(w)).length;
+    let score = targetWords.size ? overlap / targetWords.size : 0;
+    if (mediaInfo.year && doc.post_title.includes(mediaInfo.year)) score += 0.5;
+    if (score > bestScore) {
+      bestScore = score;
+      best = doc;
+    }
+  }
+  return bestScore >= 0.5 ? best : null;
+}
+
+function getIndexQuality(str) {
+  if (!str) return 'Unknown';
+  const m = String(str).match(/(\d{3,4})\s*[pP]/);
+  if (m) return `${m[1]}p`;
+  const lower = str.toLowerCase();
+  if (lower.includes('8k')) return '8K';
+  if (lower.includes('4k') || lower.includes('2160')) return '4K';
+  return 'Unknown';
+}
+
+function getSizeLabel(str) {
+  const m = String(str || '').match(/([\d.]+\s*(?:GB|MB|TB))/i);
+  return m ? m[1].replace(/\s+/g, '') : null;
+}
+
+// The G-Direct embed page is a plain "redirecting..." shell containing
+// `var reurl = "https://fastdl.zip/dl.php?link=<real file URL>"` in static
+// HTML - no JS execution needed, just read the value straight out of the
+// page text. The rest of that page is browser/ad-blocker detection noise
+// unrelated to the redirect itself.
+function extractGDirectFinalUrl(embedUrl) {
+  return fetch(embedUrl, { headers: HEADERS })
+    .then(res => res.text())
+    .then(html => {
+      const m = html.match(/var\s+reurl\s*=\s*"([^"]+)"/);
+      if (!m) return null;
+      const reurl = m[1];
+      const linkMatch = reurl.match(/[?&]link=(.+)$/);
+      return linkMatch ? linkMatch[1] : reurl;
+    })
+    .catch(() => null);
+}
+
+function findLinkByText($, root, pattern) {
+  let href = null;
+  root.find('a').each((i, el) => {
+    if (href) return;
+    if (pattern.test($(el).text())) href = $(el).attr('href');
+  });
+  return href;
+}
+
+// A hub page (reached via a movie's "Download Now" button, or one entry in a
+// series' "Episode Links" list) offers several resolvers (G-Direct, V-Cloud,
+// Filepress, DropGalaxy, ...) for the same file - only G-Direct is usable
+// here (see file header), so that's the only one this looks for.
+function resolveHubToUrl(hubUrl) {
+  return fetch(hubUrl, { headers: HEADERS })
+    .then(res => res.text())
+    .then(html => {
+      const $ = cheerio.load(html);
+      const gdirect = findLinkByText($, $.root(), /G-Direct/i);
+      if (!gdirect) return null;
+      return extractGDirectFinalUrl(gdirect);
+    })
+    .catch(() => null);
+}
+
+function isSeriesPage($) {
+  return $('h3, h5').filter((i, el) => /Series[\s-]*SYNOPSIS\/PLOT|Series Info/i.test($(el).text())).length > 0;
+}
+
+function extractMovieTargets($) {
+  const targets = [];
+  $('main h3, main h5').each((i, el) => {
+    const text = $(el).text().trim();
+    if (!/\d{3,4}\s*[pP]|4K/i.test(text)) return;
+    const hubUrl = findLinkByText($, $(el).next(), /Download Now/i) || findLinkByText($, $(el).next(), /.+/);
+    if (hubUrl) targets.push({ qualityText: text, hubUrl });
+  });
+  return targets;
+}
+
+function extractSeriesTargets($, season) {
+  const targets = [];
+  $('main h3, main h5').each((i, el) => {
+    const text = $(el).text().trim();
+    const seasonMatch = text.match(/Season\s*(\d+)/i);
+    if (!seasonMatch || parseInt(seasonMatch[1], 10) !== season) return;
+    if (!/\d{3,4}\s*[pP]|4K/i.test(text)) return;
+    // Most posts label the per-episode hub link "Episode Links", but some
+    // (e.g. older season-pack posts) skip that label and put the hub link
+    // directly under "G-Direct" instead - confirmed live that link's target
+    // page lists one "G-Direct [Instant]" link per episode either way, so
+    // it's the same kind of hub, just unlabeled.
+    const listUrl = findLinkByText($, $(el).next(), /Episode Links/i) || findLinkByText($, $(el).next(), /G-Direct/i);
+    if (listUrl) targets.push({ qualityText: text, listUrl });
+  });
+  return targets;
+}
+
+function buildStream(url, qualityText, label) {
+  return {
+    name: 'VegaMovies',
+    title: label,
+    url,
+    quality: getIndexQuality(qualityText),
+    size: getSizeLabel(qualityText),
+    type: 'direct',
+    headers: HEADERS,
+    provider: 'vegamovies'
+  };
+}
+
+function validateStreamUrl(stream) {
+  return fetch(stream.url, { method: 'HEAD', headers: stream.headers })
+    .then(res => res.ok || res.status === 206)
+    .catch(() => fetch(stream.url, { method: 'GET', headers: Object.assign({}, stream.headers, { Range: 'bytes=0-2048' }) })
+      .then(res => res.ok || res.status === 206)
+      .catch(() => false));
+}
+
+function getMoviePageStreams($, label) {
+  const targets = extractMovieTargets($);
+  return Promise.all(targets.map(t =>
+    resolveHubToUrl(t.hubUrl).then(url => url ? buildStream(url, t.qualityText, label) : null)
+  )).then(streams => streams.filter(Boolean));
+}
+
+function getSeriesPageStreams($, season, episode, label) {
+  const targets = extractSeriesTargets($, season);
+  return Promise.all(targets.map(t =>
+    fetch(t.listUrl, { headers: HEADERS })
+      .then(res => res.text())
+      .then(html => {
+        const $$ = cheerio.load(html);
+        const gdirectLinks = [];
+        $$('a').each((i, el) => {
+          if (/G-Direct/i.test($$(el).text())) gdirectLinks.push($$(el).attr('href'));
+        });
+        const episodeUrl = gdirectLinks[episode - 1];
+        if (!episodeUrl) return null;
+        return extractGDirectFinalUrl(episodeUrl).then(url => url ? buildStream(url, t.qualityText, `${label} S${season}E${episode}`) : null);
+      })
+      .catch(() => null)
+  )).then(streams => streams.filter(Boolean));
+}
+
+function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) {
+  console.log(`[VegaMovies] getStreams start tmdbId=${tmdbId} type=${mediaType} S=${season || ''} E=${episode || ''}`);
+
+  if (mediaType === 'tv' && (!season || !episode)) {
+    console.log('[VegaMovies] Missing season/episode for TV lookup');
+    return Promise.resolve([]);
+  }
+
+  return Promise.all([getBaseUrl(), getTmdbInfo(tmdbId, mediaType)]).then(([baseUrl, mediaInfo]) => {
+    if (!mediaInfo.title) return [];
+    const label = `${mediaInfo.title}${mediaInfo.year ? ' (' + mediaInfo.year + ')' : ''}`;
+
+    return fetch(`${baseUrl}/search.php?q=${encodeURIComponent(mediaInfo.title)}&page=1`, { headers: HEADERS })
+      .then(res => res.json())
+      .then(data => {
+        const hits = Array.isArray(data.hits) ? data.hits : [];
+        const match = findBestMatch(hits, mediaInfo);
+        if (!match) {
+          console.log('[VegaMovies] No matching title found');
+          return [];
+        }
+        console.log(`[VegaMovies] Matched: "${match.post_title}"`);
+        const pageUrl = new URL(match.permalink, baseUrl).toString();
+        return fetch(pageUrl, { headers: HEADERS })
+          .then(res => res.text())
+          .then(html => {
+            const $ = cheerio.load(html);
+            return mediaType === 'tv'
+              ? getSeriesPageStreams($, season, episode, label)
+              : getMoviePageStreams($, label);
+          });
+      })
+      .then(streams => {
+        console.log(`[VegaMovies] Found ${streams.length} stream(s), validating...`);
+        return Promise.all(streams.map(s => validateStreamUrl(s).then(ok => ({ stream: s, ok })))).then(validated => {
+          const valid = validated.filter(v => v.ok).map(v => v.stream);
+          const dead = validated.filter(v => !v.ok).map(v => v.stream.name + ' ' + v.stream.quality);
+          if (dead.length) console.log(`[VegaMovies] Dropping unreachable: ${dead.join(', ')}`);
+          console.log(`[VegaMovies] ${valid.length}/${streams.length} stream(s) validated OK`);
+          return valid;
+        });
+      });
+  }).catch(err => {
+    console.log(`[VegaMovies] getStreams failed: ${err.message}`);
+    return [];
+  });
+}
+  return { getStreams: getStreams };
+})();
+
+const RogMoviesSource = (function () {
+// RogMovies scraper.
+//
+//   current domain -> https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json
+//                     ["rogmovies"] - confirmed live (2026-09-28) that even
+//                     this always-rotating value is already stale by the
+//                     time it's read: new2.rogmovies.click answers with a
+//                     Cloudflare 301 chain (new2.rogmovies.click ->
+//                     n1.rogmovies.best -> rogmovies.best). fetch() follows
+//                     redirects by default, so requests built from the
+//                     domains.json value still land correctly - but the
+//                     final resolved origin (from response.url) is cached
+//                     instead of the pre-redirect one, so later requests
+//                     skip paying for two redirect hops every time.
+//   search         -> GET {domain}/search.php?q={query} - a Typesense-style
+//                     JSON index (facet_counts/hits/found) whose per-hit
+//                     "document" shape (id, imdb_id, permalink, post_title,
+//                     post_thumbnail) is identical to VegaMovies's own
+//                     search.php - confirmed live these two sites share the
+//                     same backend (a resolved RogMovies download even
+//                     carried a "-Vegamovies.to.mkv" filename suffix).
+//                     Confirmed live the index is typo-tolerant enough to
+//                     return unrelated hits for a query with no real match
+//                     (searching "Inception" fuzzy-matched "...The
+//                     Deception..." titles, zero actual hits) - matching on
+//                     imdb_id/word-overlap below is required, not optional.
+//   movie page     -> one nexdrive.fit hub link per quality: an h5 heading
+//                     carrying the quality text (e.g. "... 1080p 10Bit
+//                     WEB-DL x265 [2GB]"), immediately followed by a
+//                     `<p><a href="hub"><button class="dwd-button">Download
+//                     Now</button></a></p>` - confirmed live via direct HTML
+//                     inspection, matching the decompiled StreamPlay
+//                     extension's `button.dwd-button` selector.
+//   series page    -> one nexdrive.fit hub link per (season, quality) pair:
+//                     an h3 heading like "Season 2 (Episode 1 - 3 Added)
+//                     {HiNDi-Series} 720p WEB-DL x264 [1GB/E]" followed by a
+//                     "G-Direct [Instant]" button in the same <p>. That hub
+//                     page lists every episode for that (season, quality),
+//                     each under its own "-:Episode: N:-" h4 heading with
+//                     its own G-Direct link right after - so an episode is
+//                     found by matching heading text, not by position in a
+//                     list (confirmed live: RogMovies's own headings don't
+//                     guarantee episode 1 is listed first-and-only-once the
+//                     way VegaMovies's flat "Episode Links" list does).
+//   nexdrive.fit   -> "G-Direct [Instant]" is a fastdl.zip/embed(.php) link
+//                     containing a plain `var reurl = "https://fastdl.zip/dl.php?link=<real
+//                     googleusercontent.com URL>"` in static HTML - the
+//                     exact same mechanism vegamovies.js already documented
+//                     for its own G-Direct handling, no JS execution needed.
+//                     "V-Cloud" (vcloud.fit) is confirmed live behind a real
+//                     Cloudflare managed challenge (plain HTTP request gets
+//                     a 403 "Just a moment..." page), and "Filepress"
+//                     (filebee.xyz, which itself 301s to a rt.filepress.baby
+//                     mirror) failed to even establish a connection in
+//                     testing - both skipped, matching vegamovies.js's own
+//                     documented reasoning for the same two resolvers.
+
+const cheerio = require('cheerio');
+
+const TMDB_API_KEY = '439c478a771f35c05022f9feabcca01c';
+const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
+
+const DOMAINS_URL = 'https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json';
+const DEFAULT_DOMAIN = 'https://new2.rogmovies.click';
+
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const HEADERS = { 'User-Agent': USER_AGENT };
+
+let cachedDomain = null;
+let cachedDomainAt = 0;
+const DOMAIN_CACHE_TTL = 1000 * 60 * 30;
+
+// Reads domains.json, then follows that value's own redirect chain once
+// (confirmed live: two Cloudflare 301 hops as of 2026-09-28) so every
+// subsequent request in this run starts from the actually-final origin
+// instead of paying for the same two redirects every time.
+function getDomain() {
+  if (cachedDomain && Date.now() - cachedDomainAt < DOMAIN_CACHE_TTL) return Promise.resolve(cachedDomain);
+  return fetch(DOMAINS_URL, { headers: HEADERS })
+    .then(res => res.json())
+    .then(data => ((data && data.rogmovies) || DEFAULT_DOMAIN).replace(/\/+$/, ''))
+    .catch(() => DEFAULT_DOMAIN)
+    .then(domain => fetch(domain + '/', { headers: HEADERS })
+      .then(res => {
+        const resolved = (res.url || domain).replace(/\/+$/, '');
+        cachedDomain = resolved;
+        cachedDomainAt = Date.now();
+        console.log(`[RogMovies] Using domain: ${resolved}`);
+        return resolved;
+      })
+      .catch(() => {
+        cachedDomain = domain;
+        cachedDomainAt = Date.now();
+        return domain;
+      }));
+}
+
+function getTmdbInfo(tmdbId, mediaType) {
+  const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
+  const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}&append_to_response=external_ids`;
+  return fetch(url, { headers: HEADERS })
+    .then(res => res.json())
+    .then(data => {
+      const title = mediaType === 'tv' ? data.name : data.title;
+      const year = (mediaType === 'tv' ? data.first_air_date : data.release_date || '').substring(0, 4);
+      const imdbId = data.imdb_id || (data.external_ids && data.external_ids.imdb_id) || null;
+      console.log(`[RogMovies] TMDB Info: "${title}" (${year}) imdb=${imdbId || 'none'}`);
+      return { title, year, imdbId };
+    })
+    .catch(() => ({ title: '', year: '', imdbId: null }));
+}
+
+function normalize(str) {
+  return String(str || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function search(domain, query) {
+  return fetch(`${domain}/search.php?q=${encodeURIComponent(query)}`, { headers: HEADERS })
+    .then(res => res.ok ? res.json() : null)
+    .then(data => (data && Array.isArray(data.hits)) ? data.hits.map(h => h.document).filter(Boolean) : [])
+    .catch(() => []);
+}
+
+// Same two-tier strategy vegamovies.js uses against this same search index
+// shape: an exact imdb_id hit is unambiguous, otherwise fall back to
+// word-overlap scoring with a hard reject on a conflicting release year (a
+// same-named unrelated title otherwise wins purely on word overlap for
+// short common titles).
+function findBestMatch(docs, mediaInfo) {
+  if (!docs.length) return null;
+  if (mediaInfo.imdbId) {
+    const exact = docs.find(d => d.imdb_id && d.imdb_id === mediaInfo.imdbId);
+    if (exact) return exact;
+  }
+  const targetWords = new Set(normalize(mediaInfo.title).split(' ').filter(Boolean));
+  let best = null;
+  let bestScore = -1;
+  for (const doc of docs) {
+    if (!doc.post_title) continue;
+    const postYearMatch = doc.post_title.match(/\b(19|20)\d{2}\b/);
+    if (mediaInfo.year && postYearMatch && Math.abs(parseInt(postYearMatch[0], 10) - parseInt(mediaInfo.year, 10)) > 1) {
+      continue;
+    }
+    const titleWords = normalize(doc.post_title).split(' ').filter(Boolean);
+    const overlap = titleWords.filter(w => targetWords.has(w)).length;
+    let score = targetWords.size ? overlap / targetWords.size : 0;
+    if (mediaInfo.year && doc.post_title.includes(mediaInfo.year)) score += 0.5;
+    if (score > bestScore) {
+      bestScore = score;
+      best = doc;
+    }
+  }
+  return bestScore >= 0.5 ? best : null;
+}
+
+function getIndexQuality(str) {
+  if (!str) return 'Unknown';
+  const m = String(str).match(/(\d{3,4})\s*[pP]/);
+  if (m) {
+    const n = parseInt(m[1], 10);
+    return n >= 2160 ? '4K' : `${n}p`;
+  }
+  const lower = str.toLowerCase();
+  if (lower.includes('4k') || lower.includes('uhd')) return '4K';
+  return 'Unknown';
+}
+
+function getSizeLabel(str) {
+  const m = String(str || '').match(/([\d.]+\s*(?:GB|MB|TB))/i);
+  return m ? m[1].replace(/\s+/g, '') : null;
+}
+
+function findLinkByText($, root, pattern) {
+  let href = null;
+  root.find('a').each((i, el) => {
+    if (href) return;
+    if (pattern.test($(el).text())) href = $(el).attr('href');
+  });
+  return href;
+}
+
+// The G-Direct embed page (either /embed?download= on a movie hub or
+// /embed.php?download= on an episode hub - confirmed live both resolve the
+// same way) is a plain "redirecting..." shell containing
+// `var reurl = "https://fastdl.zip/dl.php?link=<real file URL>"` in static
+// HTML - no JS execution needed.
+function extractGDirectFinalUrl(embedUrl) {
+  return fetch(embedUrl, { headers: HEADERS })
+    .then(res => res.text())
+    .then(html => {
+      const m = html.match(/var\s+reurl\s*=\s*"([^"]+)"/);
+      if (!m) return null;
+      const linkMatch = m[1].match(/[?&]link=(.+)$/);
+      return linkMatch ? linkMatch[1] : m[1];
+    })
+    .catch(() => null);
+}
+
+// A movie's download hub (reached via its "Download Now" / dwd-button link)
+// offers several resolvers - only G-Direct is usable here (see file header).
+function resolveHubToUrl(hubUrl) {
+  return fetch(hubUrl, { headers: HEADERS })
+    .then(res => res.text())
+    .then(html => {
+      const $ = cheerio.load(html);
+      const gdirect = findLinkByText($, $.root(), /G-Direct/i);
+      if (!gdirect) return null;
+      return extractGDirectFinalUrl(gdirect);
+    })
+    .catch(() => null);
+}
+
+function extractMovieTargets($) {
+  const targets = [];
+  $('h3, h4, h5').each((i, el) => {
+    const text = $(el).text().trim();
+    if (!/\d{3,4}\s*[pP]|4K/i.test(text)) return;
+    const hubUrl = $(el).next().find('button.dwd-button').parent('a').attr('href')
+      || findLinkByText($, $(el).next(), /.+/);
+    if (hubUrl) targets.push({ qualityText: text, hubUrl });
+  });
+  return targets;
+}
+
+function extractSeriesTargets($, season) {
+  const targets = [];
+  $('h3, h4, h5').each((i, el) => {
+    const text = $(el).text().trim();
+    const seasonMatch = text.match(/Season\s*(\d+)/i);
+    if (!seasonMatch || parseInt(seasonMatch[1], 10) !== season) return;
+    if (!/\d{3,4}\s*[pP]|4K/i.test(text)) return;
+    const hubUrl = findLinkByText($, $(el).next(), /G-Direct/i);
+    if (hubUrl) targets.push({ qualityText: text, hubUrl });
+  });
+  return targets;
+}
+
+// The episode-list hub gives one "-:Episode: N:-" heading per episode, each
+// immediately followed by its own G-Direct link - matched by heading text
+// rather than position, since a season pack can be added to incrementally
+// (e.g. "Episode 1 - 3 Added") and there's no guarantee episode order in the
+// markup lines up with a plain index.
+function extractEpisodeHubUrl($, episode) {
+  const episodeRegex = new RegExp(`Episode:?\\s*${episode}\\b`, 'i');
+  let hubUrl = null;
+  $('h3, h4, h5').each((i, el) => {
+    if (hubUrl) return;
+    if (!episodeRegex.test($(el).text())) return;
+    hubUrl = findLinkByText($, $(el).next(), /G-Direct/i);
+  });
+  return hubUrl;
+}
+
+function buildStream(url, qualityText, label) {
+  return {
+    name: 'RogMovies',
+    title: `${label}\n${qualityText.replace(/\s+/g, ' ').trim()}`,
+    url,
+    quality: getIndexQuality(qualityText),
+    size: getSizeLabel(qualityText),
+    headers: HEADERS,
+    provider: 'rogmovies'
+  };
+}
+
+// Status alone isn't reliable (a dead resolver can still answer 200 with an
+// error page instead of the file) - an .m3u8 link is GET-checked for a real
+// playlist body, matching cinejoy.js/peachify.js; a direct file link only
+// gets a cheap HEAD (falling back to a tiny ranged GET for hosts that
+// reject HEAD), matching vegamovies.js.
+function isM3u8Url(url) {
+  return /\.m3u8(\?|$)/i.test(url);
+}
+
+function validateStreamUrl(stream) {
+  if (isM3u8Url(stream.url)) {
+    return fetch(stream.url, { headers: stream.headers })
+      .then(res => (res.ok ? res.text().then(text => /^#EXTM3U/.test(text.trim())) : false))
+      .catch(() => false);
+  }
+  return fetch(stream.url, { method: 'HEAD', headers: stream.headers })
+    .then(res => res.ok || res.status === 206)
+    .catch(() => fetch(stream.url, { method: 'GET', headers: Object.assign({}, stream.headers, { Range: 'bytes=0-2048' }) })
+      .then(res => res.ok || res.status === 206)
+      .catch(() => false));
+}
+
+function getMoviePageStreams($, label) {
+  const targets = extractMovieTargets($);
+  return Promise.all(targets.map(t =>
+    resolveHubToUrl(t.hubUrl).then(url => url ? buildStream(url, t.qualityText, label) : null)
+  )).then(streams => streams.filter(Boolean));
+}
+
+function getSeriesPageStreams($, season, episode, label) {
+  const targets = extractSeriesTargets($, season);
+  return Promise.all(targets.map(t =>
+    fetch(t.hubUrl, { headers: HEADERS })
+      .then(res => res.text())
+      .then(html => {
+        const $$ = cheerio.load(html);
+        const episodeGDirect = extractEpisodeHubUrl($$, episode);
+        if (!episodeGDirect) return null;
+        return extractGDirectFinalUrl(episodeGDirect).then(url => url ? buildStream(url, t.qualityText, `${label} S${season}E${episode}`) : null);
+      })
+      .catch(() => null)
+  )).then(streams => streams.filter(Boolean));
+}
+
+function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) {
+  console.log(`[RogMovies] getStreams start tmdbId=${tmdbId} type=${mediaType} S=${season || ''} E=${episode || ''}`);
+
+  if (mediaType === 'tv' && (!season || !episode)) {
+    console.log('[RogMovies] Missing season/episode for TV lookup');
+    return Promise.resolve([]);
+  }
+
+  return Promise.all([getDomain(), getTmdbInfo(tmdbId, mediaType)]).then(([domain, mediaInfo]) => {
+    if (!mediaInfo.title) return [];
+    const label = `${mediaInfo.title}${mediaInfo.year ? ' (' + mediaInfo.year + ')' : ''}`;
+
+    return search(domain, mediaInfo.title).then(docs => {
+      const match = findBestMatch(docs, mediaInfo);
+      if (!match || !match.permalink) {
+        console.log(`[RogMovies] No matching title found for "${mediaInfo.title}"`);
+        return [];
+      }
+      console.log(`[RogMovies] Matched: "${match.post_title}"`);
+      const pageUrl = new URL(match.permalink, domain).toString();
+
+      return fetch(pageUrl, { headers: HEADERS })
+        .then(res => res.text())
+        .then(html => {
+          const $ = cheerio.load(html);
+          return mediaType === 'tv'
+            ? getSeriesPageStreams($, season, episode, label)
+            : getMoviePageStreams($, label);
+        });
+    }).then(streams => {
+      if (!streams.length) return streams;
+      console.log(`[RogMovies] Found ${streams.length} stream(s), validating...`);
+      return Promise.all(streams.map(s => validateStreamUrl(s).then(ok => ({ stream: s, ok })))).then(validated => {
+        const valid = validated.filter(v => v.ok).map(v => v.stream);
+        const dead = validated.filter(v => !v.ok).map(v => `${v.stream.name} ${v.stream.quality}`);
+        if (dead.length) console.log(`[RogMovies] Dropping unreachable: ${dead.join(', ')}`);
+        console.log(`[RogMovies] ${valid.length}/${streams.length} stream(s) validated OK`);
+        return valid;
+      });
+    });
+  }).catch(err => {
+    console.log(`[RogMovies] getStreams failed: ${err.message}`);
+    return [];
+  });
+}
+  return { getStreams: getStreams };
+})();
+
+const VaPlayerSource = (function () {
+// VaPlayer scraper for Nuvio Local Scrapers
+//
+// VaPlayer is the player behind nextgencloudfabric.com embeds. Its data API
+// answers by IMDb id with ready-to-play HLS master playlists - no search,
+// no page scraping, no decryption:
+//
+//   GET https://streamdata.vaplayer.ru/api.php?imdb={imdbId}&type=movie
+//   GET https://streamdata.vaplayer.ru/api.php?imdb={imdbId}&type=tv&season={s}&episode={e}
+//     -> {"status_code":"200","data":{"title","file_name","stream_urls":[...]},
+//         "default_subs":[...]}
+//     (an empty body when the title isn't available)
+//
+// Written from the endpoint the community "Streamline" plugin uses, re-checked
+// by hand 2026-11-01: each stream_urls entry is a master playlist (several
+// renditions, audio included) that plays without any special headers; the
+// Referer below is what the site's own player sends, kept for safety.
+// file_name is the original release name, which is where the quality comes
+// from (the playlist itself is adaptive).
+
+const TMDB_API_KEY = '439c478a771f35c05022f9feabcca01c';
+const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
+const API_BASE = 'https://streamdata.vaplayer.ru';
+const REFERER = 'https://nextgencloudfabric.com/';
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+const REQUEST_TIMEOUT_MS = 15000;
+
+function fetchWithTimeout(url, options) {
+  if (typeof AbortController === 'undefined') return fetch(url, options);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  return fetch(url, Object.assign({}, options, { signal: controller.signal })).then(
+    res => { clearTimeout(timer); return res; },
+    err => { clearTimeout(timer); throw err; }
+  );
+}
+
+function getTmdbInfo(tmdbId, mediaType) {
+  const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
+  const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}&append_to_response=external_ids`;
+  return fetchWithTimeout(url, { headers: { 'User-Agent': USER_AGENT } })
+    .then(res => res.json())
+    .then(data => ({
+      title: mediaType === 'tv' ? data.name : data.title,
+      year: ((mediaType === 'tv' ? data.first_air_date : data.release_date) || '').substring(0, 4),
+      imdbId: (data.external_ids && data.external_ids.imdb_id) || data.imdb_id || null
+    }))
+    .catch(err => {
+      console.log(`[VaPlayer] TMDB lookup failed: ${err.message}`);
+      return { title: '', year: '', imdbId: null };
+    });
+}
+
+function qualityFromName(name) {
+  const text = String(name || '');
+  if (/2160p|\b4k\b/i.test(text)) return '4K';
+  const m = text.match(/(\d{3,4})p/i);
+  return m ? `${m[1]}p` : 'Auto';
+}
+
+function mapSubtitles(subs) {
+  if (!Array.isArray(subs)) return [];
+  return subs
+    .filter(s => s && s.url)
+    .map(s => ({ url: s.url, language: s.lang || s.code || 'en', name: s.lang || s.code || 'Subtitle' }));
+}
+
+// Every playlist URL is fetched once before it's offered: a dead mirror
+// answers 4xx or something other than a playlist.
+function isPlayable(url, headers) {
+  return fetchWithTimeout(url, { headers })
+    .then(res => (res.ok ? res.text().then(text => /^#EXTM3U/.test(text.trim())) : false))
+    .catch(() => false);
+}
+
+function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) {
+  console.log(`[VaPlayer] getStreams start tmdbId=${tmdbId} type=${mediaType} S=${season || ''} E=${episode || ''}`);
+  if (mediaType === 'tv' && (!season || !episode)) return Promise.resolve([]);
+
+  return getTmdbInfo(tmdbId, mediaType).then(info => {
+    if (!info.imdbId) {
+      console.log('[VaPlayer] No IMDb id for this title');
+      return [];
+    }
+    const url = mediaType === 'tv'
+      ? `${API_BASE}/api.php?imdb=${info.imdbId}&type=tv&season=${season}&episode=${episode}`
+      : `${API_BASE}/api.php?imdb=${info.imdbId}&type=movie`;
+    const headers = { 'User-Agent': USER_AGENT, Referer: REFERER };
+
+    return fetchWithTimeout(url, { headers })
+      .then(res => (res.ok ? res.text() : ''))
+      .then(body => {
+        let json = null;
+        try { json = body ? JSON.parse(body) : null; } catch (e) { json = null; }
+        const data = json && json.data;
+        const urls = data && Array.isArray(data.stream_urls) ? [...new Set(data.stream_urls.filter(Boolean))] : [];
+        if (!urls.length) {
+          console.log('[VaPlayer] Not available');
+          return [];
+        }
+        const quality = qualityFromName(data.file_name);
+        const label = mediaType === 'tv'
+          ? `${info.title} S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
+          : `${info.title}${info.year ? ` (${info.year})` : ''}`;
+        const subtitles = mapSubtitles(json.default_subs);
+        const playbackHeaders = { Referer: REFERER, 'User-Agent': USER_AGENT };
+        const streams = urls.map((streamUrl, i) => ({
+          name: `VaPlayer${urls.length > 1 ? ` ${i + 1}` : ''}`,
+          title: data.file_name ? `${label}\n${String(data.file_name).split('/').pop()}` : label,
+          url: streamUrl,
+          quality,
+          type: 'hls',
+          headers: playbackHeaders,
+          subtitles,
+          provider: 'vaplayer'
+        }));
+        return Promise.all(streams.map(s => isPlayable(s.url, s.headers))).then(ok => {
+          const working = streams.filter((_, i) => ok[i]);
+          console.log(`[VaPlayer] ${working.length}/${streams.length} stream(s) playable`);
+          return working;
+        });
+      });
+  }).catch(err => {
+    console.log(`[VaPlayer] getStreams failed: ${err.message}`);
+    return [];
+  });
+}
+  return { getStreams: getStreams };
+})();
+
+const KurageSource = (function () {
+// Kurage scraper for Nuvio Local Scrapers (anime)
+//
+// kurage.live is an anime streaming site built on tRPC. Its own API returns,
+// per AniList id + episode, the servers for the subbed and the dubbed
+// version; each server URL is Kurage's own proxy, which answers with a plain
+// seekable MP4 (or HLS) - confirmed by hand 2026-11-01 (206 video/mp4 for
+// Attack on Titan episode 1, sub and dub, no special headers needed):
+//
+//   GET https://kurage.live/api/trpc/episodes.source,episodes.source?batch=1
+//       &input={"0":{"json":{"animeId":<anilistId>,"episode":<n>,"language":"sub"}},
+//               "1":{"json":{"animeId":<anilistId>,"episode":<n>,"language":"dub"}}}
+//     -> [{"result":{"data":{"json":{"servers":[{"url","label","language","sourceType"}]}}}}, ...]
+//
+// Mapping TMDB to AniList uses the public ARM id-mapping API
+// (arm.haglund.dev), which also says which TMDB season each AniList entry
+// belongs to. Two cases need care:
+//   - a TMDB season split over several AniList entries (Attack on Titan S3
+//     part 1 and 2): entries are ordered by start date and the episode number
+//     is offset by the earlier parts' episode counts (from AniList itself);
+//   - a long-running show kept as one AniList entry with absolute numbering
+//     (One Piece, no season in ARM): the episode becomes TMDB's absolute
+//     number, counted from the earlier seasons' episode counts.
+// Written from the endpoint the community Nuvio "kurage" plugin uses.
+
+const TMDB_API_KEY = '439c478a771f35c05022f9feabcca01c';
+const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
+const KURAGE_BASE = 'https://kurage.live';
+const ARM_BASE = 'https://arm.haglund.dev/api/v2';
+const ANILIST_GRAPHQL = 'https://graphql.anilist.co';
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+const REQUEST_TIMEOUT_MS = 15000;
+
+function fetchWithTimeout(url, options) {
+  if (typeof AbortController === 'undefined') return fetch(url, options);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  return fetch(url, Object.assign({}, options, { signal: controller.signal })).then(
+    res => { clearTimeout(timer); return res; },
+    err => { clearTimeout(timer); throw err; }
+  );
+}
+
+// One retry on a network-level failure ("fetch failed"): confirmed live that
+// kurage.live occasionally drops a connection that succeeds moments later.
+function fetchJson(url, options, retries = 1) {
+  return fetchWithTimeout(url, options).then(res => {
+    if (!res.ok) throw new Error(`HTTP ${res.status} for ${url.split('?')[0]}`);
+    return res.json();
+  }, err => {
+    if (retries <= 0) throw err;
+    return new Promise(resolve => setTimeout(resolve, 500)).then(() => fetchJson(url, options, retries - 1));
+  });
+}
+
+function getTmdbInfo(tmdbId, mediaType) {
+  const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
+  return fetchJson(`${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`, { headers: { 'User-Agent': USER_AGENT } })
+    .then(data => ({
+      title: mediaType === 'tv' ? data.name : data.title,
+      seasons: Array.isArray(data.seasons) ? data.seasons : []
+    }))
+    .catch(() => ({ title: '', seasons: [] }));
+}
+
+function aniListEpisodeInfo(ids) {
+  const query = 'query($ids:[Int]){Page(perPage:50){media(id_in:$ids,type:ANIME){id episodes startDate{year month day}}}}';
+  return fetchJson(ANILIST_GRAPHQL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ query, variables: { ids } })
+  }).then(json => ((json && json.data && json.data.Page && json.data.Page.media) || []))
+    .catch(() => []);
+}
+
+function dateKey(d) {
+  if (!d || !d.year) return Infinity;
+  return d.year * 10000 + (d.month || 1) * 100 + (d.day || 1);
+}
+
+// -> { anilistId, episode } or null
+function resolveAniList(tmdbId, mediaType, season, episode, tmdbInfo) {
+  return fetchJson(`${ARM_BASE}/themoviedb?id=${tmdbId}`, { headers: { 'User-Agent': USER_AGENT } }).then(entries => {
+    const list = (Array.isArray(entries) ? entries : []).filter(e => e && e.anilist);
+    if (mediaType !== 'tv') {
+      const movie = list.find(e => e.media === 'MOVIE');
+      return movie ? { anilistId: movie.anilist, episode: 1 } : null;
+    }
+    const seasonNum = Number(season);
+    const parts = list.filter(e => e.media !== 'MOVIE' && e['themoviedb-season'] === seasonNum);
+    if (parts.length) {
+      return aniListEpisodeInfo(parts.map(p => p.anilist)).then(media => {
+        const byId = new Map(media.map(m => [m.id, m]));
+        const ordered = parts.slice().sort((a, b) =>
+          dateKey((byId.get(a.anilist) || {}).startDate) - dateKey((byId.get(b.anilist) || {}).startDate));
+        let ep = Number(episode);
+        for (let i = 0; i < ordered.length; i++) {
+          const count = (byId.get(ordered[i].anilist) || {}).episodes;
+          if (!count || ep <= count || i === ordered.length - 1) return { anilistId: ordered[i].anilist, episode: ep };
+          ep -= count;
+        }
+        return null;
+      });
+    }
+    // One AniList entry for the whole show, numbered absolutely.
+    const whole = list.find(e => e.media === 'TV' && (e['themoviedb-season'] === null || e['themoviedb-season'] === undefined));
+    if (!whole) return null;
+    const before = tmdbInfo.seasons
+      .filter(s => s.season_number > 0 && s.season_number < seasonNum)
+      .reduce((sum, s) => sum + (s.episode_count || 0), 0);
+    return { anilistId: whole.anilist, episode: before + Number(episode) };
+  }).catch(err => {
+    console.log(`[Kurage] Mapping failed: ${err.message}`);
+    return null;
+  });
+}
+
+function isPlayable(stream) {
+  const headers = { Range: 'bytes=0-1024', 'User-Agent': USER_AGENT };
+  return fetchWithTimeout(stream.url, { headers })
+    .then(res => {
+      if (!res.ok) return false;
+      const type = (res.headers.get('content-type') || '').toLowerCase();
+      if (stream.type === 'hls' || /mpegurl/.test(type)) return res.text().then(t => /^#EXTM3U/.test(t.trim()));
+      if (res.body && typeof res.body.cancel === 'function') res.body.cancel().catch(() => {});
+      return !/text\/html/.test(type);
+    })
+    .catch(() => false);
+}
+
+function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) {
+  console.log(`[Kurage] getStreams start tmdbId=${tmdbId} type=${mediaType} S=${season || ''} E=${episode || ''}`);
+  if (mediaType === 'tv' && (!season || !episode)) return Promise.resolve([]);
+
+  return getTmdbInfo(tmdbId, mediaType).then(info =>
+    resolveAniList(tmdbId, mediaType, season, episode, info).then(target => {
+      if (!target) {
+        console.log('[Kurage] Not an anime known to AniList');
+        return [];
+      }
+      console.log(`[Kurage] AniList ${target.anilistId} episode ${target.episode}`);
+      const input = {
+        0: { json: { animeId: target.anilistId, episode: target.episode, language: 'sub' } },
+        1: { json: { animeId: target.anilistId, episode: target.episode, language: 'dub' } }
+      };
+      const url = `${KURAGE_BASE}/api/trpc/episodes.source,episodes.source?batch=1&input=${encodeURIComponent(JSON.stringify(input))}`;
+      return fetchJson(url, {
+        headers: { 'User-Agent': USER_AGENT, 'trpc-accept': 'application/json', 'x-trpc-source': 'nextjs-react' }
+      }).then(results => {
+        const label = mediaType === 'tv'
+          ? `${info.title} S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
+          : info.title;
+        const streams = [];
+        (Array.isArray(results) ? results : []).forEach(r => {
+          const servers = (r && r.result && r.result.data && r.result.data.json && r.result.data.json.servers) || [];
+          servers.forEach(server => {
+            if (!server || !server.url) return;
+            const lang = String(server.language || 'sub').toUpperCase();
+            streams.push({
+              name: `Kurage [${lang}] ${server.label || ''}`.trim(),
+              title: `${label} - ${lang === 'DUB' ? 'English dub' : 'Japanese audio, English subs'}`,
+              url: server.url.startsWith('/') ? `${KURAGE_BASE}${server.url}` : server.url,
+              quality: 'Auto',
+              type: server.sourceType === 'hls' ? 'hls' : 'direct',
+              provider: 'kurage'
+            });
+          });
+        });
+        return Promise.all(streams.map(isPlayable)).then(ok => {
+          const working = streams.filter((_, i) => ok[i]);
+          console.log(`[Kurage] ${working.length}/${streams.length} stream(s) playable`);
+          return working;
+        });
+      });
+    })
+  ).catch(err => {
+    console.log(`[Kurage] getStreams failed: ${err.message}`);
+    return [];
+  });
+}
+  return { getStreams: getStreams };
+})();
+
 const SOURCES = [
   { id: 'vidrock', name: 'Vidrock', mod: VidrockSource },
   { id: 'moviebox', name: 'MovieBox', mod: MovieBoxSource },
@@ -5161,6 +6247,10 @@ const SOURCES = [
   { id: 'moviesdrive', name: 'MoviesDrive', mod: MoviesDriveSource },
   { id: 'hdmovie2', name: 'HdMovie2', mod: HdMovie2Source },
   { id: 'moviesmod', name: 'MoviesMod', mod: MoviesModSource },
+  { id: 'vegamovies', name: 'VegaMovies', mod: VegaMoviesSource },
+  { id: 'rogmovies', name: 'RogMovies', mod: RogMoviesSource },
+  { id: 'vaplayer', name: 'VaPlayer', mod: VaPlayerSource },
+  { id: 'kurage', name: 'Kurage', mod: KurageSource },
 ];
 
 // ---- Ranking logic, ported verbatim from this repo's server.js aggregator ----

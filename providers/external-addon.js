@@ -100,24 +100,71 @@ function isForeignDubbedAudio(description) {
 // Third-party addons mix real links with dead ones (expired 502/403 links)
 // and non-video entries (donation or "go premium" pages, HTML interstitials) -
 // all confirmed live 2026-11-01 - so each link is test-fetched with the
-// headers the addon declared: an HLS playlist has to start with #EXTM3U,
-// anything else has to answer 2xx with something other than an HTML page.
-const PROBE_TIMEOUT_MS = 5000;
+// headers the addon declared: anything that isn't HLS has to answer 2xx with
+// something other than an HTML page. For HLS a good playlist isn't enough:
+// confirmed live 2026-11-04 that yastream can hand out a fine playlist whose
+// segment host resets every connection, so the first video segment is fetched
+// too. Segments are judged by their bytes, not their type: some hosts serve
+// real MPEG-TS as ".html" with a text/html content type. The time limit covers
+// the whole chain for one link.
+const PROBE_TIMEOUT_MS = 7000;
+
+function fetchPlaylist(url, headers, signal) {
+  return fetch(url, signal ? { headers, signal } : { headers }).then((res) => {
+    if (!res.ok) return null;
+    return res.text().then((text) => (/^#EXTM3U/.test(text.trim()) ? { text, url: res.url || url } : null));
+  });
+}
+
+function firstUri(playlist) {
+  const line = playlist.text.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#"));
+  return line ? new URL(line, playlist.url).href : null;
+}
+
+function segmentHasVideo(url, headers, signal) {
+  const rangeHeaders = Object.assign({ Range: "bytes=0-1024" }, headers);
+  return fetch(url, signal ? { headers: rangeHeaders, signal } : { headers: rangeHeaders }).then((res) => {
+    if (!res.ok) return false;
+    if (!res.body || typeof res.body.getReader !== "function") return true;
+    const reader = res.body.getReader();
+    return reader.read().then(({ value }) => {
+      reader.cancel().catch(() => {});
+      if (!value || !value.length) return false;
+      const start = String.fromCharCode.apply(null, Array.from(value.slice(0, 256))).trimStart().toLowerCase();
+      return !start.startsWith("<!doctype html") && !start.startsWith("<html");
+    });
+  });
+}
+
+function isHlsPlayable(stream, signal) {
+  const headers = stream.headers || {};
+  return fetchPlaylist(stream.url, headers, signal).then((master) => {
+    if (!master) return false;
+    const uri = firstUri(master);
+    if (!uri) return false;
+    if (!/#EXT-X-STREAM-INF/.test(master.text)) return segmentHasVideo(uri, headers, signal);
+    return fetchPlaylist(uri, headers, signal).then((variant) => {
+      const segment = variant && firstUri(variant);
+      return segment ? segmentHasVideo(segment, headers, signal) : false;
+    });
+  });
+}
 
 function isReachable(stream) {
   const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
   const timer = controller ? setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS) : null;
+  const signal = controller ? controller.signal : null;
   const headers = Object.assign({ Range: "bytes=0-1024" }, stream.headers || {});
-  return fetch(stream.url, controller ? { headers, signal: controller.signal } : { headers })
-    .then((res) => {
+  const check = /\.m3u8(\?|$)/i.test(stream.url)
+    ? isHlsPlayable(stream, signal)
+    : fetch(stream.url, signal ? { headers, signal } : { headers }).then((res) => {
+      if (res.body && typeof res.body.cancel === "function") res.body.cancel().catch(() => {});
       if (!res.ok) return false;
       const type = (res.headers.get("content-type") || "").toLowerCase();
-      if (/\.m3u8(\?|$)/i.test(stream.url) || /mpegurl/.test(type)) {
-        return res.text().then((text) => /^#EXTM3U/.test(text.trim()));
-      }
-      if (res.body && typeof res.body.cancel === "function") res.body.cancel().catch(() => {});
+      if (/mpegurl/.test(type)) return isHlsPlayable(stream, signal);
       return !/text\/html/.test(type);
-    })
+    });
+  return check
     .catch(() => false)
     .then((ok) => {
       if (timer) clearTimeout(timer);
@@ -177,6 +224,9 @@ function createProvider(config) {
               name,
               title: description,
               url: s.url,
+              // The addon's own file name often says more about the audio
+              // than its display text - read by lib/languageFilter.js.
+              filename: s.behaviorHints && s.behaviorHints.filename,
               // Playback headers the addon says its link needs (e.g. a
               // Referer) - addon-server.js passes them back out as proxyHeaders.
               headers: headers && typeof headers === "object" && Object.keys(headers).length ? headers : undefined,

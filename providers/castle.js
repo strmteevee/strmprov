@@ -535,8 +535,8 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       // Once every language track is included, several can tie on quality -
       // bias English (or the shared/default track, when no language info
       // exists at all) to the front on a tie so it - not an arbitrary
-      // language that happened to load first - is the one aggregate.js picks
-      // as [PREFERRED]. Other languages remain in the list, just not first.
+      // language that happened to load first - comes first in the list. Other
+      // languages remain in the list, just not first.
       const languagePriority = (name) => {
         if (!name) return 2;
         if (name.includes("[English]")) return 0;

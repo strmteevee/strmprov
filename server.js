@@ -33,7 +33,6 @@ function handleStreamsApi(query, res) {
     const season = query.get('season') ? parseInt(query.get('season'), 10) : null;
     const episode = query.get('episode') ? parseInt(query.get('episode'), 10) : null;
     const providersParam = query.get('providers');
-    const wantPreferred = query.get('preferred') !== 'false';
 
     if (!tmdbId) {
         return sendJson(res, 400, { error: 'Missing required query param: tmdbId' });
@@ -46,7 +45,7 @@ function handleStreamsApi(query, res) {
         ? providersParam.split(',').map(s => s.trim()).filter(Boolean)
         : [];
 
-    aggregateStreams(tmdbId, mediaType, season, episode, { providerIds, preferred: wantPreferred })
+    aggregateStreams(tmdbId, mediaType, season, episode, { providerIds })
         .then(({ streams, perProvider, totalMs }) => {
             sendJson(res, 200, {
                 tmdbId,

@@ -1,8 +1,6 @@
 // Admin dashboard for the strmprov server - lets you enable/disable
 // providers, add/edit/remove external-addon relays (see
-// providers/external-addon.js), tune the [PREFERRED]-tag ranking (see
-// lib/aggregate.js's scoreStream/applyPreferredLogic), reset a profile's
-// "For You" watch history, and run a live stream test - all without SSH +
+// providers/external-addon.js), and run a live stream test - all without SSH +
 // a text editor + a restart.
 //
 // Same style as server.js/addon-server.js: plain Node http, no framework,
@@ -39,7 +37,6 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const aggregate = require('./lib/aggregate');
-const profileStore = require('./lib/profileStore');
 const subtitles = require('./lib/subtitles');
 const providerHealth = require('./lib/providerHealth');
 const youtubeChannel = require('./providers/youtube-channel');
@@ -85,13 +82,7 @@ function writeManifest(manifest) {
     fs.writeFileSync(aggregate.MANIFEST_PATH, JSON.stringify(manifest, null, 2));
 }
 
-function writeRankingConfig(config) {
-    fs.mkdirSync(path.dirname(aggregate.RANKING_CONFIG_PATH), { recursive: true });
-    fs.writeFileSync(aggregate.RANKING_CONFIG_PATH, JSON.stringify(config, null, 2));
-}
-
-// Ids that back a real, load-bearing part of this repo (build-combined.js's
-// SOURCES list, this file's own defaults) - editable through the external-
+// Ids this file's own defaults rely on - editable through the external-
 // addon endpoints below like any other, but not deletable, since removing
 // the manifest entry would leave those other references dangling.
 const PROTECTED_EXTERNAL_IDS = ['hdhub4u', 'penguplay'];
@@ -212,13 +203,6 @@ function handleDeleteProvider(id, res) {
     sendJson(res, 200, { id, deleted: true });
 }
 
-function handleRebuildCombined(res) {
-    execFile('node', ['build-combined.js'], { cwd: ROOT_DIR, timeout: 60000 }, (err, stdout, stderr) => {
-        if (err) return sendJson(res, 500, { error: err.message, stdout, stderr });
-        sendJson(res, 200, { output: stdout.trim() });
-    });
-}
-
 // ---- Deploy ----
 //
 // "Pull latest & restart" - removes the "copy files over by hand, then SSH
@@ -282,77 +266,17 @@ function handlePullAndRestart(res) {
     });
 }
 
-// ---- Ranking ----
-
-function handleGetRanking(res) {
-    sendJson(res, 200, aggregate.readRankingConfig());
-}
-
-function validateTypeConfig(tc) {
-    if (!tc || typeof tc !== 'object') return 'movie/series config missing';
-    if (tc.providerPoints && typeof tc.providerPoints !== 'object') return 'providerPoints must be an object';
-    if (tc.qualityPoints && typeof tc.qualityPoints !== 'object') return 'qualityPoints must be an object';
-    if (tc.threshold !== undefined && typeof tc.threshold !== 'number') return 'threshold must be a number';
-    if (tc.maxSizeGB !== undefined && typeof tc.maxSizeGB !== 'number') return 'maxSizeGB must be a number';
-    return null;
-}
-
-function handleSetRanking(body, res) {
-    const movieErr = validateTypeConfig(body.movie);
-    if (movieErr) return sendJson(res, 400, { error: `movie: ${movieErr}` });
-    const seriesErr = validateTypeConfig(body.series);
-    if (seriesErr) return sendJson(res, 400, { error: `series: ${seriesErr}` });
-    writeRankingConfig({ movie: body.movie, series: body.series });
-    sendJson(res, 200, aggregate.readRankingConfig());
-}
-
-// ---- Profiles ----
-
-// Matches the profile ids addon-server.js itself installs by default (see
-// its startup log and root route) - shown even with zero watch history so a
-// base viewing profile can be set for a profile before anyone's streamed
-// anything on it. Merged with whatever listProfiles() actually finds on
-// disk, in case a profile outside this range has real data.
-const KNOWN_PROFILE_IDS = ['1', '2', '3', '4'];
-
-function handleGetProfiles(res) {
-    const withHistory = profileStore.listProfiles();
-    const foundIds = new Set(withHistory.map(p => p.profileId));
-    const empties = KNOWN_PROFILE_IDS
-        .filter(id => !foundIds.has(id))
-        .map(id => ({ profileId: id, historyCount: 0, lastWatchedAt: null, titles: [] }));
-    const profiles = [...withHistory, ...empties]
-        .map(p => Object.assign({}, p, { baseProfile: profileStore.getBaseProfile(p.profileId) }))
-        .sort((a, b) => a.profileId.localeCompare(b.profileId, undefined, { numeric: true }));
-    sendJson(res, 200, { profiles });
-}
-
-function handleGetProfileHistory(id, res) {
-    sendJson(res, 200, { profileId: id, history: profileStore.getHistory(id) });
-}
-
-function handleResetProfile(id, res) {
-    profileStore.resetProfile(id);
-    sendJson(res, 200, { profileId: id, reset: true });
-}
-
-function handleSetBaseProfile(id, body, res) {
-    if (typeof body.text !== 'string') return sendJson(res, 400, { error: 'text is required (use an empty string to clear it)' });
-    profileStore.setBaseProfile(id, body.text);
-    sendJson(res, 200, { profileId: id, baseProfile: profileStore.getBaseProfile(id) });
-}
-
 // ---- API keys (.env) ----
 //
-// Every one of this server's optional API keys (GEMINI_API_KEY,
-// SUBDL_API_KEY, OPENSUBTITLES_API_KEY) lives in .env, which is gitignored
+// Every one of this server's optional API keys (SUBDL_API_KEY,
+// OPENSUBTITLES_API_KEY) lives in .env, which is gitignored
 // and never touched by a git pull/deploy - up to now the only way to set one
 // on a remote box (the Pi) was scp'ing the file over by hand. This lets the
 // admin UI read/write it directly instead, since admin-server.js already
 // runs on whichever machine actually needs the key.
 
 const ENV_PATH = path.join(ROOT_DIR, '.env');
-const MANAGED_ENV_KEYS = ['GEMINI_API_KEY', 'SUBDL_API_KEY', 'OPENSUBTITLES_API_KEY'];
+const MANAGED_ENV_KEYS = ['SUBDL_API_KEY', 'OPENSUBTITLES_API_KEY'];
 
 function readEnvFile() {
     const values = {};
@@ -471,12 +395,12 @@ function proxyAddonServerJson(url, res, options) {
     });
 }
 
-function handleGetCatalogManifest(profileId, res) {
-    proxyAddonServerJson(`${ADDON_SERVER_BASE}/profile/${encodeURIComponent(profileId)}/manifest.json`, res);
+function handleGetCatalogManifest(res) {
+    proxyAddonServerJson(`${ADDON_SERVER_BASE}/manifest.json`, res);
 }
 
-function handleCatalogTest(profileId, type, id, res) {
-    proxyAddonServerJson(`${ADDON_SERVER_BASE}/profile/${encodeURIComponent(profileId)}/catalog/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`, res);
+function handleCatalogTest(type, id, res) {
+    proxyAddonServerJson(`${ADDON_SERVER_BASE}/catalog/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`, res);
 }
 
 // ---- Server logs ----
@@ -557,10 +481,6 @@ const server = http.createServer((req, res) => {
     if (parts[0] === 'api' && parts[1] === 'providers' && parts.length === 3 && req.method === 'DELETE') {
         return handleDeleteProvider(decodeURIComponent(parts[2]), res);
     }
-    // /api/rebuild-combined
-    if (parts[0] === 'api' && parts[1] === 'rebuild-combined' && req.method === 'POST') {
-        return handleRebuildCombined(res);
-    }
     // /api/deploy-config
     if (parts[0] === 'api' && parts[1] === 'deploy-config' && req.method === 'GET') {
         return handleGetDeployConfig(res);
@@ -572,13 +492,6 @@ const server = http.createServer((req, res) => {
     if (parts[0] === 'api' && parts[1] === 'deploy' && req.method === 'POST') {
         return handlePullAndRestart(res);
     }
-    // /api/ranking
-    if (parts[0] === 'api' && parts[1] === 'ranking' && req.method === 'GET') {
-        return handleGetRanking(res);
-    }
-    if (parts[0] === 'api' && parts[1] === 'ranking' && req.method === 'POST') {
-        return readBody(req).then(body => handleSetRanking(body, res)).catch(e => sendJson(res, 400, { error: e.message }));
-    }
     // /api/provider-health
     if (parts[0] === 'api' && parts[1] === 'provider-health' && parts.length === 2 && req.method === 'GET') {
         return handleGetProviderHealth(res);
@@ -586,22 +499,6 @@ const server = http.createServer((req, res) => {
     // /api/provider-health/reset
     if (parts[0] === 'api' && parts[1] === 'provider-health' && parts[2] === 'reset' && req.method === 'POST') {
         return handleResetProviderHealth(res);
-    }
-    // /api/profiles
-    if (parts[0] === 'api' && parts[1] === 'profiles' && parts.length === 2 && req.method === 'GET') {
-        return handleGetProfiles(res);
-    }
-    // /api/profiles/:id/history
-    if (parts[0] === 'api' && parts[1] === 'profiles' && parts.length === 4 && parts[3] === 'history' && req.method === 'GET') {
-        return handleGetProfileHistory(decodeURIComponent(parts[2]), res);
-    }
-    // /api/profiles/:id/reset
-    if (parts[0] === 'api' && parts[1] === 'profiles' && parts.length === 4 && parts[3] === 'reset' && req.method === 'POST') {
-        return handleResetProfile(decodeURIComponent(parts[2]), res);
-    }
-    // /api/profiles/:id/base
-    if (parts[0] === 'api' && parts[1] === 'profiles' && parts.length === 4 && parts[3] === 'base' && req.method === 'POST') {
-        return readBody(req).then(body => handleSetBaseProfile(decodeURIComponent(parts[2]), body, res)).catch(e => sendJson(res, 400, { error: e.message }));
     }
     // /api/env
     if (parts[0] === 'api' && parts[1] === 'env' && req.method === 'GET') {
@@ -621,17 +518,16 @@ const server = http.createServer((req, res) => {
     if (parts[0] === 'api' && parts[1] === 'test' && req.method === 'POST') {
         return readBody(req).then(body => handleTest(body, res)).catch(e => sendJson(res, 400, { error: e.message }));
     }
-    // /api/catalog-test/manifest?profileId=1
+    // /api/catalog-test/manifest
     if (parts[0] === 'api' && parts[1] === 'catalog-test' && parts[2] === 'manifest' && req.method === 'GET') {
-        return handleGetCatalogManifest(parsedUrl.searchParams.get('profileId') || '1', res);
+        return handleGetCatalogManifest(res);
     }
-    // /api/catalog-test?profileId=1&type=movie&id=f1-highlights
+    // /api/catalog-test?type=movie&id=f1-highlights
     if (parts[0] === 'api' && parts[1] === 'catalog-test' && parts.length === 2 && req.method === 'GET') {
-        const profileId = parsedUrl.searchParams.get('profileId') || '1';
         const type = parsedUrl.searchParams.get('type');
         const id = parsedUrl.searchParams.get('id');
         if (!type || !id) return sendJson(res, 400, { error: 'type and id are required' });
-        return handleCatalogTest(profileId, type, id, res);
+        return handleCatalogTest(type, id, res);
     }
     // /api/logs?source=addon|admin&limit=300
     if (parts[0] === 'api' && parts[1] === 'logs' && parts.length === 2 && req.method === 'GET') {

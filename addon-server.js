@@ -6,30 +6,11 @@
 // can be installed directly as an addon in Nuvio (or Stremio itself) with no
 // local plugin file needed at all.
 //
-// Routes are scoped by a profileId path segment:
-//   GET /profile/:profileId/manifest.json
-//   GET /profile/:profileId/catalog/:type/:id.json
-//   GET /profile/:profileId/stream/:type/:id.json
-//
-// The SAME manifest content is served at every profileId - what differs is
-// which profile's watch history a given install reads/writes. Nuvio's own
-// addon-preferences storage keys installed addons by URL, not by the
-// manifest's own `id` field (confirmed from Nuvio's source), so N different
-// URLs pointing at the same server is exactly the supported way to give each
-// profile its own addon install. Each profile's manifest `id` is still made
-// distinct (below) as a defensive measure for any OTHER Stremio-protocol
-// client that might de-dup addons by manifest id instead of URL.
-//
-// Watch history and the "For You" catalog are explained in
-// lib/profileStore.js, lib/tmdb.js and lib/gemini.js - the short version:
-// Stremio has no watch-progress callback to addons, so "watched" here means
-// "requested a stream for", and recommendations come from Gemini reasoning
-// across a profile's whole watch history at once (see lib/gemini.js for why
-// that beats TMDB's per-title /recommendations and /similar), falling back
-// to those same TMDB endpoints when no GEMINI_API_KEY is configured or every
-// model attempt fails.
+// Routes: GET /manifest.json, /catalog/:type/:id.json, /meta/:type/:id.json,
+// /stream/:type/:id.json and /subtitles/:type/:id.json. Ranking the streams is
+// left to the client (OmniStream does its own).
 
-try { process.loadEnvFile('.env'); } catch (e) { /* no .env file - fine, GEMINI_API_KEY is optional */ }
+try { process.loadEnvFile('.env'); } catch (e) { /* no .env file - fine, the subtitle keys are optional */ }
 
 const http = require('http');
 const os = require('os');
@@ -65,23 +46,15 @@ process.on('unhandledRejection', (reason) => {
 
 const aggregate = require('./lib/aggregate');
 const tmdb = require('./lib/tmdb');
-const profileStore = require('./lib/profileStore');
-const gemini = require('./lib/gemini');
 const subtitles = require('./lib/subtitles');
 const indycar = require('./providers/indycar');
 const f1 = require('./providers/f1');
 const youtubeChannel = require('./providers/youtube-channel');
 
 const PORT = 3100;
-const CATALOG_SEED_COUNT = 10;
-const CATALOG_MIN_ITEMS = 30;
-const CATALOG_MAX_ITEMS = 40;
-const AI_CACHE_TTL_MS = 1000 * 60 * 60 * 24;
 
 // Plain TMDB browse catalogs (genres, streaming services, popular/new/
-// featured) - unlike "For You" above, these have no per-profile
-// personalization signal at all, so they're built once globally and shared
-// across every profile rather than cached per profileId.
+// featured), built once and cached.
 const DISCOVER_CATALOG_MAX_ITEMS = 40;
 const DISCOVER_CATALOG_TTL_MS = 1000 * 60 * 60 * 6; // 6h - browse lists move slowly
 const discoverCatalogCache = new Map(); // catalog id -> { metas, timestamp }
@@ -204,16 +177,16 @@ function sendJson(res, status, body) {
     res.end(JSON.stringify(body));
 }
 
-function buildManifest(profileId) {
+function buildManifest() {
     return {
-        id: `com.strmprov.addon.profile${profileId}`,
+        id: 'com.strmprov.addon',
         // Bumped whenever the manifest's own shape changes (new catalogs,
         // resources, etc.) - some Stremio-protocol clients key their cached
         // manifest/catalog data on this and won't notice new catalogs on an
         // existing install (even after a reinstall) unless it changes.
         version: manifestVersion(MANIFEST_BASE_VERSION),
         name: 'StrmProv',
-        description: `Self-hosted multi-source streaming addon (profile ${profileId}) with a personalized "For You" catalog based on this profile's own watch history.`,
+        description: 'Self-hosted multi-source streaming addon with subtitles.',
         logo: 'https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png',
         // 'meta' is scoped to indycar:/f1: ids specifically, not declared
         // broadly - normal movies/series use real "tt" ids, which Cinemeta
@@ -246,24 +219,16 @@ function buildManifest(profileId) {
             { name: 'subtitles', types: ['movie', 'series'], idPrefixes: ['tt'] }
         ],
         types: ['movie', 'series', 'tv'],
-        catalogs: [
-            { type: 'movie', id: 'strmprov-foryou-movie', name: 'For You' },
-            { type: 'series', id: 'strmprov-foryou-series', name: 'For You' },
-            ...buildNonPersonalizedCatalogs()
-        ],
+        catalogs: buildCatalogs(),
         idPrefixes: ['tt', 'indycar:', 'f1:', 'ytlive:'],
         behaviorHints: { configurable: false, configurationRequired: false }
     };
 }
 
-// Every catalog except "For You" (the one genuinely personalized, per-profile
-// catalog) - shared between the per-profile manifest above and the plain,
-// no-personalization one below, so a new catalog only ever needs adding in
-// one place instead of the two lists drifting apart over time.
-function buildNonPersonalizedCatalogs() {
+function buildCatalogs() {
     return [
-        // Plain TMDB browse catalogs - no personalization, same for every
-        // profile (see the DISCOVER_CATALOG_* constants/builders above).
+        // Plain TMDB browse catalogs (see the DISCOVER_CATALOG_* constants/
+        // builders above).
         { type: 'movie', id: 'strmprov-new-movie', name: 'New' },
         { type: 'series', id: 'strmprov-new-series', name: 'New' },
         ...GENRE_CATALOGS.flatMap(g => [
@@ -313,43 +278,15 @@ function enabledYoutubeCatalogs() {
 }
 // Clients cache a manifest by version, so switching a channel on/off has to
 // change it: the patch number is the switch file's revision counter.
-const MANIFEST_BASE_VERSION = '1.13';
-const SIMPLE_MANIFEST_BASE_VERSION = '1.5';
+const MANIFEST_BASE_VERSION = '1.14';
 function manifestVersion(base) {
     return `${base}.${youtubeChannel.settingsRevision()}`;
 }
 
-// By request: a second, non-profile-scoped manifest that skips every layer
-// of "smart" behavior the profile manifest adds on top of the raw provider
-// results - no [PREFERRED] tagging/ranking (lib/aggregate.js's own
-// `preferred: false` option already exists for exactly this), no
-// personalized "For You" catalog (there's no profile here to personalize
-// from), and no hash-matched subtitle enrichment (the `subtitles` resource
-// is left out of this manifest entirely, rather than declaring a resource
-// that would only ever return nothing useful). One shared URL instead of a
-// URL per profile, since nothing here varies by profile at all.
-function buildSimpleManifest() {
-    return {
-        id: 'com.strmprov.addon.simple',
-        version: manifestVersion(SIMPLE_MANIFEST_BASE_VERSION),
-        name: 'StrmProv Simple',
-        description: 'Self-hosted multi-source streaming addon - raw aggregated streams from every enabled provider, unranked and untagged. No [PREFERRED] pick, no personalized "For You" catalog, no subtitle hash-matching - just the sources.',
-        logo: 'https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png',
-        resources: [
-            'catalog', 'stream',
-            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'ytlive:'] }
-        ],
-        types: ['movie', 'series', 'tv'],
-        catalogs: buildNonPersonalizedCatalogs(),
-        idPrefixes: ['tt', 'indycar:', 'f1:', 'ytlive:'],
-        behaviorHints: { configurable: false, configurationRequired: false }
-    };
-}
-
-// mediaInfo items from TMDB's /recommendations and /similar don't carry an
-// imdb_id (only the movie/tv detail and external_ids endpoints do), so each
-// candidate needs its own follow-up lookup - getImdbId() caches those across
-// catalog rebuilds so this isn't a full N-lookup cost every single time.
+// TMDB list items don't carry an imdb_id (only the movie/tv detail and
+// external_ids endpoints do), so each one needs its own follow-up lookup -
+// getImdbId() caches those across catalog rebuilds so this isn't a full
+// N-lookup cost every single time.
 function tmdbItemToMeta(item, mediaType, type) {
     return tmdb.getImdbId(item.id, mediaType).then(imdbId => {
         if (!imdbId) return null;
@@ -524,138 +461,6 @@ function buildStreamingServiceCatalog(service, mediaType, type) {
     );
 }
 
-// TMDB's own /recommendations and /similar only ever take one title (see
-// lib/gemini.js's header comment) - this is the original per-title merge
-// approach, kept as the fallback for when Gemini isn't configured or every
-// model attempt fails, so the catalog never just breaks.
-function buildTmdbCatalog(seeds, mediaType, type, watchedIds) {
-    if (seeds.length === 0) return Promise.resolve([]);
-    return Promise.all(seeds.map(seed =>
-        tmdb.getRecommendations(seed.tmdbId, mediaType).then(list =>
-            list.length ? list : tmdb.getSimilar(seed.tmdbId, mediaType)
-        )
-    )).then(lists => {
-        const candidates = new Map();
-        for (const item of lists.flat()) {
-            const id = String(item.id);
-            if (watchedIds.has(id) || candidates.has(id) || !item.poster_path) continue;
-            candidates.set(id, item);
-        }
-        return Array.from(candidates.values()).sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
-    });
-}
-
-function buildAiCatalog(seeds, mediaType, watchedIds, baseProfile) {
-    return gemini.getAiRecommendations(seeds, mediaType, tmdb, watchedIds, baseProfile).then(resolved => {
-        if (!resolved || resolved.length === 0) return null;
-        const seen = new Set();
-        const items = [];
-        for (const r of resolved) {
-            const id = String(r.item.id);
-            if (seen.has(id)) continue;
-            seen.add(id);
-            items.push(r.item);
-        }
-        return items;
-    });
-}
-
-// The actual (re)build: AI recommendations first, topped up with TMDB
-// similar/recommendations if that falls short of CATALOG_MIN_ITEMS (a niche
-// taste can easily not have 30 AI-resolvable matches on its own). The TMDB
-// top-up only ever uses same-type seeds - its endpoints structurally can't
-// recommend a different media type than the seed, unlike the AI path.
-function regenerateCatalog(profileId, type, mediaType, aiSeeds, tmdbSeeds, watchedIds, cacheKey, seedFingerprint, baseProfile) {
-    return buildAiCatalog(aiSeeds, mediaType, watchedIds, baseProfile)
-        .then(items => ({ items: items || [], source: items ? 'gemini' : 'none' }))
-        .then(({ items, source }) => {
-            // Targets CATALOG_MAX_ITEMS here, not CATALOG_MIN_ITEMS - some
-            // AI suggestions won't resolve to a usable IMDb id later in
-            // tmdbItemToMeta and get dropped after this point, so gathering
-            // only exactly the minimum up front reliably undershoots it
-            // once that attrition happens (seen directly: 31 raw items
-            // became 26 in the final response). Aiming for the max instead
-            // leaves enough headroom to still clear the minimum.
-            if (items.length >= CATALOG_MAX_ITEMS || tmdbSeeds.length === 0) {
-                return { items, source };
-            }
-            const seenIds = new Set(items.map(i => String(i.id)));
-            return buildTmdbCatalog(tmdbSeeds, mediaType, type, watchedIds).then(extra => {
-                const merged = items.slice();
-                for (const item of extra) {
-                    if (merged.length >= CATALOG_MAX_ITEMS) break;
-                    const id = String(item.id);
-                    if (seenIds.has(id)) continue;
-                    seenIds.add(id);
-                    merged.push(item);
-                }
-                return { items: merged, source: items.length ? `${source}+tmdb` : 'tmdb' };
-            });
-        })
-        .then(({ items, source }) => {
-            console.log(`[addon-server] Built "${type}" catalog for profile ${profileId} from ${source} (${items.length} item(s))`);
-            return Promise.all(items.slice(0, CATALOG_MAX_ITEMS).map(item => tmdbItemToMeta(item, mediaType, type)))
-                .then(metas => metas.filter(Boolean));
-        })
-        .then(metas => {
-            profileStore.setCache(profileId, cacheKey, { seedFingerprint, generatedAt: Date.now(), metas });
-            return metas;
-        });
-}
-
-function buildCatalog(profileId, type) {
-    const mediaType = type === 'series' ? 'tv' : 'movie';
-    const fullHistory = profileStore.getHistory(profileId);
-    const sameTypeHistory = fullHistory.filter(h => h.mediaType === mediaType);
-    const baseProfile = profileStore.getBaseProfile(profileId);
-
-    if (fullHistory.length === 0 && !baseProfile) {
-        // Nothing watched yet on this profile, and no admin-set taste
-        // description either - genuinely nothing to seed recommendations
-        // from. An empty catalog (rather than a guess) is the honest result
-        // here.
-        return Promise.resolve([]);
-    }
-
-    // Prefer same-type history to seed recommendations; if this profile has
-    // never watched this type at all (e.g. a series-only viewer asking for
-    // a movie catalog), fall back to its overall history instead of coming
-    // back empty - see lib/gemini.js's buildPrompt for how the AI path
-    // reasons across a cross-type seed set. watchedIds stays same-type only
-    // regardless, since a movie and a TV series can share the same TMDB id
-    // for unrelated titles - cross-type exclusion would be wrong, not just
-    // unnecessary.
-    const watchedIds = new Set(sameTypeHistory.map(h => String(h.tmdbId)));
-    const aiSeeds = (sameTypeHistory.length > 0 ? sameTypeHistory : fullHistory).slice(0, CATALOG_SEED_COUNT);
-    const tmdbSeeds = sameTypeHistory.slice(0, CATALOG_SEED_COUNT);
-    const cacheKey = `ai-${type}`;
-    // Includes baseProfile so editing the taste description from the admin
-    // UI invalidates the cache immediately instead of waiting up to a day -
-    // otherwise a profile with no watch history at all would never see its
-    // seed fingerprint change (aiSeeds stays empty either way).
-    const seedFingerprint = `${aiSeeds.map(s => s.tmdbId).join(',')}|${baseProfile}`;
-
-    const cached = profileStore.getCache(profileId, cacheKey);
-    const isFresh = cached && cached.seedFingerprint === seedFingerprint && Date.now() - cached.generatedAt < AI_CACHE_TTL_MS;
-
-    if (isFresh) {
-        return Promise.resolve(cached.metas);
-    }
-    if (cached) {
-        // Stale (a new watch or a base-profile edit changed the seed set, or
-        // the TTL passed) - serve what's cached right now instead of making
-        // this request wait on a fresh Gemini + TMDB round trip, and refresh
-        // it in the background so the NEXT request gets the updated list.
-        regenerateCatalog(profileId, type, mediaType, aiSeeds, tmdbSeeds, watchedIds, cacheKey, seedFingerprint, baseProfile)
-            .catch(err => console.error(`[addon-server] Background catalog refresh failed: ${err.message}`));
-        return Promise.resolve(cached.metas);
-    }
-
-    // No cache at all yet for this profile+type - this one request has no
-    // choice but to wait for the real thing.
-    return regenerateCatalog(profileId, type, mediaType, aiSeeds, tmdbSeeds, watchedIds, cacheKey, seedFingerprint, baseProfile);
-}
-
 // Shared by the catalog and meta builders below - a Stremio Meta Object is
 // a superset of a catalog preview item, so one mapping covers both.
 function indycarVideoToMeta(v) {
@@ -674,8 +479,8 @@ function indycarVideoToMeta(v) {
     };
 }
 
-// IndyCar videos have no TMDB entry, no watch history, and no personalization
-// - this is a plain, static catalog, unlike "For You" above. `releaseInfo`
+// IndyCar videos have no TMDB entry - this is a plain, static catalog.
+// `releaseInfo`
 // uses the video's own date (read from its URL, not its displayed text - see
 // providers/indycar.js for why) so the client can still show/sort by date.
 // By request: only "Extended Race Highlights", across every race - listVideos()
@@ -700,29 +505,14 @@ function buildIndycarMeta(id) {
 // a direct `url` (see providers/indycar.js's getVideoStreams for why) - the
 // Stremio stream protocol supports both shapes, so this just passes through
 // whichever one a given video actually produced.
-// The one "Auto (HLS)" rendition JW Player offers adapts to the viewer's
-// real bandwidth mid-playback, unlike the other, fixed-resolution
-// renditions offered alongside it - marking it [PREFERRED] steers Nuvio to
-// default to it, matching the convention lib/aggregate.js already uses for
-// regular movie/series streams.
-function withPreferredHls(streams, fallbackName) {
-    // Only the first HLS match gets tagged - F1's Brightcove response lists
-    // both an http:// and an https:// copy of the same "Auto (HLS)" manifest
-    // as separate entries, and tagging both would put two [PREFERRED]
-    // streams in the same list instead of the usual convention of exactly one.
-    let tagged = false;
-    return streams.map((s) => {
-        const isPreferred = !tagged && s.quality === 'Auto (HLS)';
-        if (isPreferred) tagged = true;
-        const name = s.name || fallbackName;
-        return Object.assign({}, s, { name: isPreferred ? `[PREFERRED] ${name}` : name });
-    });
+function withStreamNames(streams, fallbackName) {
+    return streams.map((s) => Object.assign({}, s, { name: s.name || fallbackName }));
 }
 
 function buildIndycarStreamResponse(id) {
     const videoPath = `/videos/${id.slice('indycar:'.length)}`;
     return indycar.getVideoStreams(videoPath).then((streams) => ({
-        streams: withPreferredHls(streams, 'IndyCar').map((s) => {
+        streams: withStreamNames(streams, 'IndyCar').map((s) => {
             const stream = { name: s.name, title: s.quality || '' };
             if (s.ytId) stream.ytId = s.ytId;
             else stream.url = s.url;
@@ -767,7 +557,7 @@ function buildF1Meta(id) {
 function buildF1StreamResponse(id) {
     const videoId = id.slice('f1:'.length);
     return f1.getVideoStreams(videoId).then((streams) => ({
-        streams: withPreferredHls(streams, 'F1').map((s) => ({ name: s.name, title: s.quality || '', url: s.url }))
+        streams: withStreamNames(streams, 'F1').map((s) => ({ name: s.name, title: s.quality || '', url: s.url }))
     })).catch((err) => {
         console.error(`[addon-server] F1 stream error for ${id}: ${err.message}`);
         return { streams: [] };
@@ -913,126 +703,8 @@ function buildYoutubeStreamResponse(id) {
     });
 }
 
-// Merges the provider-embedded subtitles a stream already carries with the
-// (possibly hash-matched) results from lib/subtitles.js, deduping by
-// (lang, url) - the embedded ones are guaranteed to ship with this exact
-// release, so they're kept even when a broader-language extra result exists
-// for the same language.
-function mergeSubtitles(embedded, extra) {
-    const merged = embedded.slice();
-    const seen = new Set(merged.map(s => `${(s.lang || '').toLowerCase()}|${s.url}`));
-    for (const s of extra) {
-        const key = `${(s.lang || '').toLowerCase()}|${s.url}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        merged.push({ url: s.url, lang: s.lang, language: s.lang, name: s.name });
-    }
-    return merged;
-}
-
-function buildStreamResponse(profileId, type, rawId) {
-    const mediaType = type === 'series' ? 'tv' : 'movie';
-    const [imdbId, seasonStr, episodeStr] = rawId.split(':');
-    const season = seasonStr ? parseInt(seasonStr, 10) : null;
-    const episode = episodeStr ? parseInt(episodeStr, 10) : null;
-
-    if (mediaType === 'tv' && (!season || !episode)) {
-        return Promise.resolve({ streams: [] });
-    }
-
-    return tmdb.findByImdbId(imdbId).then(found => {
-        if (!found) {
-            console.log(`[addon-server] No TMDB match for ${imdbId}`);
-            return { streams: [] };
-        }
-        return aggregate.aggregateStreams(found.tmdbId, found.mediaType, season, episode).then(({ streams }) => {
-            profileStore.recordWatch(profileId, { tmdbId: found.tmdbId, mediaType: found.mediaType, title: found.title, year: found.year });
-
-            const preferred = streams.find(s => s.isPreferred);
-            if (preferred) {
-                console.log(`[addon-server] [PREFERRED] pick for ${imdbId}:${season || ''}:${episode || ''} -> ${preferred.source} "${preferred.name}" score=${preferred.score} lowConfidence=${!!preferred.lowConfidence} url=${preferred.url}`);
-            }
-
-            // Only the [PREFERRED] stream (the one most likely to actually
-            // get played) gets a hash-matched subtitle lookup - hashing is a
-            // couple of Range requests against the real file, so doing it
-            // for every candidate would multiply that cost for no benefit.
-            // This was removed for a while while chasing an autoplay-next-
-            // episode bug that turned out to be a Nuvio client-side issue
-            // (fixed in a later Nuvio update, confirmed live) - restored now
-            // that the actual cause is known to be unrelated to this.
-            const extraSubsPromise = preferred
-                ? subtitles.getSubtitles({
-                    imdbId,
-                    mediaType,
-                    season,
-                    episode,
-                    videoUrl: preferred.url
-                }).catch(err => {
-                    console.error(`[addon-server] Subtitle lookup failed for ${imdbId}: ${err.message}`);
-                    return [];
-                })
-                : Promise.resolve([]);
-
-            return extraSubsPromise.then(extraSubs => {
-                const stremioStreams = streams.map(s => {
-                    const behaviorHints = { notWebReady: true };
-                    if (s.headers && Object.keys(s.headers).length) {
-                        behaviorHints.proxyHeaders = { request: s.headers };
-                    }
-                    const stream = {
-                        url: s.url,
-                        name: s.name || s.source || 'Stream',
-                        title: [s.quality, s.size].filter(Boolean).join(' | ') || s.title || '',
-                        behaviorHints
-                    };
-                    // Several providers (Castle, MovieBox, VidLink, ...) already
-                    // extract subtitle tracks tied to this exact stream's own
-                    // file - a better match than a generic lookup, since it's
-                    // guaranteed to be the subtitle that ships with this
-                    // specific release. Every provider except kickassanime.js
-                    // calls the language field `language` rather than `lang`.
-                    // Nuvio itself (see DOCUMENTATION.md's "Subtitle Support")
-                    // shows a subtitle's own `name` field as its selector
-                    // label, not `lang`/`language` - confirmed live that
-                    // omitting `name` made every subtitle show up with the
-                    // same generic fallback label instead of its actual
-                    // language, so it's set here too. Providers vary in
-                    // whether their own `lang`/`language` value is a short
-                    // code ("en") or already a full word ("English") -
-                    // lib/subtitles.js's languageName() only recognizes short
-                    // codes, so a longer value is assumed already-readable
-                    // and just capitalized instead.
-                    let embedded = [];
-                    if (Array.isArray(s.subtitles) && s.subtitles.length) {
-                        embedded = s.subtitles
-                            .filter(sub => sub && sub.url)
-                            .map(sub => {
-                                const lang = sub.lang || sub.language || 'unknown';
-                                const name = lang.length <= 3
-                                    ? subtitles.languageName(lang)
-                                    : lang.charAt(0).toUpperCase() + lang.slice(1);
-                                return { url: sub.url, lang, language: lang, name };
-                            });
-                    }
-                    const combined = s === preferred ? mergeSubtitles(embedded, extraSubs) : embedded;
-                    if (combined.length) stream.subtitles = combined;
-                    return stream;
-                });
-                return { streams: stremioStreams };
-            });
-        });
-    }).catch(err => {
-        console.error(`[addon-server] stream error for ${imdbId}: ${err.message}`);
-        return { streams: [] };
-    });
-}
-
-// Stremio requests this resource independently of any specific stream, so
-// there's nothing to hash yet here - this is SubDL + non-hash-matched
-// OpenSubtitles only, ordered by language preference. The
-// per-[PREFERRED]-stream call in buildStreamResponse above is what adds
-// hash-matching on top, once there's an actual file to hash.
+// Stremio requests this resource independently of any specific stream: SubDL
+// + OpenSubtitles, ordered by language preference.
 function buildSubtitlesResponse(type, rawId) {
     const mediaType = type === 'series' ? 'tv' : 'movie';
     const [imdbId, seasonStr, episodeStr] = rawId.split(':');
@@ -1051,14 +723,9 @@ function buildSubtitlesResponse(type, rawId) {
         });
 }
 
-// Every catalog dispatch EXCEPT "For You" - shared between the profile route
-// (which checks "For You" first, then falls back to this) and the /simple
-// route (which has no personalized catalog at all, so this is its whole
-// dispatch). Resolves to `null`, not an empty array, when `id`/`type` doesn't
-// match anything known here - lets each caller decide what "unhandled" means
-// for it rather than baking a fallback into a function two different routes
-// share.
-function resolveNonPersonalizedCatalog(type, id) {
+// Catalog dispatch. Resolves to `null`, not an empty array,
+// when `id`/`type` doesn't match anything known here.
+function resolveCatalog(type, id) {
     if (id === 'indycar-videos' && type === 'movie') {
         return buildIndycarCatalog();
     }
@@ -1091,8 +758,6 @@ function resolveNonPersonalizedCatalog(type, id) {
     return null;
 }
 
-// Meta dispatch has never depended on profile at all - shared as-is between
-// both routes.
 function resolveMeta(type, id) {
     if (id.startsWith('indycar:') && type === 'movie') {
         return buildIndycarMeta(id);
@@ -1109,13 +774,9 @@ function resolveMeta(type, id) {
     return Promise.resolve(null);
 }
 
-// The custom-catalog id prefixes (indycar:/f1:/ytlive:) already
-// return plain, unranked streams with no personalization or subtitle
-// enrichment of any kind - identical for both routes. Only a real 'tt' id
-// differs, since that's the one case with a "full" (buildStreamResponse) and
-// a "simple" (buildSimpleStreamResponse) version. Returns `null`, not a
-// Promise, when `id` isn't one of these prefixes, so callers can synchronously
-// fall through to their own tt-id handler instead.
+// The custom-catalog id prefixes (indycar:/f1:/ytlive:) have their own stream
+// builders. Returns `null`, not a Promise, when `id` isn't one of these
+// prefixes, so callers can synchronously fall through to the tt-id handler.
 function resolveCustomStreamResponse(id) {
     if (id.startsWith('indycar:')) return buildIndycarStreamResponse(id);
     if (id.startsWith('f1:')) return buildF1StreamResponse(id);
@@ -1123,17 +784,12 @@ function resolveCustomStreamResponse(id) {
     return null;
 }
 
-// The /simple manifest's own stream builder - same aggregation as
-// buildStreamResponse, but with `preferred: false` (skips applyPreferredLogic
-// entirely - no [PREFERRED] tag, no ranking-based reordering) and no
-// subtitle-matching enrichment or profileStore.recordWatch call, since there's
-// no profile here to record against or personalize from. dropUnplayable
-// (inside aggregateStreams) still runs regardless - that's basic "don't hand
-// back a link already confirmed broken" hygiene, not ranking, so it stays
-// even in "just load the sources" mode. A provider's own embedded subtitles
-// (Castle/MovieBox/VidLink/...) are still passed through as-is, since those
-// are part of that source's own raw result, not an added enrichment layer.
-function buildSimpleStreamResponse(type, rawId) {
+// The stream list. A provider's own embedded subtitles
+// (Castle/MovieBox/VidLink/...) are passed along: they're guaranteed to ship
+// with this exact release. Nuvio shows a subtitle's `name` as its selector
+// label, and providers vary in whether their language value is a short code
+// ("en") or a full word ("English"), so a longer value is assumed readable.
+function buildStreamResponse(type, rawId) {
     const mediaType = type === 'series' ? 'tv' : 'movie';
     const [imdbId, seasonStr, episodeStr] = rawId.split(':');
     const season = seasonStr ? parseInt(seasonStr, 10) : null;
@@ -1148,7 +804,7 @@ function buildSimpleStreamResponse(type, rawId) {
             console.log(`[addon-server] No TMDB match for ${imdbId}`);
             return { streams: [] };
         }
-        return aggregate.aggregateStreams(found.tmdbId, found.mediaType, season, episode, { preferred: false }).then(({ streams }) => {
+        return aggregate.aggregateStreams(found.tmdbId, found.mediaType, season, episode).then(({ streams }) => {
             const stremioStreams = streams.map(s => {
                 const behaviorHints = { notWebReady: true };
                 if (s.headers && Object.keys(s.headers).length) {
@@ -1177,7 +833,7 @@ function buildSimpleStreamResponse(type, rawId) {
             return { streams: stremioStreams };
         });
     }).catch(err => {
-        console.error(`[addon-server] simple stream error for ${imdbId}: ${err.message}`);
+        console.error(`[addon-server] stream error for ${imdbId}: ${err.message}`);
         return { streams: [] };
     });
 }
@@ -1219,9 +875,8 @@ const server = http.createServer((req, res) => {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end(
             'StrmProv Addon Server running.\n\n' +
-            'Install one of these as a Nuvio/Stremio addon per profile:\n' +
-            [1, 2, 3, 4].map(n => `  http://${ip}:${PORT}/profile/${n}/manifest.json`).join('\n') +
-            '\n'
+            'Install this as a Nuvio/Stremio addon:\n' +
+            `  http://${ip}:${PORT}/manifest.json\n`
         );
         return;
     }
@@ -1241,68 +896,31 @@ const server = http.createServer((req, res) => {
         return sendJson(res, 200, { cleared: true });
     }
 
-    // /simple/... - the shared, non-profile-scoped manifest (see
-    // buildSimpleManifest's own comment for why this exists). Checked before
-    // the /profile/:profileId/... branch below since it has no profileId
-    // segment at all.
-    if (parts[0] === 'simple') {
-        if (parts.length === 2 && parts[1] === 'manifest.json') {
-            return sendJson(res, 200, buildSimpleManifest());
-        }
-        if (parts.length >= 4 && parts[1] === 'catalog') {
-            const type = parts[2];
-            const id = parts[3].replace(/\.json$/, '');
-            return Promise.resolve(resolveNonPersonalizedCatalog(type, id)).then(metas => sendJson(res, 200, { metas: metas || [] }));
-        }
-        if (parts.length >= 4 && parts[1] === 'meta') {
-            const type = parts[2];
-            const id = decodeURIComponent(parts[3]).replace(/\.json$/, '');
-            return resolveMeta(type, id).then(meta => sendJson(res, 200, { meta }));
-        }
-        if (parts.length >= 4 && parts[1] === 'stream') {
-            const type = parts[2];
-            const idWithExt = decodeURIComponent(parts.slice(3).join('/'));
-            const id = idWithExt.replace(/\.json$/, '');
-            const custom = resolveCustomStreamResponse(id);
-            if (custom) return custom.then(body => sendJson(res, 200, body));
-            if (type !== 'movie' && type !== 'series') {
-                return sendJson(res, 200, { streams: [] });
-            }
-            return buildSimpleStreamResponse(type, id).then(body => sendJson(res, 200, body));
-        }
-        return notFound(res);
+    // Installs made when this server still had profiles point at
+    // /profile/<n>/...; those URLs serve the same addon, so they keep working
+    // without a reinstall.
+    const route = parts[0] === 'profile' && parts.length >= 3 ? parts.slice(2) : parts;
+    const resource = route[0];
+
+    if (resource === 'manifest.json' && route.length === 1) {
+        return sendJson(res, 200, buildManifest());
     }
 
-    // /profile/:profileId/...
-    if (parts[0] !== 'profile' || parts.length < 3) {
-        return notFound(res);
-    }
-    const profileId = parts[1];
-    const resource = parts[2];
-
-    if (resource === 'manifest.json' && parts.length === 3) {
-        return sendJson(res, 200, buildManifest(profileId));
+    if (resource === 'catalog' && route.length >= 3) {
+        const type = route[1];
+        const id = route[2].replace(/\.json$/, '');
+        return Promise.resolve(resolveCatalog(type, id)).then(metas => sendJson(res, 200, { metas: metas || [] }));
     }
 
-    if (resource === 'catalog' && parts.length >= 5) {
-        const type = parts[3];
-        const id = parts[4].replace(/\.json$/, '');
-
-        if (id === `strmprov-foryou-${type}` && (type === 'movie' || type === 'series')) {
-            return buildCatalog(profileId, type).then(metas => sendJson(res, 200, { metas }));
-        }
-        return Promise.resolve(resolveNonPersonalizedCatalog(type, id)).then(metas => sendJson(res, 200, { metas: metas || [] }));
-    }
-
-    if (resource === 'meta' && parts.length >= 5) {
-        const type = parts[3];
-        const id = decodeURIComponent(parts[4]).replace(/\.json$/, '');
+    if (resource === 'meta' && route.length >= 3) {
+        const type = route[1];
+        const id = decodeURIComponent(route[2]).replace(/\.json$/, '');
         return resolveMeta(type, id).then(meta => sendJson(res, 200, { meta }));
     }
 
-    if (resource === 'subtitles' && parts.length >= 5) {
-        const type = parts[3];
-        const idWithExt = decodeURIComponent(parts.slice(4).join('/'));
+    if (resource === 'subtitles' && route.length >= 3) {
+        const type = route[1];
+        const idWithExt = decodeURIComponent(route.slice(2).join('/'));
         const id = idWithExt.replace(/\.json$/, '');
         if (type !== 'movie' && type !== 'series') {
             return sendJson(res, 200, { subtitles: [] });
@@ -1310,16 +928,16 @@ const server = http.createServer((req, res) => {
         return buildSubtitlesResponse(type, id).then(body => sendJson(res, 200, body));
     }
 
-    if (resource === 'stream' && parts.length >= 5) {
-        const type = parts[3];
-        const idWithExt = decodeURIComponent(parts.slice(4).join('/'));
+    if (resource === 'stream' && route.length >= 3) {
+        const type = route[1];
+        const idWithExt = decodeURIComponent(route.slice(2).join('/'));
         const id = idWithExt.replace(/\.json$/, '');
         const custom = resolveCustomStreamResponse(id);
         if (custom) return custom.then(body => sendJson(res, 200, body));
         if (type !== 'movie' && type !== 'series') {
             return sendJson(res, 200, { streams: [] });
         }
-        return buildStreamResponse(profileId, type, id).then(body => sendJson(res, 200, body));
+        return buildStreamResponse(type, id).then(body => sendJson(res, 200, body));
     }
 
     return notFound(res);
@@ -1328,9 +946,8 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
     const ip = getLocalIp();
     console.log(`\n🚀 StrmProv addon server running at: http://${ip}:${PORT}/`);
-    console.log('Install one of these as a Nuvio/Stremio addon per profile:');
-    [1, 2, 3, 4].forEach(n => console.log(`  http://${ip}:${PORT}/profile/${n}/manifest.json`));
-    console.log('\nEach profile builds its own "For You" catalog from its own watch history once it has streamed a few titles.');
+    console.log('Install this as a Nuvio/Stremio addon:');
+    console.log(`  http://${ip}:${PORT}/manifest.json`);
     console.log('Press Ctrl+C to stop\n');
 
     // Both crawls' own stale-while-revalidate cache only blocks a request on

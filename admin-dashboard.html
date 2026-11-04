@@ -115,9 +115,6 @@
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .grid-form { display: grid; grid-template-columns: 140px 1fr; gap: 10px 14px; align-items: center; max-width: 560px; }
   .grid-form label { color: var(--muted); font-size: 13px; }
-  .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
-  .tabs button { border-radius: 6px 6px 0 0; }
-  .tabs button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
   .points-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin-bottom: 16px; }
   .points-grid .item { display: flex; justify-content: space-between; align-items: center; gap: 8px; background: #0c111c; border: 1px solid var(--panel-border); border-radius: 6px; padding: 6px 10px; }
   .points-grid .item label { font-size: 12px; color: var(--muted); }
@@ -126,7 +123,6 @@
   .field-row .field { display: flex; flex-direction: column; gap: 4px; }
   .field-row .field label { font-size: 12px; color: var(--muted); }
   .stream-item { border: 1px solid var(--panel-border); border-radius: 6px; padding: 10px 12px; margin-bottom: 8px; }
-  .stream-item.preferred { border-color: var(--good); background: rgba(76,175,125,0.08); }
   .stream-item .name { font-weight: 600; }
   .stream-item .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
   .badge { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; }
@@ -154,34 +150,13 @@
   .log-line.log-error .log-text { color: var(--bad); }
   .log-line.log-warn .log-text { color: var(--warn); }
   .link-btn { background: none; border: none; color: var(--accent); padding: 0; font-size: 12px; cursor: pointer; text-decoration: underline; }
-  .modal-backdrop {
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,0.55);
-    display: flex; align-items: center; justify-content: center;
-    z-index: 100;
-  }
-  .modal-backdrop[hidden] { display: none; }
-  .modal {
-    background: var(--panel); border: 1px solid var(--panel-border);
-    border-radius: 10px; padding: 20px 22px;
-    width: min(520px, 90vw); max-height: 80vh;
-    display: flex; flex-direction: column; gap: 12px;
-  }
-  .modal header { padding: 0; border: none; display: flex; align-items: center; justify-content: space-between; }
-  .modal header h3 { margin: 0; font-size: 15px; }
-  .modal header button { padding: 3px 9px; }
-  .modal-list { overflow-y: auto; }
-  .modal-list ol { margin: 0; padding-left: 20px; }
-  .modal-list li { padding: 4px 0; border-bottom: 1px solid var(--panel-border); }
-  .modal-list li:last-child { border-bottom: none; }
-  .modal-list li .when { color: var(--muted); font-size: 11px; margin-left: 6px; }
 </style>
 </head>
 <body>
 
 <header>
   <h1>strmprov admin</h1>
-  <span>api keys · deploy · providers · ranking · provider health · profiles · subtitles · live test · catalog test · logs</span>
+  <span>api keys · deploy · providers · provider health · subtitles · live test · catalog test · logs</span>
 </header>
 
 <main>
@@ -238,20 +213,6 @@
     </table>
   </section>
 
-  <section class="panel" id="ranking-panel">
-    <h2>Stream ranking</h2>
-    <p class="desc">CloudStream-style scoring: a stream's score is its provider's points plus its quality's points. A score of 11+ confidently wins the <span class="mono">[PREFERRED]</span> tag; if nothing reaches that, the single highest-scoring stream still gets it.</p>
-    <div class="tabs">
-      <button class="tab-btn active" data-type="movie">Movie</button>
-      <button class="tab-btn" data-type="series">Series</button>
-    </div>
-    <div id="ranking-body">Loading…</div>
-    <div class="row" style="margin-top:14px;">
-      <button class="primary" id="ranking-save">Save ranking</button>
-      <button id="rebuild-combined">Rebuild allsources.js</button>
-    </div>
-  </section>
-
   <section class="panel" id="provider-health-panel">
     <h2>Provider health</h2>
     <p class="desc">Real success/empty/error counts and average load time from every live stream request, over the last <span id="health-retention">14</span> days - a provider stuck near 0% is chronically broken (wrong results, dead hosts, changed site structure) rather than just unlucky on one title. Both success rate and average load time also determine the order providers are queried in on a real stream request - see the Reset button below. Sorted worst first.</p>
@@ -265,18 +226,9 @@
     </div>
   </section>
 
-  <section class="panel" id="profiles-panel">
-    <h2>Profiles</h2>
-    <p class="desc">Each profile's "For You" recommendations are built from its own watch history plus an optional base viewing profile - a short taste description used on its own for a profile with no watch history yet, and alongside history once it has some. Reset clears history and cached recommendations, not the base profile.</p>
-    <table>
-      <thead><tr><th>Profile</th><th>Watched</th><th>Base viewing profile</th><th>Last watched</th><th></th></tr></thead>
-      <tbody id="profiles-body"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
-    </table>
-  </section>
-
   <section class="panel" id="subtitles-panel">
     <h2>Subtitles</h2>
-    <p class="desc">Looks up subtitles from OpenSubtitles (hash-matched to the exact file when possible) and SubDL (release-name matched, much higher free quota), ordered by these two preferred languages. Only the <span class="mono">[PREFERRED]</span> stream gets a hash-matched lookup; every other subtitle request uses language + release-name matching only.</p>
+    <p class="desc">Looks up subtitles from OpenSubtitles and SubDL (release-name matched, much higher free quota), ordered by these two preferred languages.</p>
     <div class="field-row">
       <div class="field"><label>First language</label><select id="sub-lang-1"></select></div>
       <div class="field"><label>Second language</label><select id="sub-lang-2"></select></div>
@@ -287,7 +239,7 @@
 
   <section class="panel" id="test-panel">
     <h2>Live test</h2>
-    <p class="desc">Runs the real aggregate pipeline (every enabled provider, current ranking config) for a TMDB id and shows the results, including which one wins <span class="mono">[PREFERRED]</span> and why.</p>
+    <p class="desc">Runs the real aggregate pipeline (every enabled provider) for a TMDB id and shows the results.</p>
     <div class="field-row">
       <div class="field"><label>TMDB id</label><input type="text" id="test-tmdb" placeholder="e.g. 118340" style="width:120px;" /></div>
       <div class="field"><label>Type</label>
@@ -305,9 +257,6 @@
     <h2>Catalog test</h2>
     <p class="desc">Fetches manifest.json and a chosen catalog directly from the running addon-server.js - the same thing Nuvio itself would see. Use this to check whether a catalog (e.g. one of the F1/F2/F3/Academy ones) actually exists on this server before assuming it's a Nuvio-side caching issue.</p>
     <div class="field-row">
-      <div class="field"><label>Profile</label>
-        <select id="catalog-test-profile"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select>
-      </div>
       <div class="field"><label>Catalog</label><select id="catalog-test-catalog" style="min-width:220px;"><option value="">Loading manifest…</option></select></div>
       <div class="field"><label>&nbsp;</label><button class="primary" id="catalog-test-run">Run test</button></div>
       <div class="field"><label>&nbsp;</label><button id="catalog-test-refresh-manifest">Reload manifest</button></div>
@@ -346,20 +295,8 @@
 
 <div class="toast" id="toast"></div>
 
-<div class="modal-backdrop" id="history-modal-backdrop" hidden onclick="if (event.target === this) closeHistoryModal()">
-  <div class="modal">
-    <header>
-      <h3 id="history-modal-title">Watch history</h3>
-      <button onclick="closeHistoryModal()">Close</button>
-    </header>
-    <div class="modal-list" id="history-modal-list"></div>
-  </div>
-</div>
-
 <script>
 let providersCache = [];
-let rankingCache = null;
-let rankingTab = 'movie';
 
 function toast(msg, kind) {
   const el = document.getElementById('toast');
@@ -384,7 +321,6 @@ function api(method, url, body) {
 // ---- API keys ----
 
 const ENV_KEY_LABELS = {
-  GEMINI_API_KEY: 'Gemini (AI recommendations)',
   SUBDL_API_KEY: 'SubDL (subtitles)',
   OPENSUBTITLES_API_KEY: 'OpenSubtitles (subtitles)'
 };
@@ -495,7 +431,6 @@ function loadProviders() {
   return api('GET', '/api/providers').then(data => {
     providersCache = data.providers;
     renderProviders();
-    renderRankingProviderList();
   });
 }
 
@@ -581,103 +516,6 @@ document.getElementById('add-submit').addEventListener('click', () => {
     .catch(e => toast(e.message, 'error'));
 });
 
-// ---- Ranking ----
-
-function renderRankingProviderList() {
-  if (rankingCache) renderRanking();
-}
-
-function renderRanking() {
-  if (!rankingCache) return;
-  const tc = rankingCache[rankingTab] || { providerPoints: {}, qualityPoints: {}, threshold: 11, maxSizeGB: 30 };
-  const providerIds = providersCache.map(p => p.id);
-  const qualities = ['4K', '1080p', '720p', '480p', 'Unknown'];
-
-  const providerInputs = providerIds.map(id => `
-    <div class="item">
-      <label>${escapeHtml(id)}</label>
-      <input type="number" data-provider="${escapeHtml(id)}" value="${tc.providerPoints[id] || 0}" />
-    </div>`).join('');
-
-  const qualityInputs = qualities.map(q => `
-    <div class="item">
-      <label>${q}</label>
-      <input type="number" data-quality="${q}" value="${tc.qualityPoints[q] || 0}" />
-    </div>`).join('');
-
-  const minQualityField = rankingTab === 'movie'
-    ? `<div class="field"><label>Min quality</label>
-        <select id="rank-min-quality">
-          ${['4K','1080p','720p','480p'].map(q => `<option value="${q}" ${tc.minQuality === q ? 'selected' : ''}>${q}</option>`).join('')}
-        </select>
-      </div>`
-    : '';
-
-  document.getElementById('ranking-body').innerHTML = `
-    <div class="muted" style="margin-bottom:6px; font-size:12px;">Provider points</div>
-    <div class="points-grid">${providerInputs}</div>
-    <div class="muted" style="margin-bottom:6px; font-size:12px;">Quality points</div>
-    <div class="points-grid">${qualityInputs}</div>
-    <div class="field-row">
-      <div class="field"><label>Threshold</label><input type="number" id="rank-threshold" value="${tc.threshold}" /></div>
-      ${minQualityField}
-      <div class="field"><label>Max size (GB)</label><input type="number" id="rank-max-size" value="${tc.maxSizeGB}" /></div>
-    </div>
-  `;
-}
-
-function collectRankingTab() {
-  const providerPoints = {};
-  document.querySelectorAll('#ranking-body [data-provider]').forEach(el => {
-    providerPoints[el.dataset.provider] = Number(el.value) || 0;
-  });
-  const qualityPoints = {};
-  document.querySelectorAll('#ranking-body [data-quality]').forEach(el => {
-    qualityPoints[el.dataset.quality] = Number(el.value) || 0;
-  });
-  const threshold = Number(document.getElementById('rank-threshold').value) || 0;
-  const maxSizeGB = Number(document.getElementById('rank-max-size').value) || 0;
-  const result = { providerPoints, qualityPoints, threshold, maxSizeGB };
-  if (rankingTab === 'movie') {
-    const minEl = document.getElementById('rank-min-quality');
-    if (minEl) result.minQuality = minEl.value;
-  }
-  return result;
-}
-
-document.querySelectorAll('.tab-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    if (rankingCache) rankingCache[rankingTab] = collectRankingTab();
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    rankingTab = btn.dataset.type;
-    renderRanking();
-  });
-});
-
-document.getElementById('ranking-save').addEventListener('click', () => {
-  rankingCache[rankingTab] = collectRankingTab();
-  api('POST', '/api/ranking', rankingCache)
-    .then(data => { rankingCache = data; toast('Ranking saved', 'ok'); })
-    .catch(e => toast(e.message, 'error'));
-});
-
-document.getElementById('rebuild-combined').addEventListener('click', (e) => {
-  e.target.disabled = true;
-  e.target.textContent = 'Rebuilding…';
-  api('POST', '/api/rebuild-combined')
-    .then(data => { toast('allsources.js rebuilt', 'ok'); })
-    .catch(err => toast(err.message, 'error'))
-    .then(() => { e.target.disabled = false; e.target.textContent = 'Rebuild allsources.js'; });
-});
-
-function loadRanking() {
-  return api('GET', '/api/ranking').then(data => {
-    rankingCache = data;
-    renderRanking();
-  });
-}
-
 // ---- Provider health ----
 
 function formatLoadMs(ms) {
@@ -728,87 +566,6 @@ document.getElementById('provider-health-reset').addEventListener('click', () =>
     })
     .catch(e => toast(e.message, 'error'));
 });
-
-// ---- Profiles ----
-
-function renderProfiles(profiles) {
-  const body = document.getElementById('profiles-body');
-  if (profiles.length === 0) {
-    body.innerHTML = '<tr><td colspan="5" class="muted">No profile data yet.</td></tr>';
-    return;
-  }
-  const INLINE_TITLE_COUNT = 6;
-  body.innerHTML = profiles.map(p => {
-    const titles = p.titles || [];
-    const shown = titles.slice(0, INLINE_TITLE_COUNT).map(escapeHtml).join(', ');
-    const remaining = titles.length - INLINE_TITLE_COUNT;
-    const pid = escapeHtml(p.profileId);
-    return `
-    <tr>
-      <td class="mono">${pid}</td>
-      <td>
-        ${titles.length ? shown : '<span class="muted">—</span>'}
-        ${remaining > 0 ? `<span class="muted"> +${remaining} more</span>` : ''}
-        ${titles.length ? `<div><button class="link-btn" onclick="openHistoryModal('${pid}')">View all ${p.historyCount}</button></div>` : ''}
-      </td>
-      <td>
-        <textarea data-base-profile="${pid}" rows="2" style="width:220px; resize:vertical;" placeholder="e.g. loves gritty sci-fi and slow-burn horror, not into rom-coms">${escapeHtml(p.baseProfile || '')}</textarea>
-        <div><button class="small" onclick="saveBaseProfile('${pid}')">Save</button></div>
-      </td>
-      <td class="muted">${p.lastWatchedAt ? new Date(p.lastWatchedAt).toLocaleString() : '—'}</td>
-      <td><button class="small danger" onclick="resetProfile('${pid}')">Reset</button></td>
-    </tr>`;
-  }).join('');
-}
-
-window.openHistoryModal = function (id) {
-  const backdrop = document.getElementById('history-modal-backdrop');
-  const list = document.getElementById('history-modal-list');
-  document.getElementById('history-modal-title').textContent = `Profile ${id} - watch history`;
-  list.innerHTML = '<p class="muted">Loading…</p>';
-  backdrop.hidden = false;
-  api('GET', `/api/profiles/${encodeURIComponent(id)}/history`)
-    .then(data => {
-      const history = data.history || [];
-      if (history.length === 0) {
-        list.innerHTML = '<p class="muted">No watch history.</p>';
-        return;
-      }
-      list.innerHTML = '<ol>' + history.map(h => `
-        <li>
-          ${escapeHtml(h.title || 'Unknown')}${h.year ? ` (${escapeHtml(String(h.year))})` : ''}
-          <span class="muted">${h.mediaType === 'tv' ? 'series' : 'movie'}</span>
-          <span class="when">${h.watchedAt ? new Date(h.watchedAt).toLocaleString() : ''}</span>
-        </li>`).join('') + '</ol>';
-    })
-    .catch(e => { list.innerHTML = `<p class="muted">${escapeHtml(e.message)}</p>`; });
-};
-
-window.closeHistoryModal = function () {
-  document.getElementById('history-modal-backdrop').hidden = true;
-};
-
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') closeHistoryModal();
-});
-
-window.saveBaseProfile = function (id) {
-  const el = document.querySelector(`[data-base-profile="${id}"]`);
-  api('POST', `/api/profiles/${encodeURIComponent(id)}/base`, { text: el.value })
-    .then(() => toast(`Profile ${id}: base viewing profile saved`, 'ok'))
-    .catch(e => toast(e.message, 'error'));
-};
-
-window.resetProfile = function (id) {
-  if (!confirm(`Reset all watch history and cached recommendations for profile "${id}"?`)) return;
-  api('POST', `/api/profiles/${encodeURIComponent(id)}/reset`)
-    .then(() => { toast(`Profile ${id} reset`, 'ok'); loadProfiles(); })
-    .catch(e => toast(e.message, 'error'));
-};
-
-function loadProfiles() {
-  return api('GET', '/api/profiles').then(data => renderProfiles(data.profiles));
-}
 
 // ---- Subtitles ----
 
@@ -866,12 +623,10 @@ document.getElementById('test-run').addEventListener('click', () => {
     .then(data => {
       summary.textContent = `${data.streams.length} stream(s) in ${data.totalMs}ms`;
       results.innerHTML = data.streams.map(s => `
-        <div class="stream-item ${s.isPreferred ? 'preferred' : ''}">
-          <div class="name">${s.isPreferred ? '' : ''}${escapeHtml(s.name)}</div>
+        <div class="stream-item">
+          <div class="name">${escapeHtml(s.name)}</div>
           <div class="meta">
             ${escapeHtml(s.quality || 'Unknown')} ${s.size ? '· ' + escapeHtml(s.size) : ''}
-            ${s.score !== undefined ? `· score ${s.score}` : ''}
-            ${s.isPreferred ? `<span class="badge ${s.lowConfidence ? 'warn' : 'good'}">${s.lowConfidence ? 'preferred (low confidence)' : 'preferred'}</span>` : ''}
           </div>
         </div>`).join('') || '<p class="muted">No streams returned.</p>';
     })
@@ -881,10 +636,9 @@ document.getElementById('test-run').addEventListener('click', () => {
 // ---- Catalog test ----
 
 function loadCatalogManifest() {
-  const profileId = document.getElementById('catalog-test-profile').value;
   const select = document.getElementById('catalog-test-catalog');
   select.innerHTML = '<option value="">Loading manifest…</option>';
-  return api('GET', `/api/catalog-test/manifest?profileId=${encodeURIComponent(profileId)}`)
+  return api('GET', '/api/catalog-test/manifest')
     .then(data => {
       const catalogs = data.catalogs || [];
       if (catalogs.length === 0) {
@@ -899,11 +653,9 @@ function loadCatalogManifest() {
     });
 }
 
-document.getElementById('catalog-test-profile').addEventListener('change', loadCatalogManifest);
 document.getElementById('catalog-test-refresh-manifest').addEventListener('click', () => loadCatalogManifest().then(() => toast('Manifest reloaded', 'ok')));
 
 document.getElementById('catalog-test-run').addEventListener('click', () => {
-  const profileId = document.getElementById('catalog-test-profile').value;
   const selected = document.getElementById('catalog-test-catalog').value;
   if (!selected) return toast('Pick a catalog first', 'error');
   const [type, id] = selected.split('|');
@@ -913,7 +665,7 @@ document.getElementById('catalog-test-run').addEventListener('click', () => {
   summary.textContent = 'Running…';
   results.innerHTML = '';
 
-  api('GET', `/api/catalog-test?profileId=${encodeURIComponent(profileId)}&type=${encodeURIComponent(type)}&id=${encodeURIComponent(id)}`)
+  api('GET', `/api/catalog-test?type=${encodeURIComponent(type)}&id=${encodeURIComponent(id)}`)
     .then(data => {
       const metas = data.metas || [];
       summary.textContent = `${metas.length} item(s) returned for "${id}" (${type})`;
@@ -978,7 +730,7 @@ function escapeHtml(str) {
   return String(str == null ? '' : str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-Promise.all([loadEnvKeys(), loadDeployConfig(), loadProviders(), loadYoutubeChannels(), loadRanking(), loadProviderHealth(), loadProfiles(), loadSubtitlesConfig(), loadCatalogManifest()]).catch(e => toast(e.message, 'error'));
+Promise.all([loadEnvKeys(), loadDeployConfig(), loadProviders(), loadYoutubeChannels(), loadProviderHealth(), loadSubtitlesConfig(), loadCatalogManifest()]).catch(e => toast(e.message, 'error'));
 </script>
 
 </body>

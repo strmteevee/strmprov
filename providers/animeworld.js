@@ -26,6 +26,11 @@
 //               season > 1 request falls back to appending "season {n}" to
 //               the search query as a best-effort, same class of limitation
 //               already accepted for kickassanime.js/anime-dekho.js.
+//   matching -> the site search is fuzzy and always returns something, so a
+//               result has to prove it is the requested work: see findMatches
+//               (title) and yearAllowed (the play page's own release date).
+//               The site only carries anime, so a TMDB entry without the
+//               Animation genre (live action) is never looked up at all.
 
 const cheerio = require('cheerio');
 
@@ -33,6 +38,7 @@ const TMDB_API_KEY = '439c478a771f35c05022f9feabcca01c';
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
 const BASE_URL = 'https://www.animeworld.so';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const TMDB_ANIMATION_GENRE_ID = 16;
 
 function getTmdbInfo(tmdbId, mediaType) {
     const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
@@ -43,7 +49,9 @@ function getTmdbInfo(tmdbId, mediaType) {
             const title = mediaType === 'tv' ? data.name : data.title;
             const year = (mediaType === 'tv' ? data.first_air_date : data.release_date || '').substring(0, 4);
             console.log(`[AnimeWorld] TMDB Info: "${title}" (${year})`);
-            return { title, year };
+            const genres = data.genres || [];
+            const couldBeAnime = !genres.length || genres.some(g => g.id === TMDB_ANIMATION_GENRE_ID);
+            return { title, year, couldBeAnime };
         });
 }
 
@@ -56,23 +64,47 @@ function search(query) {
     return fetch(url, { headers: { 'User-Agent': USER_AGENT } }).then(res => res.text());
 }
 
-function findBestMatch(html, targetTitle) {
+// The site's own title variants of one work: a trailing "(ITA)" marks the
+// Italian-dubbed entry, and "<title>: <subtitle>" a named part of it. Any other
+// extra words make it another work ("Parasite Dolls" is not "Parasite", and
+// "Your" is not "Your Name"), so a bare prefix is deliberately not enough.
+// Returned best first: the plain entry before its dub, then a subtitled one. A
+// later season is usually its own entry ("X 2", "X Season 2"), which goes first.
+function findMatches(html, targetTitle, season) {
     const $ = cheerio.load(html);
     const target = normalize(targetTitle);
+    if (!target) return [];
+    const laterSeason = season > 1
+        ? new RegExp(`^${target} (?:season ${season}|${season}(?:st|nd|rd|th) season|${season})(?: |$)`)
+        : null;
     const seen = new Set();
-    let exact = null;
-    let prefix = null;
+    const ranked = [];
     $('a[href^="/play/"]').each((_, el) => {
         const href = $(el).attr('href');
         if (!href || seen.has(href)) return;
         const name = $(el).closest('.item, li, div').find('.name').first().text().trim() || $(el).text().trim();
         if (!name) return;
         seen.add(href);
-        const normName = normalize(name);
-        if (!exact && normName === target) exact = { href, name };
-        else if (!prefix && (normName.startsWith(target) || target.startsWith(normName))) prefix = { href, name };
+        const undubbed = name.replace(/\s*\(ITA\)\s*$/i, '');
+        const isDub = undubbed !== name;
+        const normName = normalize(undubbed);
+        let rank = -1;
+        if (laterSeason && laterSeason.test(normName)) rank = 0;
+        else if (normName === target) rank = isDub ? 2 : 1;
+        else if (normalize(undubbed.split(/\s*:\s/)[0]) === target) rank = isDub ? 4 : 3;
+        if (rank >= 0) ranked.push({ href, name, rank });
     });
-    return exact || prefix;
+    return ranked.sort((a, b) => a.rank - b.rank);
+}
+
+// Same rule as the other title-search providers (see castle.js/filmyfiy.js): a
+// same-named entry whose release year is more than a year off is another work
+// (a remake or a new adaptation). A later season's entry naturally starts later
+// than the show, so the check only covers a film or season 1; an entry stating
+// no date gets the benefit of the doubt.
+function yearAllowed(entryYear, wantYear, season) {
+    if (season > 1 || !entryYear || !wantYear) return true;
+    return Math.abs(entryYear - wantYear) <= 1;
 }
 
 function fetchPlayPage(href) {
@@ -80,7 +112,7 @@ function fetchPlayPage(href) {
     return fetch(url, { headers: { 'User-Agent': USER_AGENT } }).then(res => res.text());
 }
 
-function extractEpisodes(html) {
+function parsePlayPage(html) {
     const $ = cheerio.load(html);
     const csrfMatch = html.match(/csrfToken\s*=\s*"([^"]+)"/);
     const episodes = [];
@@ -89,7 +121,9 @@ function extractEpisodes(html) {
         const id = $(el).attr('data-id');
         if (id && !isNaN(num)) episodes.push({ num, id });
     });
-    return { csrfToken: csrfMatch ? csrfMatch[1] : null, episodes };
+    const released = $('dt').filter((_, el) => /Data di Uscita/i.test($(el).text())).first().next('dd').text();
+    const yearMatch = /\b(?:19|20)\d{2}\b/.exec(released);
+    return { csrfToken: csrfMatch ? csrfMatch[1] : null, episodes, year: yearMatch ? parseInt(yearMatch[0], 10) : null };
 }
 
 function getEpisodeGrabber(episodeId, csrfToken) {
@@ -98,6 +132,18 @@ function getEpisodeGrabber(episodeId, csrfToken) {
         .then(res => res.ok ? res.json() : null)
         .then(json => (json && json.grabber) || null)
         .catch(() => null);
+}
+
+// The first candidate whose play page passes the year check, with that page's data.
+function pickCandidate(candidates, wantYear, season) {
+    if (!candidates.length) return Promise.resolve(null);
+    const [candidate, ...rest] = candidates;
+    return fetchPlayPage(candidate.href).then(playHtml => {
+        const page = parsePlayPage(playHtml);
+        if (yearAllowed(page.year, wantYear, season)) return { match: candidate, page };
+        console.log(`[AnimeWorld] Skipping "${candidate.name}": released ${page.year}, wanted ${wantYear}`);
+        return pickCandidate(rest, wantYear, season);
+    });
 }
 
 function getStreams(tmdbId, mediaType, season, episode) {
@@ -110,16 +156,21 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
     return getTmdbInfo(tmdbId, mediaType).then(mediaInfo => {
         if (!mediaInfo.title) return [];
-        const query = (mediaType === 'tv' && season > 1) ? `${mediaInfo.title} season ${season}` : mediaInfo.title;
+        if (!mediaInfo.couldBeAnime) {
+            console.log(`[AnimeWorld] "${mediaInfo.title}" is not animation, not searching`);
+            return [];
+        }
+        const wantSeason = mediaType === 'tv' ? season : null;
+        const query = wantSeason > 1 ? `${mediaInfo.title} season ${season}` : mediaInfo.title;
         return search(query).then(html => {
-            const match = findBestMatch(html, mediaInfo.title);
-            if (!match) {
-                console.log(`[AnimeWorld] No matching title found for "${query}"`);
-                return [];
-            }
-            console.log(`[AnimeWorld] Matched: "${match.name}"`);
-            return fetchPlayPage(match.href).then(playHtml => {
-                const { csrfToken, episodes } = extractEpisodes(playHtml);
+            const candidates = findMatches(html, mediaInfo.title, wantSeason);
+            return pickCandidate(candidates, parseInt(mediaInfo.year, 10), wantSeason).then(picked => {
+                if (!picked) {
+                    console.log(`[AnimeWorld] No matching title found for "${query}"`);
+                    return [];
+                }
+                const { match, page: { csrfToken, episodes } } = picked;
+                console.log(`[AnimeWorld] Matched: "${match.name}"`);
                 const targetNum = mediaType === 'tv' ? episode : 1;
                 const target = episodes.find(e => e.num === targetNum) || (mediaType !== 'tv' ? episodes[0] : null);
                 if (!target) {

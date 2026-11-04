@@ -1,6 +1,6 @@
 {
   "name": "Yoru's Repo",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "scrapers": [
     {
       "id": "streamapi",
@@ -23,33 +23,6 @@
       "logo": "https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png",
       "contentLanguage": [
         "en"
-      ]
-    },
-    {
-      "id": "allsources",
-      "name": "All Sources",
-      "description": "Combines every other scraper in this repo into one plugin, ranks the results (1080p/4K preferred for movies, everything shown for series, 30GB size cap), and returns after ~15s or once every source has answered, whichever comes first. The individual scrapers below still exist separately if you'd rather enable them one at a time.",
-      "version": "1.0.3",
-      "author": "Nuvio Team",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "filename": "providers/allsources.js",
-      "enabled": true,
-      "formats": [
-        "mp4",
-        "m3u8",
-        "mkv"
-      ],
-      "logo": "https://raw.githubusercontent.com/tapframe/nuvio-providers/main/Assets/Logo-2.png",
-      "contentLanguage": [
-        "en",
-        "hi",
-        "ta",
-        "te",
-        "ml",
-        "kn"
       ]
     },
     {
@@ -343,7 +316,7 @@
       "id": "animeworld",
       "name": "AnimeWorld",
       "description": "Italian-subbed anime via AnimeWorld's own session/CSRF-protected episode API (GET /api/episode/info?id=... with a CSRF-Token header) - resolves to a direct, self-hosted SweetPixel CDN link, confirmed live with a real 206 Partial Content and no Cloudflare in front of the video host. No TMDB-season concept on the site itself, so only season 1 (or a movie) is handled precisely; a later season falls back to a best-effort search query.",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": "Nuvio Team",
       "supportedTypes": [
         "movie",

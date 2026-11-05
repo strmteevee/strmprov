@@ -98,7 +98,17 @@ function validateM3u8Chain(url, headers, hopsLeft) {
     .catch(() => false);
 }
 
+// A stream host that accepts the connection and then never answers would
+// otherwise hold up this whole provider - seen live 2026-11-05, past the
+// aggregate's 25 s deadline, so VidFastPro's working links were lost too.
+const VALIDATE_TIMEOUT_MS = 8000;
+
 function validateStreamUrl(stream) {
+  const timeout = new Promise(resolve => setTimeout(() => resolve(false), VALIDATE_TIMEOUT_MS));
+  return Promise.race([checkStreamUrl(stream), timeout]);
+}
+
+function checkStreamUrl(stream) {
   if (isM3u8Url(stream.url)) {
     return validateM3u8Chain(stream.url, stream.headers, 2);
   }

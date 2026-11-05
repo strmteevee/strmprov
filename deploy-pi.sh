@@ -6,7 +6,8 @@
 #   1. finds that checkout from the running addon-server.js process (or a
 #      usual location when nothing is running),
 #   2. pulls the latest main, keeping the Pi's own local edits (provider
-#      switches from the admin dashboard live in the tracked manifest.json),
+#      switches from the admin dashboard live in the tracked manifest.json,
+#      which is handled separately - see the comment at the pull),
 #   3. installs npm packages when package.json changed,
 #   4. restarts the services those processes belong to (systemd or pm2),
 #   5. checks that the addon and the dashboard answer again.
@@ -39,10 +40,72 @@ cd "$APP_DIR" || fail "Cannot open $APP_DIR"
 
 # -- 2. Pull ---------------------------------------------------------------
 say "Pulling the latest version"
+if ! command -v node >/dev/null 2>&1 && [ -s "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh"; fi
+command -v node >/dev/null 2>&1 || fail "node not found in this shell. Nothing was changed."
+
+# manifest.json holds both the provider list (from git) and the dashboard's
+# switches (on the Pi), so it must never go through a git merge: when an update
+# removes a provider, that gives a conflict, and conflict markers in the file
+# leave the running servers with no providers at all (seen 2026-11-05, when
+# this script still used --autostash for it). The Pi's own changes are instead
+# worked out field by field against the committed version, and put back on top
+# of the new one after the pull.
+SAVED=.git/strmprov-manifest-local.json
+BASE=.git/strmprov-manifest-base.json
+
+# Left behind by an earlier run of this script: keep the update's side of the
+# conflict. Changes outside the conflict are already merged into the file.
+if git diff --name-only --diff-filter=U | grep -qx manifest.json; then
+  echo "Repairing the conflict an earlier update left in manifest.json"
+  sed -i -e '/^<<<<<<< /d' -e '/^=======\r\?$/,/^>>>>>>> /d' manifest.json
+  git reset -q -- manifest.json
+fi
+UNMERGED=$(git diff --name-only --diff-filter=U)
+[ -z "$UNMERGED" ] || fail "Unresolved conflict in: $UNMERGED (see git status in $APP_DIR). Nothing was restarted."
+node -e 'JSON.parse(require("fs").readFileSync("manifest.json", "utf8"))' 2>/dev/null \
+  || fail "manifest.json is not valid JSON and could not be repaired. Nothing was restarted."
+
 OLD=$(git rev-parse HEAD)
-# --autostash sets the Pi's own edits (dashboard switches in manifest.json,
-# config files) aside for the pull and puts them back afterwards.
-git pull --ff-only --autostash || fail "git pull failed - see above. Nothing was restarted."
+cp manifest.json "$SAVED" || fail "Could not save manifest.json. Nothing was changed."
+git show HEAD:manifest.json > "$BASE" || fail "Could not read the committed manifest.json. Nothing was changed."
+git checkout -- manifest.json || fail "Could not reset manifest.json. Nothing was changed."
+
+# --autostash keeps any other local edit (config files) across the pull.
+if ! git pull --ff-only --autostash; then
+  cp "$SAVED" manifest.json
+  fail "git pull failed - see above. manifest.json was put back and nothing was restarted."
+fi
+
+node -e '
+const fs = require("fs");
+const read = (f) => JSON.parse(fs.readFileSync(f, "utf8"));
+const [saved, base, current] = [process.argv[1], process.argv[2], "manifest.json"].map(read);
+const byId = (m) => new Map(m.scrapers.map((s) => [s.id, s]));
+const baseById = byId(base), savedById = byId(saved), currentById = byId(current);
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const notes = [];
+for (const entry of saved.scrapers) {
+  const was = baseById.get(entry.id), now = currentById.get(entry.id);
+  if (!was) {
+    if (!now) { current.scrapers.push(entry); notes.push(`kept your own provider ${entry.id}`); }
+  } else if (now) {
+    for (const key of Object.keys(entry)) {
+      if (!same(entry[key], was[key]) && !same(entry[key], now[key])) {
+        now[key] = entry[key];
+        notes.push(`${entry.id}: kept your ${key}${key === "enabled" ? ` (${entry.enabled ? "on" : "off"})` : ""}`);
+      }
+    }
+  }
+}
+const removed = base.scrapers.filter((s) => !savedById.has(s.id) && currentById.has(s.id)).map((s) => s.id);
+if (removed.length) {
+  current.scrapers = current.scrapers.filter((s) => !removed.includes(s.id));
+  notes.push(`stays removed: ${removed.join(", ")}`);
+}
+if (notes.length) fs.writeFileSync("manifest.json", JSON.stringify(current, null, 2) + "\n");
+console.log(notes.length ? `Dashboard settings kept:\n  ${notes.join("\n  ")}` : "No dashboard settings to keep.");
+' "$SAVED" "$BASE" || fail "Could not put the dashboard settings back; your copy is in $APP_DIR/$SAVED. Nothing was restarted."
+
 NEW=$(git rev-parse HEAD)
 if [ "$OLD" = "$NEW" ]; then
   echo "Already up to date."

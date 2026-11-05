@@ -11,22 +11,14 @@
 //               "1":{"json":{"animeId":<anilistId>,"episode":<n>,"language":"dub"}}}
 //     -> [{"result":{"data":{"json":{"servers":[{"url","label","language","sourceType"}]}}}}, ...]
 //
-// Mapping TMDB to AniList uses the public ARM id-mapping API
-// (arm.haglund.dev), which also says which TMDB season each AniList entry
-// belongs to. Two cases need care:
-//   - a TMDB season split over several AniList entries (Attack on Titan S3
-//     part 1 and 2): entries are ordered by start date and the episode number
-//     is offset by the earlier parts' episode counts (from AniList itself);
-//   - a long-running show kept as one AniList entry with absolute numbering
-//     (One Piece, no season in ARM): the episode becomes TMDB's absolute
-//     number, counted from the earlier seasons' episode counts.
+// Mapping TMDB to AniList is in lib/animeIds.js.
 // Written from the endpoint the community Nuvio "kurage" plugin uses.
+
+const { resolveAnime } = require('../lib/animeIds');
 
 const TMDB_API_KEY = '439c478a771f35c05022f9feabcca01c';
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
 const KURAGE_BASE = 'https://kurage.live';
-const ARM_BASE = 'https://arm.haglund.dev/api/v2';
-const ANILIST_GRAPHQL = 'https://graphql.anilist.co';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const REQUEST_TIMEOUT_MS = 15000;
 
@@ -62,58 +54,6 @@ function getTmdbInfo(tmdbId, mediaType) {
     .catch(() => ({ title: '', seasons: [] }));
 }
 
-function aniListEpisodeInfo(ids) {
-  const query = 'query($ids:[Int]){Page(perPage:50){media(id_in:$ids,type:ANIME){id episodes startDate{year month day}}}}';
-  return fetchJson(ANILIST_GRAPHQL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ query, variables: { ids } })
-  }).then(json => ((json && json.data && json.data.Page && json.data.Page.media) || []))
-    .catch(() => []);
-}
-
-function dateKey(d) {
-  if (!d || !d.year) return Infinity;
-  return d.year * 10000 + (d.month || 1) * 100 + (d.day || 1);
-}
-
-// -> { anilistId, episode } or null
-function resolveAniList(tmdbId, mediaType, season, episode, tmdbInfo) {
-  return fetchJson(`${ARM_BASE}/themoviedb?id=${tmdbId}`, { headers: { 'User-Agent': USER_AGENT } }).then(entries => {
-    const list = (Array.isArray(entries) ? entries : []).filter(e => e && e.anilist);
-    if (mediaType !== 'tv') {
-      const movie = list.find(e => e.media === 'MOVIE');
-      return movie ? { anilistId: movie.anilist, episode: 1 } : null;
-    }
-    const seasonNum = Number(season);
-    const parts = list.filter(e => e.media !== 'MOVIE' && e['themoviedb-season'] === seasonNum);
-    if (parts.length) {
-      return aniListEpisodeInfo(parts.map(p => p.anilist)).then(media => {
-        const byId = new Map(media.map(m => [m.id, m]));
-        const ordered = parts.slice().sort((a, b) =>
-          dateKey((byId.get(a.anilist) || {}).startDate) - dateKey((byId.get(b.anilist) || {}).startDate));
-        let ep = Number(episode);
-        for (let i = 0; i < ordered.length; i++) {
-          const count = (byId.get(ordered[i].anilist) || {}).episodes;
-          if (!count || ep <= count || i === ordered.length - 1) return { anilistId: ordered[i].anilist, episode: ep };
-          ep -= count;
-        }
-        return null;
-      });
-    }
-    // One AniList entry for the whole show, numbered absolutely.
-    const whole = list.find(e => e.media === 'TV' && (e['themoviedb-season'] === null || e['themoviedb-season'] === undefined));
-    if (!whole) return null;
-    const before = tmdbInfo.seasons
-      .filter(s => s.season_number > 0 && s.season_number < seasonNum)
-      .reduce((sum, s) => sum + (s.episode_count || 0), 0);
-    return { anilistId: whole.anilist, episode: before + Number(episode) };
-  }).catch(err => {
-    console.log(`[Kurage] Mapping failed: ${err.message}`);
-    return null;
-  });
-}
-
 function isPlayable(stream) {
   const headers = { Range: 'bytes=0-1024', 'User-Agent': USER_AGENT };
   return fetchWithTimeout(stream.url, { headers })
@@ -132,7 +72,7 @@ function getStreams(tmdbId, mediaType = 'movie', season = null, episode = null) 
   if (mediaType === 'tv' && (!season || !episode)) return Promise.resolve([]);
 
   return getTmdbInfo(tmdbId, mediaType).then(info =>
-    resolveAniList(tmdbId, mediaType, season, episode, info).then(target => {
+    resolveAnime(tmdbId, mediaType, season, episode, info.seasons).then(target => {
       if (!target) {
         console.log('[Kurage] Not an anime known to AniList');
         return [];

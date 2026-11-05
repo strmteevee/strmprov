@@ -1,6 +1,6 @@
 {
   "name": "Yoru's Repo",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "scrapers": [
     {
       "id": "streamapi",
@@ -629,6 +629,49 @@
         "mp4"
       ],
       "logo": "https://www.google.com/s2/favicons?domain=kurage.live&sz=128",
+      "contentLanguage": [
+        "en",
+        "ja"
+      ]
+    },
+    {
+      "id": "movies4u",
+      "name": "Movies4u",
+      "description": "Indian movie and series blog (dual-audio and English releases), resolved through m4ulinks and HubCloud - see providers/movies4u.js.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/movies4u.js",
+      "enabled": true,
+      "formats": [
+        "mkv",
+        "mp4"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=movies4u.garden&sz=128",
+      "contentLanguage": [
+        "en",
+        "hi"
+      ]
+    },
+    {
+      "id": "anikoto",
+      "name": "AniKoto",
+      "description": "Anime through AniKoto's player (megaplay.buzz): Japanese audio with subtitles and the English dub, up to 1080p - see providers/anikoto.js.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/anikoto.js",
+      "enabled": true,
+      "formats": [
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=anikototv.to&sz=128",
       "contentLanguage": [
         "en",
         "ja"

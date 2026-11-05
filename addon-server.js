@@ -50,6 +50,10 @@ const subtitles = require('./lib/subtitles');
 const indycar = require('./providers/indycar');
 const f1 = require('./providers/f1');
 const youtubeChannel = require('./providers/youtube-channel');
+const sportzx = require('./providers/sportzx');
+// SportzX's events server is one the home router's DNS refuses; see
+// lib/dnsFallback.js.
+require('./lib/dnsFallback').install();
 
 const PORT = 3100;
 
@@ -211,7 +215,7 @@ function buildManifest() {
             // already has full TMDB access for every stream lookup, so it can
             // fill that gap itself - a TMDB-backed fallback for any movie/
             // series 'tt' id, not just this addon's own custom catalogs.
-            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'ytlive:'] },
+            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'ytlive:'] },
             // Scoped to real tt-id content only - neither IndyCar's nor
             // F1/F2/F3/Academy's own custom id schemes have a
             // subtitle concept, and Cinemeta already handles meta for the
@@ -220,7 +224,7 @@ function buildManifest() {
         ],
         types: ['movie', 'series', 'tv'],
         catalogs: buildCatalogs(),
-        idPrefixes: ['tt', 'indycar:', 'f1:', 'ytlive:'],
+        idPrefixes: ['tt', 'indycar:', 'f1:', 'sportzx:', 'ytlive:'],
         behaviorHints: { configurable: false, configurationRequired: false }
     };
 }
@@ -255,6 +259,9 @@ function buildCatalogs() {
         { type: 'movie', id: 'f2-highlights', name: 'F2 Race Highlights' },
         { type: 'movie', id: 'f3-highlights', name: 'F3 Race Highlights' },
         { type: 'movie', id: 'f1academy-highlights', name: 'F1 Academy Highlights' },
+        // One combined catalog; each event's sport is its genre (see
+        // buildSportzxCatalog below).
+        { type: 'tv', id: 'sportzx-live', name: 'SportzX Live' },
         // YouTube channel catalogs - only the channels switched on in the
         // admin dashboard (see YOUTUBE_CATALOGS below).
         ...enabledYoutubeCatalogs().map(({ type, id, name }) => ({ type, id, name }))
@@ -278,7 +285,7 @@ function enabledYoutubeCatalogs() {
 }
 // Clients cache a manifest by version, so switching a channel on/off has to
 // change it: the patch number is the switch file's revision counter.
-const MANIFEST_BASE_VERSION = '1.14';
+const MANIFEST_BASE_VERSION = '1.15';
 function manifestVersion(base) {
     return `${base}.${youtubeChannel.settingsRevision()}`;
 }
@@ -650,6 +657,145 @@ function buildTmdbFallbackMeta(imdbId, type) {
     });
 }
 
+// SportzX live events (providers/sportzx.js). startTime/endTime ("2026/09/24
+// 08:30:00 +0000") are real UTC instants and parse correctly as-is via
+// Date.parse - see providers/sportzx.js's isEventLive for why this must NOT be
+// rewritten toward an ISO-ish shape first. The source's "no value" is sometimes
+// the literal string "null" (eventBanner, eventType), so that counts as missing.
+function sportzxField(value) {
+    return value && value !== 'null' ? String(value).trim() : '';
+}
+function sportzxTimes(event) {
+    const info = (event && event.eventInfo) || {};
+    const start = info.startTime ? Date.parse(info.startTime) : NaN;
+    const end = info.endTime ? Date.parse(info.endTime) : NaN;
+    return { start, end: !Number.isNaN(end) && end > start ? end : NaN };
+}
+function sportzxEventStatus(event, now = Date.now()) {
+    const { start, end } = sportzxTimes(event);
+    if (Number.isNaN(start)) return 'unknown';
+    if (!Number.isNaN(end) && now >= end) return 'ended';
+    return now >= start ? 'live' : 'upcoming';
+}
+function sportzxDisplayTitle(event) {
+    const info = event && event.eventInfo;
+    if (info && info.teamA && info.teamB) {
+        return info.teamA === info.teamB ? info.teamA : `${info.teamA} vs ${info.teamB}`;
+    }
+    return event.title;
+}
+// `cat` is the sport or competition ("F1", "NBA", "Serie A 🇮🇹", "EPL 🏴..."),
+// the same grouping the app itself uses. Flag emoji are dropped for the genre
+// (several clients render the tag-sequence flags as empty boxes).
+function sportzxCategory(event) {
+    const cat = sportzxField(event && event.cat)
+        .replace(/[\u{1F1E6}-\u{1F1FF}\u{1F3F4}\u{E0020}-\u{E007F}\u{FE0F}]/gu, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return cat || null;
+}
+// Shown in Amsterdam time (where this addon is used); Intl handles the
+// CET/CEST switch, so no fixed offset can drift wrong across it.
+const AMSTERDAM_DAY = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Amsterdam', weekday: 'short', day: 'numeric', month: 'short' });
+const AMSTERDAM_CLOCK = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Amsterdam', hour: '2-digit', minute: '2-digit', hour12: false });
+function formatAmsterdamDay(ts) { return AMSTERDAM_DAY.format(new Date(ts)); }
+function formatAmsterdamClock(ts) { return AMSTERDAM_CLOCK.format(new Date(ts)); }
+function formatSportzxWindow(start, end) {
+    const startDay = formatAmsterdamDay(start);
+    let text = `${startDay} ${formatAmsterdamClock(start)}`;
+    if (!Number.isNaN(end)) {
+        const endDay = formatAmsterdamDay(end);
+        text += ` – ${endDay === startDay ? '' : `${endDay} `}${formatAmsterdamClock(end)}`;
+    }
+    return text;
+}
+// Live-TV clients without an EPG (OmniStream among them) read an item's
+// schedule from start=/end= values on its artwork URL - without them every
+// event looked like an always-on channel, so items showed as live when they
+// weren't. Epoch milliseconds are unambiguous in any time zone, and image hosts
+// ignore the extra query values.
+function withScheduleParams(imageUrl, start, end) {
+    if (!imageUrl || Number.isNaN(start)) return imageUrl || undefined;
+    try {
+        const url = new URL(imageUrl);
+        url.searchParams.set('start', String(start));
+        if (!Number.isNaN(end)) url.searchParams.set('end', String(end));
+        return url.toString();
+    } catch (e) {
+        return imageUrl;
+    }
+}
+const SPORTZX_STATUS_LABEL = { live: '🔴 Live now', upcoming: '🔜 Upcoming', ended: '✅ Ended' };
+function sportzxEventToMeta(event) {
+    const info = event.eventInfo || {};
+    const title = sportzxDisplayTitle(event);
+    const category = sportzxCategory(event);
+    const { start, end } = sportzxTimes(event);
+    const status = sportzxEventStatus(event);
+    const eventName = sportzxField(info.eventName).replace(/\s+/g, ' ');
+    const channels = (Array.isArray(event.formats) ? event.formats : []).map((f) => String(f).trim()).filter(Boolean);
+    const timeLine = Number.isNaN(start) ? null : `${formatSportzxWindow(start, end)} (Amsterdam time)`;
+    const description = [
+        [category, eventName && eventName !== title ? eventName : null].filter(Boolean).join(' · ') || null,
+        [SPORTZX_STATUS_LABEL[status], timeLine].filter(Boolean).join(' · ') || null,
+        channels.length ? `Channels: ${channels.join(', ')}` : null
+    ].filter(Boolean).join('\n');
+    const poster = sportzxField(info.eventBanner) || sportzxField(info.teamAFlag) || sportzxField(info.teamBFlag);
+    return {
+        id: `sportzx:${event.id}`,
+        type: 'tv',
+        // No status emoji in the name: OmniStream takes a leading 🔴 as "live"
+        // over the clock, which goes stale once a cached catalog outlives the
+        // match. The status is in releaseInfo/description, and the schedule
+        // itself rides on the poster (withScheduleParams).
+        name: title,
+        poster: withScheduleParams(poster, start, end),
+        posterShape: 'square',
+        genres: category ? [category] : undefined,
+        releaseInfo: Number.isNaN(start)
+            ? undefined
+            : `${status === 'live' ? '🔴 LIVE · ' : ''}${formatAmsterdamDay(start)} ${formatAmsterdamClock(start)}`,
+        released: Number.isNaN(start) ? undefined : new Date(start).toISOString(),
+        description: description || undefined
+    };
+}
+
+// Everything not yet ended that starts within the next 24 hours, by start time.
+// One combined catalog rather than one per sport: events.json's `cat` field has
+// dozens of values, and each item's genre carries it.
+const SPORTZX_LOOKAHEAD_MS = 24 * 60 * 60 * 1000;
+function buildSportzxCatalog() {
+    return sportzx.listEvents().then((events) => {
+        const now = Date.now();
+        return events
+            .filter((e) => {
+                const { start } = sportzxTimes(e);
+                return !Number.isNaN(start) && sportzxEventStatus(e, now) !== 'ended' && start <= now + SPORTZX_LOOKAHEAD_MS;
+            })
+            .sort((a, b) => sportzxTimes(a).start - sportzxTimes(b).start)
+            .map(sportzxEventToMeta);
+    });
+}
+
+function buildSportzxMeta(id) {
+    const eventId = id.slice('sportzx:'.length);
+    return sportzx.getEvent(eventId).then((event) => (event ? sportzxEventToMeta(event) : null));
+}
+
+function buildSportzxStreamResponse(id) {
+    const eventId = id.slice('sportzx:'.length);
+    return sportzx.getEventStreams(eventId).then((streams) => ({
+        streams: streams.map((s) => {
+            const behaviorHints = { notWebReady: true };
+            if (s.headers && Object.keys(s.headers).length) behaviorHints.proxyHeaders = { request: s.headers };
+            return { name: s.name, title: s.quality || 'Live', url: s.url, behaviorHints };
+        })
+    })).catch((err) => {
+        console.error(`[addon-server] SportzX stream error for ${id}: ${err.message}`);
+        return { streams: [] };
+    });
+}
+
 // YouTube channel catalogs (providers/youtube-channel.js) - live / upcoming
 // streams, finished race broadcasts and highlight videos. Same Meta Object
 // shape as the other custom catalogs; ids are `ytlive:<videoId>`.
@@ -733,6 +879,9 @@ function resolveCatalog(type, id) {
     if (f1CatalogSeries && type === 'movie') {
         return buildF1Catalog(f1CatalogSeries);
     }
+    if (id === 'sportzx-live' && type === 'tv') {
+        return buildSportzxCatalog();
+    }
     const youtubeCatalog = YOUTUBE_CATALOGS.find((c) => c.id === id && c.type === type);
     if (youtubeCatalog) {
         // A client still holding an older manifest may ask for a switched-
@@ -765,6 +914,9 @@ function resolveMeta(type, id) {
     if (id.startsWith('f1:') && type === 'movie') {
         return buildF1Meta(id);
     }
+    if (id.startsWith('sportzx:') && (type === 'tv' || type === 'movie')) {
+        return buildSportzxMeta(id);
+    }
     if (id.startsWith('ytlive:') && (type === 'tv' || type === 'movie')) {
         return buildYoutubeMeta(id);
     }
@@ -774,12 +926,13 @@ function resolveMeta(type, id) {
     return Promise.resolve(null);
 }
 
-// The custom-catalog id prefixes (indycar:/f1:/ytlive:) have their own stream
+// The custom-catalog id prefixes (indycar:/f1:/sportzx:/ytlive:) have their own stream
 // builders. Returns `null`, not a Promise, when `id` isn't one of these
 // prefixes, so callers can synchronously fall through to the tt-id handler.
 function resolveCustomStreamResponse(id) {
     if (id.startsWith('indycar:')) return buildIndycarStreamResponse(id);
     if (id.startsWith('f1:')) return buildF1StreamResponse(id);
+    if (id.startsWith('sportzx:')) return buildSportzxStreamResponse(id);
     if (id.startsWith('ytlive:')) return buildYoutubeStreamResponse(id);
     return null;
 }
@@ -963,4 +1116,5 @@ server.listen(PORT, () => {
     // already warm.
     indycar.listVideos(null).catch((err) => console.error(`[addon-server] IndyCar cache warm-up failed: ${err.message}`));
     f1.listVideos(null).catch((err) => console.error(`[addon-server] F1 cache warm-up failed: ${err.message}`));
+    sportzx.listEvents().catch((err) => console.error(`[addon-server] SportzX cache warm-up failed: ${err.message}`));
 });

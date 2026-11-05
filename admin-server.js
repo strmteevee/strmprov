@@ -37,8 +37,6 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const aggregate = require('./lib/aggregate');
-// Same DNS fallback as addon-server.js.
-require('./lib/dnsFallback').install();
 const subtitles = require('./lib/subtitles');
 const providerHealth = require('./lib/providerHealth');
 const youtubeChannel = require('./providers/youtube-channel');

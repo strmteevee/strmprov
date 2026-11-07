@@ -79,6 +79,20 @@ const CHANNELS = {
     // DTM uploads each highlight in English and German ("... Race 2
     // Highlights" / "... Highlights Rennen 2") - keep the English one.
     isHighlight: (title) => /highlight/i.test(title) && !/\bRennen\b/i.test(title)
+  },
+  // Full-race playlists rather than channels (a `playlist` id instead of a
+  // `path`): a curated list of full race replays, read as a "races" catalog.
+  // Every item is a full race, so isRace keeps them all - MIN_RACE_SECONDS
+  // still drops any short clip that slips into the playlist.
+  nascar: {
+    label: 'NASCAR',
+    playlist: 'PLtc57NTUizP5puz0sL-X83QHZ-6fQgVR-',
+    isRace: () => true
+  },
+  indycar: {
+    label: 'IndyCar',
+    playlist: 'PL948kNhk-wMuegsHBAlJOb_wUEzXFcLfy',
+    isRace: () => true
   }
 };
 
@@ -285,7 +299,10 @@ function continuationToken(data) {
 }
 
 function fetchFirstPage(channel) {
-  return fetch(`https://www.youtube.com/${channel.path}/${channel.tab || 'streams'}`, { headers: PAGE_HEADERS })
+  const url = channel.playlist
+    ? `https://www.youtube.com/playlist?list=${channel.playlist}`
+    : `https://www.youtube.com/${channel.path}/${channel.tab || 'streams'}`;
+  return fetch(url, { headers: PAGE_HEADERS })
     .then(res => {
       if (!res.ok) throw new Error(`YouTube HTTP ${res.status}`);
       return res.text();

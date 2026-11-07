@@ -49,6 +49,7 @@ const tmdb = require('./lib/tmdb');
 const subtitles = require('./lib/subtitles');
 const indycar = require('./providers/indycar');
 const f1 = require('./providers/f1');
+const fullraces = require('./providers/fullraces');
 const youtubeChannel = require('./providers/youtube-channel');
 
 const PORT = 3100;
@@ -211,7 +212,7 @@ function buildManifest() {
             // already has full TMDB access for every stream lookup, so it can
             // fill that gap itself - a TMDB-backed fallback for any movie/
             // series 'tt' id, not just this addon's own custom catalogs.
-            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'ytlive:'] },
+            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:'] },
             // Scoped to real tt-id content only - neither IndyCar's nor
             // F1/F2/F3/Academy's own custom id schemes have a
             // subtitle concept, and Cinemeta already handles meta for the
@@ -220,7 +221,7 @@ function buildManifest() {
         ],
         types: ['movie', 'series', 'tv'],
         catalogs: buildCatalogs(),
-        idPrefixes: ['tt', 'indycar:', 'f1:', 'ytlive:'],
+        idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:'],
         behaviorHints: { configurable: false, configurationRequired: false }
     };
 }
@@ -255,6 +256,8 @@ function buildCatalogs() {
         { type: 'movie', id: 'f2-highlights', name: 'F2 Race Highlights' },
         { type: 'movie', id: 'f3-highlights', name: 'F3 Race Highlights' },
         { type: 'movie', id: 'f1academy-highlights', name: 'F1 Academy Highlights' },
+        // Full race replays from overtakefans.com (providers/fullraces.js).
+        { type: 'movie', id: 'f1-fullraces', name: 'F1 Full Races' },
         // YouTube channel catalogs - only the channels switched on in the
         // admin dashboard (see YOUTUBE_CATALOGS below).
         ...enabledYoutubeCatalogs().map(({ type, id, name }) => ({ type, id, name }))
@@ -271,14 +274,17 @@ const YOUTUBE_CATALOGS = [
     { type: 'tv', id: 'iracing-live', name: 'iRacing Live', kind: 'live', channel: 'iracing' },
     { type: 'movie', id: 'iracing-races', name: 'iRacing Races', kind: 'races', channel: 'iracing' },
     // DTM has no live streams, only highlight videos.
-    { type: 'movie', id: 'dtm-highlights', name: 'DTM Highlights', kind: 'highlights', channel: 'dtm' }
+    { type: 'movie', id: 'dtm-highlights', name: 'DTM Highlights', kind: 'highlights', channel: 'dtm' },
+    // Full-race replay playlists (see providers/youtube-channel.js).
+    { type: 'movie', id: 'nascar-races', name: 'NASCAR Full Races', kind: 'races', channel: 'nascar' },
+    { type: 'movie', id: 'indycar-fullraces', name: 'IndyCar Full Races', kind: 'races', channel: 'indycar' }
 ];
 function enabledYoutubeCatalogs() {
     return YOUTUBE_CATALOGS.filter((c) => youtubeChannel.isChannelEnabled(c.channel));
 }
 // Clients cache a manifest by version, so switching a channel on/off has to
 // change it: the patch number is the switch file's revision counter.
-const MANIFEST_BASE_VERSION = '1.16';
+const MANIFEST_BASE_VERSION = '1.18';
 function manifestVersion(base) {
     return `${base}.${youtubeChannel.settingsRevision()}`;
 }
@@ -564,6 +570,38 @@ function buildF1StreamResponse(id) {
     });
 }
 
+// FullRaces (overtakefans.com) - full F1 race-weekend session replays. Same
+// video->meta shape and own `fullraces:` id scheme as f1.js above.
+function fullracesVideoToMeta(v) {
+    return {
+        id: `fullraces:${v.id}`,
+        type: 'movie',
+        name: v.title,
+        poster: v.poster,
+        posterShape: 'landscape',
+        description: v.description,
+        releaseInfo: v.timestamp ? new Date(v.timestamp).toISOString().substring(0, 10) : undefined
+    };
+}
+function buildFullracesCatalog(series) {
+    return fullraces.listVideos(series).then((videos) => videos.map(fullracesVideoToMeta));
+}
+function buildFullracesMeta(id) {
+    return fullraces.getVideo(id.slice('fullraces:'.length)).then((v) => (v ? fullracesVideoToMeta(v) : null));
+}
+function buildFullracesStreamResponse(id) {
+    return fullraces.getVideoStreams(id.slice('fullraces:'.length)).then((streams) => ({
+        streams: streams.map((s) => {
+            const stream = { name: s.name, title: s.quality || '', url: s.url, behaviorHints: { notWebReady: true } };
+            if (s.headers && Object.keys(s.headers).length) stream.behaviorHints.proxyHeaders = { request: s.headers };
+            return stream;
+        })
+    })).catch((err) => {
+        console.error(`[addon-server] FullRaces stream error for ${id}: ${err.message}`);
+        return { streams: [] };
+    });
+}
+
 // TMDB-backed meta fallback for real 'tt' ids - added by request after
 // Cinemeta (and every other public meta addon tried) came up empty for a
 // genuinely real, recently-released movie (tt8814476) that just hadn't been
@@ -729,6 +767,9 @@ function resolveCatalog(type, id) {
     if (id === 'indycar-videos' && type === 'movie') {
         return buildIndycarCatalog();
     }
+    if (id === 'f1-fullraces' && type === 'movie') {
+        return buildFullracesCatalog('f1');
+    }
     const f1CatalogSeries = { 'f1-highlights': 'f1', 'f2-highlights': 'f2', 'f3-highlights': 'f3', 'f1academy-highlights': 'academy' }[id];
     if (f1CatalogSeries && type === 'movie') {
         return buildF1Catalog(f1CatalogSeries);
@@ -765,6 +806,9 @@ function resolveMeta(type, id) {
     if (id.startsWith('f1:') && type === 'movie') {
         return buildF1Meta(id);
     }
+    if (id.startsWith('fullraces:') && type === 'movie') {
+        return buildFullracesMeta(id);
+    }
     if (id.startsWith('ytlive:') && (type === 'tv' || type === 'movie')) {
         return buildYoutubeMeta(id);
     }
@@ -780,6 +824,7 @@ function resolveMeta(type, id) {
 function resolveCustomStreamResponse(id) {
     if (id.startsWith('indycar:')) return buildIndycarStreamResponse(id);
     if (id.startsWith('f1:')) return buildF1StreamResponse(id);
+    if (id.startsWith('fullraces:')) return buildFullracesStreamResponse(id);
     if (id.startsWith('ytlive:')) return buildYoutubeStreamResponse(id);
     return null;
 }

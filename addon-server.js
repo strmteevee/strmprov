@@ -50,6 +50,7 @@ const subtitles = require('./lib/subtitles');
 const indycar = require('./providers/indycar');
 const f1 = require('./providers/f1');
 const fullraces = require('./providers/fullraces');
+const daddylive = require('./providers/daddylive');
 const youtubeChannel = require('./providers/youtube-channel');
 
 const PORT = 3100;
@@ -212,7 +213,7 @@ function buildManifest() {
             // already has full TMDB access for every stream lookup, so it can
             // fill that gap itself - a TMDB-backed fallback for any movie/
             // series 'tt' id, not just this addon's own custom catalogs.
-            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:'] },
+            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:', 'daddylive:'] },
             // Scoped to real tt-id content only - neither IndyCar's nor
             // F1/F2/F3/Academy's own custom id schemes have a
             // subtitle concept, and Cinemeta already handles meta for the
@@ -221,7 +222,7 @@ function buildManifest() {
         ],
         types: ['movie', 'series', 'tv'],
         catalogs: buildCatalogs(),
-        idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:'],
+        idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:', 'daddylive:'],
         behaviorHints: { configurable: false, configurationRequired: false }
     };
 }
@@ -258,6 +259,8 @@ function buildCatalogs() {
         { type: 'movie', id: 'f1academy-highlights', name: 'F1 Academy Highlights' },
         // Full race replays from overtakefans.com (providers/fullraces.js).
         { type: 'movie', id: 'f1-fullraces', name: 'F1 Full Races' },
+        // DaddyLive live sport schedule (providers/daddylive.js), 'tv' type.
+        { type: 'tv', id: 'daddylive-sport', name: 'DaddyLive Sport' },
         // YouTube channel catalogs - only the channels switched on in the
         // admin dashboard (see YOUTUBE_CATALOGS below).
         ...enabledYoutubeCatalogs().map(({ type, id, name }) => ({ type, id, name }))
@@ -284,7 +287,7 @@ function enabledYoutubeCatalogs() {
 }
 // Clients cache a manifest by version, so switching a channel on/off has to
 // change it: the patch number is the switch file's revision counter.
-const MANIFEST_BASE_VERSION = '1.18';
+const MANIFEST_BASE_VERSION = '1.19';
 function manifestVersion(base) {
     return `${base}.${youtubeChannel.settingsRevision()}`;
 }
@@ -602,6 +605,51 @@ function buildFullracesStreamResponse(id) {
     });
 }
 
+// DaddyLive (providers/daddylive.js) - live sport. 'tv' type, `daddylive:<id>`
+// where <id> is the upstream channel id. One catalog entry per scheduled
+// event (keyed by its primary channel); meta/streams resolve that channel.
+function daddyliveEventToMeta(ev) {
+    const prefix = ev.time ? `\u{1F534} ${ev.time} ` : '\u{1F534} ';
+    return {
+        id: `daddylive:${ev.id}`,
+        type: 'tv',
+        name: `${prefix}${ev.title}`,
+        description: [ev.category, ev.channels && ev.channels.length > 1
+            ? `${ev.channels.length} feeds` : null].filter(Boolean).join('\n') || undefined,
+        posterShape: 'landscape'
+    };
+}
+function buildDaddyliveCatalog() {
+    return daddylive.listSportEvents().then((events) => events.map(daddyliveEventToMeta)).catch((err) => {
+        console.error(`[addon-server] DaddyLive catalog error: ${err.message}`);
+        return [];
+    });
+}
+function buildDaddyliveMeta(id) {
+    return daddylive.getEvent(id.slice('daddylive:'.length)).then((ev) => {
+        if (!ev) return null;
+        return {
+            id,
+            type: 'tv',
+            name: ev.title,
+            description: [ev.time ? `${ev.time} (UK)` : null, ev.category].filter(Boolean).join('\n') || undefined,
+            posterShape: 'landscape'
+        };
+    }).catch(() => null);
+}
+function buildDaddyliveStreamResponse(id) {
+    return daddylive.getChannelStreams(id.slice('daddylive:'.length)).then((streams) => ({
+        streams: streams.map((s) => {
+            const stream = { name: s.name, title: s.quality || '', url: s.url, behaviorHints: { notWebReady: true } };
+            if (s.headers && Object.keys(s.headers).length) stream.behaviorHints.proxyHeaders = { request: s.headers };
+            return stream;
+        })
+    })).catch((err) => {
+        console.error(`[addon-server] DaddyLive stream error for ${id}: ${err.message}`);
+        return { streams: [] };
+    });
+}
+
 // TMDB-backed meta fallback for real 'tt' ids - added by request after
 // Cinemeta (and every other public meta addon tried) came up empty for a
 // genuinely real, recently-released movie (tt8814476) that just hadn't been
@@ -770,6 +818,9 @@ function resolveCatalog(type, id) {
     if (id === 'f1-fullraces' && type === 'movie') {
         return buildFullracesCatalog('f1');
     }
+    if (id === 'daddylive-sport' && type === 'tv') {
+        return buildDaddyliveCatalog();
+    }
     const f1CatalogSeries = { 'f1-highlights': 'f1', 'f2-highlights': 'f2', 'f3-highlights': 'f3', 'f1academy-highlights': 'academy' }[id];
     if (f1CatalogSeries && type === 'movie') {
         return buildF1Catalog(f1CatalogSeries);
@@ -809,6 +860,9 @@ function resolveMeta(type, id) {
     if (id.startsWith('fullraces:') && type === 'movie') {
         return buildFullracesMeta(id);
     }
+    if (id.startsWith('daddylive:') && type === 'tv') {
+        return buildDaddyliveMeta(id);
+    }
     if (id.startsWith('ytlive:') && (type === 'tv' || type === 'movie')) {
         return buildYoutubeMeta(id);
     }
@@ -825,6 +879,7 @@ function resolveCustomStreamResponse(id) {
     if (id.startsWith('indycar:')) return buildIndycarStreamResponse(id);
     if (id.startsWith('f1:')) return buildF1StreamResponse(id);
     if (id.startsWith('fullraces:')) return buildFullracesStreamResponse(id);
+    if (id.startsWith('daddylive:')) return buildDaddyliveStreamResponse(id);
     if (id.startsWith('ytlive:')) return buildYoutubeStreamResponse(id);
     return null;
 }

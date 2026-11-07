@@ -260,12 +260,10 @@ function buildCatalogs() {
         { type: 'movie', id: 'f1academy-highlights', name: 'F1 Academy Highlights' },
         // Full race replays from overtakefans.com (providers/fullraces.js).
         { type: 'movie', id: 'f1-fullraces', name: 'F1 Full Races' },
-        // The same live sport as rows with a programme guide (see
-        // lib/liveGuide.js). `guide` is OmniStream's: other clients ignore it.
-        { type: 'tv', id: 'strmprov-channels', name: 'Live Channels', guide: true },
         // Combined live guide: DaddyLive + the enabled YouTube live channels,
-        // time-ordered (see buildGuideCatalog).
-        { type: 'tv', id: 'strmprov-guide', name: 'Live Sport Guide' },
+        // time-ordered (see buildGuideCatalog). `events` is OmniStream's, which
+        // draws its metas as event cards (lib/liveGuide.js); other clients ignore it.
+        { type: 'tv', id: 'strmprov-guide', name: 'Live Sport Guide', events: true },
         // DaddyLive live sport schedule (providers/daddylive.js), 'tv' type.
         { type: 'tv', id: 'daddylive-sport', name: 'DaddyLive Sport' },
         // YouTube channel catalogs - only the channels switched on in the
@@ -294,7 +292,7 @@ function enabledYoutubeCatalogs() {
 }
 // Clients cache a manifest by version, so switching a channel on/off has to
 // change it: the patch number is the switch file's revision counter.
-const MANIFEST_BASE_VERSION = '1.24';
+const MANIFEST_BASE_VERSION = '1.25';
 function manifestVersion(base) {
     return `${base}.${youtubeChannel.settingsRevision()}`;
 }
@@ -625,7 +623,9 @@ function daddyliveEventToMeta(ev) {
         name: liveName(ev.status, ev.start, ev.title),
         description: [timing, ev.category, ev.channels && ev.channels.length > 1
             ? `${ev.channels.length} feeds` : null].filter(Boolean).join('\n') || undefined,
-        posterShape: 'landscape'
+        posterShape: 'landscape',
+        genres: [liveGuide.sportOf(ev.category, ev.title)].filter(Boolean),
+        event: liveGuide.eventFields(ev)
     };
 }
 function buildDaddyliveCatalog() {
@@ -667,7 +667,7 @@ function buildDaddyliveStreamResponse(id) {
 const GUIDE_HORIZON_MS = 24 * 60 * 60 * 1000;
 function buildGuideCatalog() {
     const now = Date.now();
-    const ytLive = YOUTUBE_CATALOGS.filter((c) => c.kind === 'live' && youtubeChannel.isChannelEnabled(c.channel));
+    const ytLive = enabledYoutubeCatalogs().filter((c) => c.kind === 'live');
     const sources = [
         daddylive.listSportEvents()
             .then((evs) => evs.map((ev) => ({ status: ev.status, start: ev.start, meta: daddyliveEventToMeta(ev) })))
@@ -682,7 +682,7 @@ function buildGuideCatalog() {
     ];
     const rank = { live: 0, upcoming: 1 };
     return Promise.all(sources).then((lists) => [].concat(...lists)
-        .filter((x) => x.status === 'live' || (x.status === 'upcoming' && (!x.start || x.start - now < GUIDE_HORIZON_MS)))
+        .filter((x) => x.status === 'live' || (x.status === 'upcoming' && x.meta.event && x.start - now < GUIDE_HORIZON_MS))
         .sort((a, b) => (rank[a.status] - rank[b.status]) || ((a.start || Infinity) - (b.start || Infinity)))
         .map((x) => x.meta));
 }
@@ -846,6 +846,12 @@ function youtubeItemToMeta(item) {
         meta.description = [channel, formatDuration(item.durationSeconds)].filter(Boolean).join('\n') || undefined;
         if (item.timestamp) meta.releaseInfo = new Date(item.timestamp).toISOString().substring(0, 10);
         if (item.durationSeconds) meta.runtime = formatDuration(item.durationSeconds);
+    }
+    const event = liveGuide.youtubeEventFields(Object.assign({}, item, { title: youtubeChannel.cleanTitle(item.title) }), channel, youtubeLiveStarts, Date.now());
+    if (event) {
+        meta.event = event;
+        const catalog = YOUTUBE_CATALOGS.find((c) => c.channel === item.channel && c.genre);
+        if (catalog) meta.genres = [catalog.genre];
     }
     return meta;
 }

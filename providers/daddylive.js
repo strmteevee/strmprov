@@ -640,12 +640,29 @@ function liveEventOn(sched, channel) {
 // A channel only shows an event from around its start until the next event
 // scheduled on that same channel begins. Before that it shows something else,
 // often another sport, so its stream isn't a source for this event yet.
-const PRE_START_MS = 15 * 60 * 1000; // pre-match build-up
+//
+// The schedule isn't exact, so an event's sources are offered well around its
+// time: better a channel that's still on something else than no stream at all.
+// (2026-11-07: F1 practice and qualifying were listed an hour early, MotoGP's
+// Sprint 15 minutes, one Ligue 1 match 1h45.)
+const PRE_START_MS = 60 * 60 * 1000;
+const AFTER_END_MS = 2 * 60 * 60 * 1000;
+// Team sports turned out exact to the minute; motorsport is where times are loose,
+// so a later event on the channel only counts once it has surely begun.
+const LOOSE_START_MS = 60 * 60 * 1000;
+function hasLooseTimes(ev) {
+    const lead = (String(ev.title || '').match(/^[^\p{L}\p{N}]+/u) || [''])[0];
+    return /🏎|motorsport/i.test(lead + String(ev.category || ''));
+}
+function inSourceWindow(ev, now) {
+    return now >= ev.ts - PRE_START_MS && now < ev.ts + eventLengthMs(ev) + AFTER_END_MS;
+}
 function feedsOnAir(ev, events, now) {
     const channels = ev.channels || [];
     if (!ev.ts) return channels; // no known start: nothing to go on
-    if (ev.ts > now + PRE_START_MS || now >= ev.ts + eventLengthMs(ev)) return [];
-    return channels.filter((feed) => !events.some((other) => other.ts > ev.ts && other.ts <= now
+    if (!inSourceWindow(ev, now)) return [];
+    const grace = hasLooseTimes(ev) ? LOOSE_START_MS : 0;
+    return channels.filter((feed) => !events.some((other) => other.ts > ev.ts && other.ts + grace <= now
         && (other.channels || []).some((c) => c.channel === feed.channel)));
 }
 
@@ -771,16 +788,23 @@ function probeInBackground(events, now) {
 // Is there something to play for this event: now if it's on, else (before and
 // after) on its channels in general.
 function hasStream(ev, events, now, probes = channelProbes) {
-    const on = ev.ts && ev.ts <= now + PRE_START_MS && now < ev.ts + eventLengthMs(ev);
+    const on = ev.ts && inSourceWindow(ev, now);
     const feeds = on ? feedsOnAir(ev, events, now) : (ev.channels || []);
     return feeds.some((c) => { const p = probes.get(c.channel); return !p || p.playable !== false; });
 }
 
+// How long past its estimated end an event still counts as running. Less than
+// its sources stay available: a list shouldn't be full of what's long over.
+const LIVE_OVERRUN_MS = 30 * 60 * 1000;
+const LOOSE_LIVE_OVERRUN_MS = 2 * 60 * 60 * 1000;
+
 function withStatus(ev, now) {
     const start = ev.ts || 0;
     const end = start ? start + eventLengthMs(ev) : 0;
-    const status = !start ? 'unknown' : now < start ? 'upcoming' : now < end ? 'live' : 'ended';
-    return Object.assign({}, ev, { start, end, status });
+    const rough = hasLooseTimes(ev);
+    const until = end ? end + (rough ? LOOSE_LIVE_OVERRUN_MS : LIVE_OVERRUN_MS) : 0;
+    const status = !start ? 'unknown' : now < start ? 'upcoming' : now < until ? 'live' : 'ended';
+    return Object.assign({}, ev, { start, end, until, rough, playFrom: start ? start - PRE_START_MS : 0, status });
 }
 
 // Every event in the schedule, finished ones too, with its status.

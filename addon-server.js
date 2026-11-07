@@ -294,7 +294,7 @@ function enabledYoutubeCatalogs() {
 }
 // Clients cache a manifest by version, so switching a channel on/off has to
 // change it: the patch number is the switch file's revision counter.
-const MANIFEST_BASE_VERSION = '1.23';
+const MANIFEST_BASE_VERSION = '1.24';
 function manifestVersion(base) {
     return `${base}.${youtubeChannel.settingsRevision()}`;
 }

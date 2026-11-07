@@ -85,8 +85,34 @@ function customLookup(hostname, options, cb) {
     });
 }
 
+// Stream hosts answer bursts with 429 (tossequip.net did, confirmed 2026-11-07),
+// and an event can have 30 feeds of 3 players each. So: a few at a time per host.
+const HOST_LIMIT = 6;
+const hostSlots = new Map(); // host -> { active, waiting: [run] }
+function withHostSlot(host, fn) {
+    if (!hostSlots.has(host)) hostSlots.set(host, { active: 0, waiting: [] });
+    const slot = hostSlots.get(host);
+    return new Promise((resolve, reject) => {
+        const run = () => {
+            slot.active++;
+            fn().then(resolve, reject).then(() => {
+                slot.active--;
+                const next = slot.waiting.shift();
+                if (next) next();
+            });
+        };
+        if (slot.active < HOST_LIMIT) run(); else slot.waiting.push(run);
+    });
+}
+
 // One raw request (no redirect following). Resolves { status, headers, body }.
 function request(url, referer) {
+    let host;
+    try { host = new URL(url).hostname; } catch (e) { return Promise.reject(e); }
+    return withHostSlot(host, () => rawRequest(url, referer));
+}
+
+function rawRequest(url, referer) {
     return new Promise((resolve, reject) => {
         let u;
         try { u = new URL(url); } catch (e) { return reject(e); }
@@ -117,11 +143,20 @@ function request(url, referer) {
     });
 }
 
+const RETRY_429_MAX_S = 4;
+
 // GET with redirect following; throws on a non-2xx final response.
 async function fetchText(url, referer) {
-    let current = url, ref = referer, res;
+    let current = url, ref = referer, res, retried = false;
     for (let i = 0; i < 6; i++) {
         res = await request(current, ref);
+        if (res.status === 429 && !retried) {
+            retried = true;
+            const waitS = Math.min(Number(res.headers['retry-after']) || 1.5, RETRY_429_MAX_S);
+            await new Promise((done) => setTimeout(done, waitS * 1000));
+            i--;
+            continue;
+        }
         if (res.status >= 300 && res.status < 400 && res.headers.location) {
             ref = current;
             current = new URL(res.headers.location, current).href;
@@ -531,8 +566,9 @@ function followEmbedChain(embedUrl, html) {
 const MAX_FEEDS = 30;
 const STREAM_DEADLINE_MS = 20000;
 
-// One player of one channel -> { url, headers } or null.
-function resolvePlayer(base, channelId, srv) {
+// One player of one channel -> { url, headers }, or null when it has no playable
+// stream. Rejects when the lookup itself failed.
+function playerStream(base, channelId, srv) {
     const watch = `${base}/watch.php?id=${channelId}`;
     const pageUrl = `${base}/${srv.id}/stream-${channelId}.php`;
     return fetchText(pageUrl, watch)
@@ -551,7 +587,11 @@ function resolvePlayer(base, channelId, srv) {
                 try { headers.Origin = new URL(referer).origin; } catch { /* ignore */ }
             }
             return { url, headers };
-        })
+        });
+}
+
+function resolvePlayer(base, channelId, srv) {
+    return playerStream(base, channelId, srv)
         .catch((err) => { console.log(`[DaddyLive] ${srv.id} ch${channelId}: ${err.message}`); return null; });
 }
 
@@ -604,7 +644,7 @@ const PRE_START_MS = 15 * 60 * 1000; // pre-match build-up
 function feedsOnAir(ev, events, now) {
     const channels = ev.channels || [];
     if (!ev.ts) return channels; // no known start: nothing to go on
-    if (ev.ts > now + PRE_START_MS) return [];
+    if (ev.ts > now + PRE_START_MS || now >= ev.ts + eventLengthMs(ev)) return [];
     return channels.filter((feed) => !events.some((other) => other.ts > ev.ts && other.ts <= now
         && (other.channels || []).some((c) => c.channel === feed.channel)));
 }
@@ -634,14 +674,111 @@ function getChannelStreams(idPart) {
     });
 }
 
-// DaddyLive only gives a start time. An event counts as live from its start
-// until LIVE_WINDOW_MS later (covers a match incl. pre/post), after which it
-// is dropped from the catalog. `end` is that estimate, used by the guide.
-const LIVE_WINDOW_MS = 1000 * 60 * 60 * 3;
+// DaddyLive only gives a start time, so how long an event runs is an estimate:
+// past it the channel has usually moved on, often to another sport, even with
+// nothing else scheduled on it. A session type in the title goes first, then
+// the sport (the title's leading emoji if it has one, else the category), else
+// DEFAULT_LENGTH_MS.
+const HOUR_MS = 60 * 60 * 1000;
+const DEFAULT_LENGTH_MS = 3 * HOUR_MS;
+const SESSION_LENGTHS = [
+    [/\bfree practice\b|\bpractice\b|\bfp\d\b|warm[- ]?up/i, 1 * HOUR_MS],
+    [/\bqualifying\b/i, 1.25 * HOUR_MS],
+    [/\bsprint\b/i, 1 * HOUR_MS]
+];
+const SPORT_LENGTHS = [
+    [/⚽|soccer/i, 2.5 * HOUR_MS],
+    [/🏀|basketball/i, 2.5 * HOUR_MS],
+    [/🏉|rugby/i, 2.5 * HOUR_MS]
+];
+function eventLengthMs(ev) {
+    const title = String(ev.title || '');
+    const session = SESSION_LENGTHS.find(([pattern]) => pattern.test(title));
+    if (session) return session[1];
+    const lead = (title.match(/^[^\p{L}\p{N}]+/u) || [''])[0];
+    const sportText = /\p{Extended_Pictographic}/u.test(lead) ? lead : String(ev.category || '');
+    const sport = SPORT_LENGTHS.find(([pattern]) => pattern.test(sportText));
+    return sport ? sport[1] : DEFAULT_LENGTH_MS;
+}
+
+// Whether a channel has a stream we can play is found out in the background, so
+// the guide can leave out what has none. A channel that wasn't checked yet, or
+// whose check failed (site down, blocked), counts as playable: only a definite
+// "no stream" hides anything.
+const PROBE_CONCURRENCY = 4;
+const PROBE_HORIZON_MS = 24 * HOUR_MS;
+const PROBE_OK_TTL_MS = 6 * HOUR_MS;
+const PROBE_NONE_TTL_MS = 1 * HOUR_MS;
+const PROBE_RETRY_MS = 5 * 60 * 1000;
+// Embeds of the dembed family, which needs a token proxy (see SCOPE above), the
+// dead path some channels point at, and embedsports.me, whose "Tennis Stream"
+// pages only said "Starting Soon", about another match: no stream we can offer.
+const UNSUPPORTED_EMBED = /ksohls\.ru|\/premiumtv\/|embedsports\.me/i;
+const channelProbes = new Map(); // channel -> { playable: true|false|null, until }
+let probing = false;
+
+// true / false, or null when it couldn't be determined. Only looks at DaddyLive's
+// own player pages for an embed we can use: checking hundreds of channels on the
+// stream hosts themselves gets us rate limited, and then playing fails too.
+function usableEmbed(html, pageUrl) {
+    const embed = extractEmbedUrl(html);
+    if (!embed) return false;
+    try { return !UNSUPPORTED_EMBED.test(new URL(embed, pageUrl).href); } catch { return false; }
+}
+
+function probeChannel(base, channel) {
+    let unsure = false;
+    const watch = `${base}/watch.php?id=${channel}`;
+    const tryPlayer = (i) => {
+        if (i >= SERVERS.length) return unsure ? null : false;
+        const pageUrl = `${base}/${SERVERS[i].id}/stream-${channel}.php`;
+        return fetchText(pageUrl, watch).then((html) => (usableEmbed(html, pageUrl) ? true : tryPlayer(i + 1)), (err) => {
+            if (!/HTTP 404/.test(err.message)) unsure = true;
+            return tryPlayer(i + 1);
+        });
+    };
+    return tryPlayer(0);
+}
+
+// Channels of what is on or starts soon and has no fresh verdict; soonest first.
+function probeInBackground(events, now) {
+    if (probing) return;
+    const fresh = (channel) => { const p = channelProbes.get(channel); return p && p.until > now; };
+    const due = [...new Set(events
+        .filter((ev) => ev.ts && ev.ts < now + PROBE_HORIZON_MS && now < ev.ts + eventLengthMs(ev))
+        .sort((a, b) => a.ts - b.ts)
+        .flatMap((ev) => (ev.channels || []).map((c) => c.channel)))].filter((channel) => !fresh(channel));
+    if (!due.length) return;
+    probing = true;
+    const started = Date.now();
+    const total = due.length;
+    discoverBase().then((base) => {
+        const worker = () => {
+            const channel = due.shift();
+            if (channel === undefined) return Promise.resolve();
+            return probeChannel(base, channel).catch(() => null).then((playable) => {
+                const ttl = playable === true ? PROBE_OK_TTL_MS : playable === false ? PROBE_NONE_TTL_MS : PROBE_RETRY_MS;
+                channelProbes.set(channel, { playable, until: Date.now() + ttl });
+            }).then(worker);
+        };
+        return Promise.all(Array.from({ length: PROBE_CONCURRENCY }, worker));
+    }).catch((err) => console.log(`[DaddyLive] Channel check failed: ${err.message}`)).then(() => {
+        probing = false;
+        console.log(`[DaddyLive] Checked ${total} channels in ${Math.round((Date.now() - started) / 1000)}s`);
+    });
+}
+
+// Is there something to play for this event: now if it's on, else (before and
+// after) on its channels in general.
+function hasStream(ev, events, now, probes = channelProbes) {
+    const on = ev.ts && ev.ts <= now + PRE_START_MS && now < ev.ts + eventLengthMs(ev);
+    const feeds = on ? feedsOnAir(ev, events, now) : (ev.channels || []);
+    return feeds.some((c) => { const p = probes.get(c.channel); return !p || p.playable !== false; });
+}
 
 function withStatus(ev, now) {
     const start = ev.ts || 0;
-    const end = start ? start + LIVE_WINDOW_MS : 0;
+    const end = start ? start + eventLengthMs(ev) : 0;
     const status = !start ? 'unknown' : now < start ? 'upcoming' : now < end ? 'live' : 'ended';
     return Object.assign({}, ev, { start, end, status });
 }
@@ -649,8 +786,9 @@ function withStatus(ev, now) {
 // Every event in the schedule, finished ones too, with its status.
 function listAllEvents() {
     const now = Date.now();
-    return getSchedule().then(({ events }) =>
-        (events || [])
+    return getSchedule().then(({ events }) => {
+        probeInBackground(events || [], now);
+        return (events || [])
             .filter((ev) => ev.channels && ev.channels.length)
             .map((ev) => {
                 const primary = ev.channels[0];
@@ -660,10 +798,11 @@ function listAllEvents() {
                     time: ev.time,
                     ts: ev.ts,
                     category: ev.category,
-                    channels: ev.channels
+                    channels: ev.channels,
+                    playable: hasStream(ev, events, now)
                 }, now);
-            })
-    );
+            });
+    });
 }
 
 // Catalog: one entry per scheduled sport event (keyed by its primary channel),
@@ -671,7 +810,7 @@ function listAllEvents() {
 function listSportEvents() {
     const rank = { live: 0, upcoming: 1, unknown: 2 };
     return listAllEvents().then((events) => events
-        .filter((ev) => ev.status !== 'ended')
+        .filter((ev) => ev.status !== 'ended' && ev.playable)
         .sort((a, b) => (rank[a.status] - rank[b.status]) || ((a.start || Infinity) - (b.start || Infinity))));
 }
 
@@ -704,5 +843,5 @@ module.exports = {
     getEvent,
     getChannelStreams,
     // exported for isolated testing against saved HTML:
-    _parse: { parseHomeSections, parseScheduleDays, extractPlayable, extractEmbedUrl, decryptEconfig, convertUkTime, parseDayDate, feedsOnAir }
+    _parse: { parseHomeSections, parseScheduleDays, extractPlayable, extractEmbedUrl, decryptEconfig, convertUkTime, parseDayDate, feedsOnAir, hasStream, eventLengthMs, usableEmbed }
 };

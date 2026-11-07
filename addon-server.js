@@ -52,6 +52,7 @@ const f1 = require('./providers/f1');
 const fullraces = require('./providers/fullraces');
 const daddylive = require('./providers/daddylive');
 const youtubeChannel = require('./providers/youtube-channel');
+const liveGuide = require('./lib/liveGuide');
 
 const PORT = 3100;
 
@@ -259,6 +260,9 @@ function buildCatalogs() {
         { type: 'movie', id: 'f1academy-highlights', name: 'F1 Academy Highlights' },
         // Full race replays from overtakefans.com (providers/fullraces.js).
         { type: 'movie', id: 'f1-fullraces', name: 'F1 Full Races' },
+        // The same live sport as TV channels with a programme guide (see
+        // lib/liveGuide.js). `guide` is OmniStream's: other clients ignore it.
+        { type: 'tv', id: 'strmprov-channels', name: 'Live Channels', guide: true },
         // Combined live guide: DaddyLive + the enabled YouTube live channels,
         // time-ordered (see buildGuideCatalog).
         { type: 'tv', id: 'strmprov-guide', name: 'Live Sport Guide' },
@@ -275,9 +279,9 @@ function buildCatalogs() {
 // replay catalog. Each channel can be switched off from the admin dashboard,
 // which drops its catalogs from the manifest and empties them.
 const YOUTUBE_CATALOGS = [
-    { type: 'tv', id: 'gtworld-live', name: 'GT World Live', kind: 'live', channel: 'gtworld' },
+    { type: 'tv', id: 'gtworld-live', name: 'GT World Live', kind: 'live', channel: 'gtworld', genre: 'Motorsport' },
     { type: 'movie', id: 'gtworld-races', name: 'GT World Races', kind: 'races', channel: 'gtworld' },
-    { type: 'tv', id: 'iracing-live', name: 'iRacing Live', kind: 'live', channel: 'iracing' },
+    { type: 'tv', id: 'iracing-live', name: 'iRacing Live', kind: 'live', channel: 'iracing', genre: 'Motorsport' },
     { type: 'movie', id: 'iracing-races', name: 'iRacing Races', kind: 'races', channel: 'iracing' },
     // DTM has no live streams, only highlight videos.
     { type: 'movie', id: 'dtm-highlights', name: 'DTM Highlights', kind: 'highlights', channel: 'dtm' },
@@ -290,7 +294,7 @@ function enabledYoutubeCatalogs() {
 }
 // Clients cache a manifest by version, so switching a channel on/off has to
 // change it: the patch number is the switch file's revision counter.
-const MANIFEST_BASE_VERSION = '1.20';
+const MANIFEST_BASE_VERSION = '1.21';
 function manifestVersion(base) {
     return `${base}.${youtubeChannel.settingsRevision()}`;
 }
@@ -631,9 +635,12 @@ function buildDaddyliveCatalog() {
     });
 }
 function buildDaddyliveMeta(id) {
-    return daddylive.getEvent(id.slice('daddylive:'.length))
-        .then((ev) => (ev ? Object.assign(daddyliveEventToMeta(ev), { id }) : null))
-        .catch(() => null);
+    const event = () => daddylive.getEvent(id.slice('daddylive:'.length))
+        .then((ev) => (ev ? Object.assign(daddyliveEventToMeta(ev), { id }) : null));
+    // A bare "<channel>" is a channel from Live Channels, when it has a schedule now.
+    const channel = id.includes(':', 'daddylive:'.length) ? Promise.resolve(null)
+        : daddylive.listSportEvents().then((events) => liveGuide.channelsFromEvents(events, Date.now()).find((m) => m.id === id) || null);
+    return channel.then((meta) => meta || event()).catch(() => null);
 }
 function buildDaddyliveStreamResponse(id) {
     return daddylive.getChannelStreams(id.slice('daddylive:'.length)).then((streams) => ({
@@ -674,6 +681,23 @@ function buildGuideCatalog() {
         .filter((x) => x.status === 'live' || (x.status === 'upcoming' && (!x.start || x.start - now < GUIDE_HORIZON_MS)))
         .sort((a, b) => (rank[a.status] - rank[b.status]) || ((a.start || Infinity) - (b.start || Infinity)))
         .map((x) => x.meta));
+}
+
+// Live Channels (lib/liveGuide.js): the YouTube live channels switched on in
+// the admin dashboard on top, then DaddyLive's. A failing source just drops out.
+const YOUTUBE_CHANNEL_ID = 'ytlive:channel:';
+const youtubeLiveStarts = new Map(); // videoId -> when it started, see channelFromYoutube
+function buildYoutubeChannel(catalog) {
+    const row = { id: YOUTUBE_CHANNEL_ID + catalog.channel, name: youtubeChannel.CHANNELS[catalog.channel].label, genre: catalog.genre };
+    return youtubeChannel.listLive(catalog.channel).catch(() => [])
+        .then((items) => liveGuide.channelFromYoutube(row, items, youtubeLiveStarts, Date.now()));
+}
+function buildChannelsCatalog() {
+    const ytLive = enabledYoutubeCatalogs().filter((c) => c.kind === 'live');
+    return Promise.all([
+        Promise.all(ytLive.map(buildYoutubeChannel)),
+        daddylive.listSportEvents().catch(() => [])
+    ]).then(([youtube, events]) => [...youtube, ...liveGuide.channelsFromEvents(events, Date.now())]);
 }
 
 // TMDB-backed meta fallback for real 'tt' ids - added by request after
@@ -829,11 +853,25 @@ function buildYoutubeCatalog(kind, channelKey) {
 }
 
 function buildYoutubeMeta(id) {
+    if (id.startsWith(YOUTUBE_CHANNEL_ID)) {
+        const catalog = enabledYoutubeCatalogs().find((c) => c.kind === 'live' && YOUTUBE_CHANNEL_ID + c.channel === id);
+        return catalog ? buildYoutubeChannel(catalog) : Promise.resolve(null);
+    }
     return youtubeChannel.getItem(id.slice('ytlive:'.length)).then((item) => (item ? youtubeItemToMeta(item) : null));
 }
 
+// A channel from Live Channels: whatever it has live now, most watched first.
+const YOUTUBE_CHANNEL_MAX_LIVE = 3;
+function youtubeChannelStreams(channelKey) {
+    return youtubeChannel.listLive(channelKey).then((items) => Promise.all(
+        items.filter((i) => i.status === 'live').slice(0, YOUTUBE_CHANNEL_MAX_LIVE).map((i) => youtubeChannel.getStreams(i.id))
+    )).then((lists) => [].concat(...lists));
+}
+
 function buildYoutubeStreamResponse(id) {
-    return youtubeChannel.getStreams(id.slice('ytlive:'.length)).then((streams) => ({ streams })).catch((err) => {
+    const streams = id.startsWith(YOUTUBE_CHANNEL_ID) ? youtubeChannelStreams(id.slice(YOUTUBE_CHANNEL_ID.length))
+        : youtubeChannel.getStreams(id.slice('ytlive:'.length));
+    return streams.then((list) => ({ streams: list })).catch((err) => {
         console.error(`[addon-server] YouTube stream error for ${id}: ${err.message}`);
         return { streams: [] };
     });
@@ -867,6 +905,9 @@ function resolveCatalog(type, id) {
     }
     if (id === 'f1-fullraces' && type === 'movie') {
         return buildFullracesCatalog('f1');
+    }
+    if (id === 'strmprov-channels' && type === 'tv') {
+        return buildChannelsCatalog();
     }
     if (id === 'strmprov-guide' && type === 'tv') {
         return buildGuideCatalog();

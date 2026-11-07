@@ -587,16 +587,29 @@ function resolveFeeds(feeds) {
     });
 }
 
-// id part "<channel>:<eventKey>" (or a bare legacy "<channel>") -> streams for
-// every feed of that event; falls back to just the channel if the event is gone.
+// What's live on `channel` now: if several, the one that started last.
+function liveEventOn(sched, channel) {
+    const now = Date.now();
+    return (sched.events || [])
+        .filter((ev) => ev.channels && ev.channels.some((f) => f.channel === channel))
+        .map((ev) => withStatus(ev, now))
+        .filter((ev) => ev.status === 'live')
+        .sort((a, b) => b.start - a.start)[0] || null;
+}
+
+// id part "<channel>:<eventKey>" -> streams for every feed of that event; falls
+// back to just the channel if the event is gone. A bare "<channel>" (a channel in
+// the guide) -> that channel first, then the other feeds of what's live on it.
 function getChannelStreams(idPart) {
     const [chStr, key] = String(idPart).split(':');
     const channel = parseInt(chStr, 10);
     return getSchedule().then((sched) => {
-        const ev = key && sched.byKey ? sched.byKey.get(key) : null;
+        const ev = key ? (sched.byKey ? sched.byKey.get(key) : null) : liveEventOn(sched, channel);
         let feeds = ev && ev.channels && ev.channels.length ? ev.channels.slice() : [];
+        if (!key) feeds.sort((a, b) => (b.channel === channel) - (a.channel === channel));
         if (Number.isFinite(channel) && channel > 0 && !feeds.some((f) => f.channel === channel)) {
-            feeds.unshift({ channel, name: '' });
+            const known = sched.byChannel && sched.byChannel.get(channel);
+            feeds.unshift({ channel, name: known ? known.channelName : '' });
         }
         if (!feeds.length) return [];
         return resolveFeeds(feeds);

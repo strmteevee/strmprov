@@ -597,14 +597,32 @@ function liveEventOn(sched, channel) {
         .sort((a, b) => b.start - a.start)[0] || null;
 }
 
-// id part "<channel>:<eventKey>" -> streams for every feed of that event; falls
-// back to just the channel if the event is gone. A bare "<channel>" (a channel in
+// A channel only shows an event from around its start until the next event
+// scheduled on that same channel begins. Before that it shows something else,
+// often another sport, so its stream isn't a source for this event yet.
+const PRE_START_MS = 15 * 60 * 1000; // pre-match build-up
+function feedsOnAir(ev, events, now) {
+    const channels = ev.channels || [];
+    if (!ev.ts) return channels; // no known start: nothing to go on
+    if (ev.ts > now + PRE_START_MS) return [];
+    return channels.filter((feed) => !events.some((other) => other.ts > ev.ts && other.ts <= now
+        && (other.channels || []).some((c) => c.channel === feed.channel)));
+}
+
+// id part "<channel>:<eventKey>" -> streams for the feeds that can be showing
+// that event now; falls back to just the channel if the event is gone. A bare
+// "<channel>" (a channel in
 // the guide) -> that channel first, then the other feeds of what's live on it.
 function getChannelStreams(idPart) {
     const [chStr, key] = String(idPart).split(':');
     const channel = parseInt(chStr, 10);
     return getSchedule().then((sched) => {
         const ev = key ? (sched.byKey ? sched.byKey.get(key) : null) : liveEventOn(sched, channel);
+        // An event picked by id only offers what can be showing it right now.
+        if (key && ev) {
+            const onAir = feedsOnAir(ev, sched.events || [], Date.now());
+            return onAir.length ? resolveFeeds(onAir) : [];
+        }
         let feeds = ev && ev.channels && ev.channels.length ? ev.channels.slice() : [];
         if (!key) feeds.sort((a, b) => (b.channel === channel) - (a.channel === channel));
         if (Number.isFinite(channel) && channel > 0 && !feeds.some((f) => f.channel === channel)) {
@@ -686,5 +704,5 @@ module.exports = {
     getEvent,
     getChannelStreams,
     // exported for isolated testing against saved HTML:
-    _parse: { parseHomeSections, parseScheduleDays, extractPlayable, extractEmbedUrl, decryptEconfig, convertUkTime, parseDayDate }
+    _parse: { parseHomeSections, parseScheduleDays, extractPlayable, extractEmbedUrl, decryptEconfig, convertUkTime, parseDayDate, feedsOnAir }
 };

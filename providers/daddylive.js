@@ -528,7 +528,7 @@ function followEmbedChain(embedUrl, html) {
 // or languages); each feed has up to three direct-play players. All
 // (feed, player) pairs are resolved in parallel, capped at MAX_FEEDS feeds,
 // and whatever has resolved by STREAM_DEADLINE_MS is returned.
-const MAX_FEEDS = 4;
+const MAX_FEEDS = 30;
 const STREAM_DEADLINE_MS = 20000;
 
 // One player of one channel -> { url, headers } or null.
@@ -628,11 +628,9 @@ function withStatus(ev, now) {
     return Object.assign({}, ev, { start, end, status });
 }
 
-// Catalog: one entry per scheduled sport event (keyed by its primary channel),
-// live first, then upcoming by start time; finished events are left out.
-function listSportEvents() {
+// Every event in the schedule, finished ones too, with its status.
+function listAllEvents() {
     const now = Date.now();
-    const rank = { live: 0, upcoming: 1, unknown: 2 };
     return getSchedule().then(({ events }) =>
         (events || [])
             .filter((ev) => ev.channels && ev.channels.length)
@@ -647,9 +645,16 @@ function listSportEvents() {
                     channels: ev.channels
                 }, now);
             })
-            .filter((ev) => ev.status !== 'ended')
-            .sort((a, b) => (rank[a.status] - rank[b.status]) || ((a.start || Infinity) - (b.start || Infinity)))
     );
+}
+
+// Catalog: one entry per scheduled sport event (keyed by its primary channel),
+// live first, then upcoming by start time; finished events are left out.
+function listSportEvents() {
+    const rank = { live: 0, upcoming: 1, unknown: 2 };
+    return listAllEvents().then((events) => events
+        .filter((ev) => ev.status !== 'ended')
+        .sort((a, b) => (rank[a.status] - rank[b.status]) || ((a.start || Infinity) - (b.start || Infinity))));
 }
 
 // Meta for one id part "<channel>:<eventKey>" (bare "<channel>" still works
@@ -676,6 +681,7 @@ function getEvent(idPart) {
 
 module.exports = {
     discoverBase,
+    listAllEvents,
     listSportEvents,
     getEvent,
     getChannelStreams,

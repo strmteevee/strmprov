@@ -260,7 +260,7 @@ function buildCatalogs() {
         { type: 'movie', id: 'f1academy-highlights', name: 'F1 Academy Highlights' },
         // Full race replays from overtakefans.com (providers/fullraces.js).
         { type: 'movie', id: 'f1-fullraces', name: 'F1 Full Races' },
-        // The same live sport as TV channels with a programme guide (see
+        // The same live sport as rows with a programme guide (see
         // lib/liveGuide.js). `guide` is OmniStream's: other clients ignore it.
         { type: 'tv', id: 'strmprov-channels', name: 'Live Channels', guide: true },
         // Combined live guide: DaddyLive + the enabled YouTube live channels,
@@ -294,7 +294,7 @@ function enabledYoutubeCatalogs() {
 }
 // Clients cache a manifest by version, so switching a channel on/off has to
 // change it: the patch number is the switch file's revision counter.
-const MANIFEST_BASE_VERSION = '1.21';
+const MANIFEST_BASE_VERSION = '1.22';
 function manifestVersion(base) {
     return `${base}.${youtubeChannel.settingsRevision()}`;
 }
@@ -635,15 +635,19 @@ function buildDaddyliveCatalog() {
     });
 }
 function buildDaddyliveMeta(id) {
-    const event = () => daddylive.getEvent(id.slice('daddylive:'.length))
-        .then((ev) => (ev ? Object.assign(daddyliveEventToMeta(ev), { id }) : null));
-    // A bare "<channel>" is a channel from Live Channels, when it has a schedule now.
-    const channel = id.includes(':', 'daddylive:'.length) ? Promise.resolve(null)
-        : daddylive.listSportEvents().then((events) => liveGuide.channelsFromEvents(events, Date.now()).find((m) => m.id === id) || null);
-    return channel.then((meta) => meta || event()).catch(() => null);
+    if (id.startsWith(liveGuide.ROW_ID)) {
+        return daddylive.listAllEvents().then((events) => liveGuide.rowMeta(events, id, Date.now())).catch(() => null);
+    }
+    return daddylive.getEvent(id.slice('daddylive:'.length))
+        .then((ev) => (ev ? Object.assign(daddyliveEventToMeta(ev), { id }) : null))
+        .catch(() => null);
 }
 function buildDaddyliveStreamResponse(id) {
-    return daddylive.getChannelStreams(id.slice('daddylive:'.length)).then((streams) => ({
+    // A row of Live Channels: every feed of what's on it.
+    const part = id.startsWith(liveGuide.ROW_ID)
+        ? daddylive.listAllEvents().then((events) => liveGuide.rowEventId(events, id, Date.now()))
+        : Promise.resolve(id.slice('daddylive:'.length));
+    return part.then((eventId) => (eventId ? daddylive.getChannelStreams(eventId) : [])).then((streams) => ({
         streams: streams.map((s) => {
             const stream = { name: s.name, title: s.quality || '', url: s.url, behaviorHints: { notWebReady: true } };
             if (s.headers && Object.keys(s.headers).length) stream.behaviorHints.proxyHeaders = { request: s.headers };
@@ -684,7 +688,8 @@ function buildGuideCatalog() {
 }
 
 // Live Channels (lib/liveGuide.js): the YouTube live channels switched on in
-// the admin dashboard on top, then DaddyLive's. A failing source just drops out.
+// the admin dashboard on top, then DaddyLive's competitions. A failing source
+// just drops out.
 const YOUTUBE_CHANNEL_ID = 'ytlive:channel:';
 const youtubeLiveStarts = new Map(); // videoId -> when it started, see channelFromYoutube
 function buildYoutubeChannel(catalog) {
@@ -696,8 +701,8 @@ function buildChannelsCatalog() {
     const ytLive = enabledYoutubeCatalogs().filter((c) => c.kind === 'live');
     return Promise.all([
         Promise.all(ytLive.map(buildYoutubeChannel)),
-        daddylive.listSportEvents().catch(() => [])
-    ]).then(([youtube, events]) => [...youtube, ...liveGuide.channelsFromEvents(events, Date.now())]);
+        daddylive.listAllEvents().catch(() => [])
+    ]).then(([youtube, events]) => [...youtube, ...liveGuide.rowsFromEvents(events, Date.now())]);
 }
 
 // TMDB-backed meta fallback for real 'tt' ids - added by request after

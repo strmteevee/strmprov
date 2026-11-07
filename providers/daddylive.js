@@ -29,6 +29,7 @@
 const https = require('https');
 const http = require('http');
 const dns = require('dns');
+const crypto = require('crypto');
 
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const SEED_BASES = ['https://dlive.sx', 'https://thedaddy.pk', 'https://thedaddy.li'];
@@ -36,6 +37,11 @@ const BASE_OVERRIDE = (process.env.DLHD_BASE || '').replace(/\/+$/, '');
 const FETCH_TIMEOUT_MS = 15000;
 const BASE_TTL_MS = 1000 * 60 * 60;        // re-discover the live domain hourly
 const SCHEDULE_TTL_MS = 1000 * 60 * 2;     // schedule refreshes every 2 min
+// DaddyLive lists schedule times in UK (Europe/London) wall-clock. We convert
+// to a target timezone for display - defaults to Europe/Amsterdam, override
+// with env DLHD_TZ (e.g. the Pi's own zone). Handles DST on both sides.
+const SRC_TZ = 'Europe/London';
+const TARGET_TZ = process.env.DLHD_TZ || process.env.STRMPROV_TZ || 'Europe/Amsterdam';
 // Direct-play players only (see SCOPE above). Order = resolve preference.
 // casting/player take bare requests; cast needs the embed page as Referer.
 const SERVERS = [
@@ -138,6 +144,9 @@ function followRedirects(url, depth) {
         if (res.status >= 300 && res.status < 400 && loc) {
             return followRedirects(new URL(loc, url).href, depth + 1);
         }
+        // A blocked/erroring hop (e.g. a 403 from a filter) is not a usable
+        // base - fail so discovery tries the next seed instead of caching it.
+        if (res.status >= 400) throw new Error(`HTTP ${res.status} at ${url}`);
         return url;
     });
 }
@@ -193,22 +202,22 @@ function parseChannels(block) {
     return channels;
 }
 
-function parseEvents(slice) {
+function parseEvents(slice, date) {
     const events = [];
     for (const block of sliceBlocks(slice, /<div class="schedule__event["\s]/g)) {
         const time = ((block.match(/data-time="([^"]*)"/i) || [])[1] || '').trim();
         const title = cleanText((block.match(/class="schedule__eventTitle"[^>]*>([\s\S]*?)<\/span>/i) || [])[1] || '');
         if (!time && !title) continue;
         const channels = parseChannels(block);
-        if (channels.length) events.push({ time, title, channels });
+        if (channels.length) events.push({ time, date, title, channels });
     }
     return events;
 }
 
-function parseCategories(slice) {
+function parseCategories(slice, date) {
     const cats = [];
     for (const block of sliceBlocks(slice, /<div class="schedule__category["\s]/g)) {
-        const events = parseEvents(block);
+        const events = parseEvents(block, date);
         if (!events.length) continue;
         const name = cleanText((block.match(/class="[^"]*card__meta[^"]*"[^>]*>([\s\S]*?)<\/div>/i) || [])[1] || '');
         cats.push({ name: name || 'Events', events });
@@ -219,8 +228,10 @@ function parseCategories(slice) {
 function parseScheduleDays(html) {
     const days = [];
     for (const block of sliceBlocks(html, /<div class="schedule__day["\s]/g)) {
-        const categories = parseCategories(block);
-        if (categories.length) days.push({ categories });
+        const title = cleanText((block.match(/class="schedule__dayTitle"[^>]*>([\s\S]*?)<\/div>/i) || [])[1] || '');
+        const date = parseDayDate(title);
+        const categories = parseCategories(block, date);
+        if (categories.length) days.push({ date, categories });
     }
     return days;
 }
@@ -242,6 +253,60 @@ function parseSchedulePayload(text) {
     return parseScheduleDays(html);
 }
 
+// --- Timezone conversion (UK schedule time -> TARGET_TZ) -------------------
+
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+// "Saturday 7th Nov 2026 - Schedule Time UK GMT" / "Saturday, November 7, 2026"
+// -> "2026-11-07". Returns null when no date is recognisable.
+function parseDayDate(title) {
+    const iso = (y, m, d) => (m >= 0 && d >= 1 && d <= 31 && y >= 2000)
+        ? `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}` : null;
+    let m = String(title || '').match(/(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?([A-Za-z]{3,9})\.?\s+(\d{4})/);
+    if (m) return iso(Number(m[3]), MONTHS.indexOf(m[2].toLowerCase().slice(0, 3)), Number(m[1]));
+    m = String(title || '').match(/([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})/);
+    if (m) return iso(Number(m[3]), MONTHS.indexOf(m[1].toLowerCase().slice(0, 3)), Number(m[2]));
+    return null;
+}
+
+// Offset (ms) of `tz` relative to UTC at a given instant.
+function tzOffsetMs(instantMs, tz) {
+    const parts = {};
+    new Intl.DateTimeFormat('en-US', {
+        timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit'
+    }).formatToParts(new Date(instantMs)).forEach((p) => { parts[p.type] = p.value; });
+    const asUtc = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour % 24, +parts.minute, +parts.second);
+    return asUtc - instantMs;
+}
+
+// UTC instant of a wall-clock time in `tz` (two passes cover DST edges).
+function wallTimeToUtc(y, mo, d, h, mi, tz) {
+    const guess = Date.UTC(y, mo, d, h, mi);
+    const first = guess - tzOffsetMs(guess, tz);
+    return guess - tzOffsetMs(first, tz);
+}
+
+// UK "HH:MM" on `dateStr` (YYYY-MM-DD, or today when missing) -> { time, ts }
+// in TARGET_TZ. Unparseable times pass through unchanged.
+function convertUkTime(dateStr, hhmm) {
+    const tm = /^(\d{1,2}):(\d{2})/.exec(String(hhmm || '').trim());
+    if (!tm) return { time: hhmm || '', ts: 0 };
+    let y, mo, d;
+    const dm = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr || '');
+    if (dm) { y = +dm[1]; mo = +dm[2] - 1; d = +dm[3]; } else {
+        // "today" as seen in the UK, so a late-evening event isn't shifted a day.
+        const p = {};
+        new Intl.DateTimeFormat('en-US', { timeZone: SRC_TZ, year: 'numeric', month: '2-digit', day: '2-digit' })
+            .formatToParts(new Date()).forEach((x) => { p[x.type] = x.value; });
+        y = +p.year; mo = +p.month - 1; d = +p.day;
+    }
+    const ts = wallTimeToUtc(y, mo, d, +tm[1], +tm[2], SRC_TZ);
+    const time = new Intl.DateTimeFormat('en-GB', { timeZone: TARGET_TZ, hourCycle: 'h23', hour: '2-digit', minute: '2-digit' })
+        .format(new Date(ts));
+    return { time, ts };
+}
+
 // Categories that aren't live sport feeds we want to surface.
 const SKIP_CATEGORY_RE = /tv shows?|24\/?7/i;
 
@@ -260,17 +325,29 @@ function crawlSchedule() {
                 // event's channel feeds, and index channelId -> event.
                 const events = [];
                 const byChannel = new Map();
-                const seenEvent = new Set();
+                const byKey = new Map();
                 perSection.forEach((days) => {
                     days.forEach((day) => {
                         day.categories.forEach((cat) => {
                             if (SKIP_CATEGORY_RE.test(cat.name)) return;
                             cat.events.forEach((ev) => {
-                                const key = `${ev.time}|${ev.title}`;
-                                if (seenEvent.has(key)) return;
-                                seenEvent.add(key);
-                                const entry = { time: ev.time, title: ev.title, category: cat.name, channels: ev.channels };
+                                // Stable per-event key: one channel carries many
+                                // events a day, so the channel alone can't be the id.
+                                const key = crypto.createHash('sha1')
+                                    .update(`${ev.date || ''}|${ev.time}|${ev.title}`).digest('hex').slice(0, 10);
+                                if (byKey.has(key)) return;
+                                const local = convertUkTime(ev.date, ev.time);
+                                const entry = {
+                                    key,
+                                    time: local.time,       // display time in TARGET_TZ
+                                    ts: local.ts,           // UTC start instant (0 if unknown)
+                                    ukTime: ev.time,        // original schedule value
+                                    title: ev.title,
+                                    category: cat.name,
+                                    channels: ev.channels
+                                };
                                 events.push(entry);
+                                byKey.set(key, entry);
                                 ev.channels.forEach((ch) => {
                                     if (!byChannel.has(ch.channel)) byChannel.set(ch.channel, { event: entry, channelName: ch.name });
                                 });
@@ -278,7 +355,7 @@ function crawlSchedule() {
                         });
                     });
                 });
-                return { events, byChannel };
+                return { events, byChannel, byKey };
             });
         })
     );
@@ -290,13 +367,14 @@ function getSchedule() {
     }
     if (scheduleCache.inflight) return scheduleCache.inflight;
     scheduleCache.inflight = crawlSchedule().then((data) => {
-        scheduleCache = { at: Date.now(), byChannel: data.byChannel, events: data.events, inflight: null };
+        scheduleCache = { at: Date.now(), byChannel: data.byChannel, byKey: data.byKey, events: data.events, inflight: null };
         return scheduleCache;
     }).catch((err) => {
         scheduleCache.inflight = null;
+        baseCache = { url: null, at: 0, inflight: null }; // re-discover next time
         console.log(`[DaddyLive] Schedule crawl failed: ${err.message}`);
         // Serve stale data if we have any, else empty.
-        return scheduleCache.byChannel ? scheduleCache : { events: [], byChannel: new Map() };
+        return scheduleCache.byChannel ? scheduleCache : { events: [], byChannel: new Map(), byKey: new Map() };
     });
     return scheduleCache.inflight;
 }
@@ -446,75 +524,140 @@ function followEmbedChain(embedUrl, html) {
 
 // --- Public API ------------------------------------------------------------
 
-// Resolve one channelId to direct-play HLS streams (one per working player).
-function getChannelStreams(channelId) {
+// An event usually has several feeds (channels, often different broadcasters
+// or languages); each feed has up to three direct-play players. All
+// (feed, player) pairs are resolved in parallel, capped at MAX_FEEDS feeds,
+// and whatever has resolved by STREAM_DEADLINE_MS is returned.
+const MAX_FEEDS = 4;
+const STREAM_DEADLINE_MS = 20000;
+
+// One player of one channel -> { url, headers } or null.
+function resolvePlayer(base, channelId, srv) {
+    const watch = `${base}/watch.php?id=${channelId}`;
+    const pageUrl = `${base}/${srv.id}/stream-${channelId}.php`;
+    return fetchText(pageUrl, watch)
+        .then((pageHtml) => {
+            const embed = extractEmbedUrl(pageHtml);
+            if (!embed) throw new Error('no embed iframe');
+            const embedUrl = new URL(embed, pageUrl).href;
+            return fetchText(embedUrl, pageUrl).then((embedHtml) => followEmbedChain(embedUrl, embedHtml));
+        })
+        .then(({ html, referer }) => {
+            const url = extractPlayable(html);
+            if (!url) return null;
+            const headers = { 'User-Agent': UA };
+            if (srv.referer) {
+                headers.Referer = referer;
+                try { headers.Origin = new URL(referer).origin; } catch { /* ignore */ }
+            }
+            return { url, headers };
+        })
+        .catch((err) => { console.log(`[DaddyLive] ${srv.id} ch${channelId}: ${err.message}`); return null; });
+}
+
+// feeds: [{ channel, name }] -> streams, ordered by feed then player.
+function resolveFeeds(feeds) {
     return discoverBase().then((base) => {
-        const watch = `${base}/watch.php?id=${channelId}`;
-        const results = [];
-        const seenUrls = new Set();
-        const tryServer = (i) => {
-            if (i >= SERVERS.length) return results;
-            const srv = SERVERS[i];
-            const pageUrl = `${base}/${srv.id}/stream-${channelId}.php`;
-            return fetchText(pageUrl, watch)
-                .then((pageHtml) => {
-                    const embed = extractEmbedUrl(pageHtml);
-                    if (!embed) throw new Error('no embed iframe');
-                    const embedUrl = new URL(embed, pageUrl).href;
-                    return fetchText(embedUrl, pageUrl).then((embedHtml) => followEmbedChain(embedUrl, embedHtml));
-                })
-                .then(({ html, referer }) => {
-                    const url = extractPlayable(html);
-                    if (url && !seenUrls.has(url)) {
-                        seenUrls.add(url);
-                        const headers = { 'User-Agent': UA };
-                        if (srv.referer) {
-                            headers.Referer = referer;
-                            try { headers.Origin = new URL(referer).origin; } catch { /* ignore */ }
-                        }
-                        results.push({ name: `DaddyLive ${srv.label}`, url, quality: 'Live (HLS)', headers });
-                    }
-                })
-                .catch((err) => { console.log(`[DaddyLive] ${srv.id} ch${channelId}: ${err.message}`); })
-                .then(() => tryServer(i + 1));
-        };
-        return Promise.resolve(tryServer(0)).then(() => results);
+        const found = [];
+        const jobs = [];
+        feeds.slice(0, MAX_FEEDS).forEach((feed, fi) => {
+            SERVERS.forEach((srv, si) => {
+                jobs.push(resolvePlayer(base, feed.channel, srv).then((r) => {
+                    if (r) found.push({ order: fi * SERVERS.length + si, feed, srv, r });
+                }));
+            });
+        });
+        let timer;
+        const deadline = new Promise((res) => { timer = setTimeout(res, STREAM_DEADLINE_MS); });
+        return Promise.race([Promise.all(jobs), deadline]).then(() => {
+            clearTimeout(timer);
+            const seen = new Set();
+            return found.sort((a, b) => a.order - b.order)
+                .filter((x) => (seen.has(x.r.url) ? false : (seen.add(x.r.url), true)))
+                .map((x) => ({
+                    name: `DaddyLive ${x.srv.label}`,
+                    url: x.r.url,
+                    quality: [x.feed.name, 'Live (HLS)'].filter(Boolean).join(' · '),
+                    headers: x.r.headers
+                }));
+        });
     }).catch((err) => {
-        console.log(`[DaddyLive] getChannelStreams(${channelId}) failed: ${err.message}`);
+        console.log(`[DaddyLive] resolveFeeds failed: ${err.message}`);
         return [];
     });
 }
 
-// Catalog: one entry per scheduled sport event (keyed by its primary channel).
+// id part "<channel>:<eventKey>" (or a bare legacy "<channel>") -> streams for
+// every feed of that event; falls back to just the channel if the event is gone.
+function getChannelStreams(idPart) {
+    const [chStr, key] = String(idPart).split(':');
+    const channel = parseInt(chStr, 10);
+    return getSchedule().then((sched) => {
+        const ev = key && sched.byKey ? sched.byKey.get(key) : null;
+        let feeds = ev && ev.channels && ev.channels.length ? ev.channels.slice() : [];
+        if (Number.isFinite(channel) && channel > 0 && !feeds.some((f) => f.channel === channel)) {
+            feeds.unshift({ channel, name: '' });
+        }
+        if (!feeds.length) return [];
+        return resolveFeeds(feeds);
+    });
+}
+
+// DaddyLive only gives a start time. An event counts as live from its start
+// until LIVE_WINDOW_MS later (covers a match incl. pre/post), after which it
+// is dropped from the catalog. `end` is that estimate, used by the guide.
+const LIVE_WINDOW_MS = 1000 * 60 * 60 * 3;
+
+function withStatus(ev, now) {
+    const start = ev.ts || 0;
+    const end = start ? start + LIVE_WINDOW_MS : 0;
+    const status = !start ? 'unknown' : now < start ? 'upcoming' : now < end ? 'live' : 'ended';
+    return Object.assign({}, ev, { start, end, status });
+}
+
+// Catalog: one entry per scheduled sport event (keyed by its primary channel),
+// live first, then upcoming by start time; finished events are left out.
 function listSportEvents() {
+    const now = Date.now();
+    const rank = { live: 0, upcoming: 1, unknown: 2 };
     return getSchedule().then(({ events }) =>
         (events || [])
             .filter((ev) => ev.channels && ev.channels.length)
             .map((ev) => {
                 const primary = ev.channels[0];
-                return {
-                    id: primary.channel,
+                return withStatus({
+                    id: `${primary.channel}:${ev.key}`,
                     title: ev.title || primary.name,
                     time: ev.time,
+                    ts: ev.ts,
                     category: ev.category,
                     channels: ev.channels
-                };
+                }, now);
             })
+            .filter((ev) => ev.status !== 'ended')
+            .sort((a, b) => (rank[a.status] - rank[b.status]) || ((a.start || Infinity) - (b.start || Infinity)))
     );
 }
 
-// Meta for one channelId (looked up in the cached schedule).
-function getEvent(channelId) {
-    return getSchedule().then(({ byChannel }) => {
-        const hit = byChannel && byChannel.get(Number(channelId));
-        if (!hit) return null;
-        return {
-            id: Number(channelId),
-            title: hit.event.title || hit.channelName,
-            time: hit.event.time,
-            category: hit.event.category,
-            channelName: hit.channelName
-        };
+// Meta for one id part "<channel>:<eventKey>" (bare "<channel>" still works
+// for ids from before the per-event key, via the channel's first event).
+function getEvent(idPart) {
+    const [chStr, key] = String(idPart).split(':');
+    return getSchedule().then(({ byChannel, byKey }) => {
+        let event = key && byKey ? byKey.get(key) : null;
+        if (!event) {
+            const hit = byChannel && byChannel.get(Number(chStr));
+            event = hit ? hit.event : null;
+        }
+        if (!event) return null;
+        return withStatus({
+            id: String(idPart),
+            title: event.title,
+            time: event.time,
+            ts: event.ts,
+            category: event.category,
+            channels: event.channels
+        }, Date.now());
     });
 }
 
@@ -524,5 +667,5 @@ module.exports = {
     getEvent,
     getChannelStreams,
     // exported for isolated testing against saved HTML:
-    _parse: { parseHomeSections, parseScheduleDays, extractPlayable, extractEmbedUrl, decryptEconfig }
+    _parse: { parseHomeSections, parseScheduleDays, extractPlayable, extractEmbedUrl, decryptEconfig, convertUkTime, parseDayDate }
 };

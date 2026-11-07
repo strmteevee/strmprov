@@ -259,6 +259,9 @@ function buildCatalogs() {
         { type: 'movie', id: 'f1academy-highlights', name: 'F1 Academy Highlights' },
         // Full race replays from overtakefans.com (providers/fullraces.js).
         { type: 'movie', id: 'f1-fullraces', name: 'F1 Full Races' },
+        // Combined live guide: DaddyLive + the enabled YouTube live channels,
+        // time-ordered (see buildGuideCatalog).
+        { type: 'tv', id: 'strmprov-guide', name: 'Live Sport Guide' },
         // DaddyLive live sport schedule (providers/daddylive.js), 'tv' type.
         { type: 'tv', id: 'daddylive-sport', name: 'DaddyLive Sport' },
         // YouTube channel catalogs - only the channels switched on in the
@@ -287,7 +290,7 @@ function enabledYoutubeCatalogs() {
 }
 // Clients cache a manifest by version, so switching a channel on/off has to
 // change it: the patch number is the switch file's revision counter.
-const MANIFEST_BASE_VERSION = '1.19';
+const MANIFEST_BASE_VERSION = '1.20';
 function manifestVersion(base) {
     return `${base}.${youtubeChannel.settingsRevision()}`;
 }
@@ -609,12 +612,14 @@ function buildFullracesStreamResponse(id) {
 // where <id> is the upstream channel id. One catalog entry per scheduled
 // event (keyed by its primary channel); meta/streams resolve that channel.
 function daddyliveEventToMeta(ev) {
-    const prefix = ev.time ? `\u{1F534} ${ev.time} ` : '\u{1F534} ';
+    const when = formatStart(ev.start);
+    const timing = ev.status === 'live' ? (when ? `Live now · started ${when}` : 'Live now')
+        : when ? `Starts ${when}` : null;
     return {
         id: `daddylive:${ev.id}`,
         type: 'tv',
-        name: `${prefix}${ev.title}`,
-        description: [ev.category, ev.channels && ev.channels.length > 1
+        name: liveName(ev.status, ev.start, ev.title),
+        description: [timing, ev.category, ev.channels && ev.channels.length > 1
             ? `${ev.channels.length} feeds` : null].filter(Boolean).join('\n') || undefined,
         posterShape: 'landscape'
     };
@@ -626,16 +631,9 @@ function buildDaddyliveCatalog() {
     });
 }
 function buildDaddyliveMeta(id) {
-    return daddylive.getEvent(id.slice('daddylive:'.length)).then((ev) => {
-        if (!ev) return null;
-        return {
-            id,
-            type: 'tv',
-            name: ev.title,
-            description: [ev.time ? `${ev.time} (UK)` : null, ev.category].filter(Boolean).join('\n') || undefined,
-            posterShape: 'landscape'
-        };
-    }).catch(() => null);
+    return daddylive.getEvent(id.slice('daddylive:'.length))
+        .then((ev) => (ev ? Object.assign(daddyliveEventToMeta(ev), { id }) : null))
+        .catch(() => null);
 }
 function buildDaddyliveStreamResponse(id) {
     return daddylive.getChannelStreams(id.slice('daddylive:'.length)).then((streams) => ({
@@ -648,6 +646,34 @@ function buildDaddyliveStreamResponse(id) {
         console.error(`[addon-server] DaddyLive stream error for ${id}: ${err.message}`);
         return { streams: [] };
     });
+}
+
+// Live Sport Guide: everything live now or starting within GUIDE_HORIZON_MS,
+// across DaddyLive and the YouTube live channels switched on in the admin
+// dashboard, as one time-ordered list (live first, then by start time). Items
+// keep their own daddylive:/ytlive: ids, so meta and streams are served by
+// the existing per-source handlers. A failing source just drops out.
+const GUIDE_HORIZON_MS = 24 * 60 * 60 * 1000;
+function buildGuideCatalog() {
+    const now = Date.now();
+    const ytLive = YOUTUBE_CATALOGS.filter((c) => c.kind === 'live' && youtubeChannel.isChannelEnabled(c.channel));
+    const sources = [
+        daddylive.listSportEvents()
+            .then((evs) => evs.map((ev) => ({ status: ev.status, start: ev.start, meta: daddyliveEventToMeta(ev) })))
+            .catch(() => []),
+        ...ytLive.map((c) => youtubeChannel.listLive(c.channel)
+            .then((items) => items.map((i) => ({
+                status: i.status,
+                start: i.status === 'upcoming' ? i.scheduledTs : 0,
+                meta: youtubeItemToMeta(i)
+            })))
+            .catch(() => []))
+    ];
+    const rank = { live: 0, upcoming: 1 };
+    return Promise.all(sources).then((lists) => [].concat(...lists)
+        .filter((x) => x.status === 'live' || (x.status === 'upcoming' && (!x.start || x.start - now < GUIDE_HORIZON_MS)))
+        .sort((a, b) => (rank[a.status] - rank[b.status]) || ((a.start || Infinity) - (b.start || Infinity)))
+        .map((x) => x.meta));
 }
 
 // TMDB-backed meta fallback for real 'tt' ids - added by request after
@@ -746,6 +772,29 @@ function formatDuration(seconds) {
     return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m} min`;
 }
 
+// Live/upcoming display, shared by the YouTube live and DaddyLive catalogs.
+// Times are shown in DISPLAY_TZ (the viewers' zone, not the server's - the
+// Pi may run UTC). "13:30" for today, "Sun 8 Nov 13:30" for another day.
+const DISPLAY_TZ = process.env.STRMPROV_TZ || 'Europe/Amsterdam';
+function formatStart(ts) {
+    if (!ts) return null;
+    const dayKey = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: DISPLAY_TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+    const start = new Date(ts);
+    const time = new Intl.DateTimeFormat('en-GB', { timeZone: DISPLAY_TZ, hourCycle: 'h23', hour: '2-digit', minute: '2-digit' }).format(start);
+    if (dayKey(start) === dayKey(new Date())) return time;
+    const day = new Intl.DateTimeFormat('en-GB', { timeZone: DISPLAY_TZ, weekday: 'short', day: 'numeric', month: 'short' }).format(start);
+    return `${day} ${time}`;
+}
+// 🔴 only for something live right now; upcoming gets 🔜 plus its start time.
+function liveName(status, start, title) {
+    if (status === 'live') return `\u{1F534} ${title}`;
+    if (status === 'upcoming') {
+        const when = formatStart(start);
+        return when ? `\u{1F51C} ${when} · ${title}` : `\u{1F51C} ${title}`;
+    }
+    return title;
+}
+
 function youtubeItemToMeta(item) {
     const channel = (youtubeChannel.CHANNELS[item.channel] || {}).label;
     const meta = {
@@ -757,11 +806,12 @@ function youtubeItemToMeta(item) {
         posterShape: 'landscape'
     };
     if (item.status === 'live') {
-        meta.name = `\u{1F534} ${item.title}`;
+        meta.name = liveName('live', null, item.title);
         meta.description = [channel, item.viewers ? `${item.viewers.toLocaleString('en-US')} watching` : 'Live now'].filter(Boolean).join('\n');
     } else if (item.status === 'upcoming') {
-        meta.name = `\u{1F51C} ${item.title}`;
-        meta.description = [channel, item.scheduledText].filter(Boolean).join('\n');
+        const when = formatStart(item.scheduledTs);
+        meta.name = liveName('upcoming', item.scheduledTs, item.title);
+        meta.description = [channel, when ? `Starts ${when}` : item.scheduledText].filter(Boolean).join('\n');
     } else {
         meta.name = youtubeChannel.cleanTitle(item.title);
         meta.description = [channel, formatDuration(item.durationSeconds)].filter(Boolean).join('\n') || undefined;
@@ -817,6 +867,9 @@ function resolveCatalog(type, id) {
     }
     if (id === 'f1-fullraces' && type === 'movie') {
         return buildFullracesCatalog('f1');
+    }
+    if (id === 'strmprov-guide' && type === 'tv') {
+        return buildGuideCatalog();
     }
     if (id === 'daddylive-sport' && type === 'tv') {
         return buildDaddyliveCatalog();

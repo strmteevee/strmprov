@@ -36,7 +36,10 @@ const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 const PAGE_HEADERS = {
   'User-Agent': USER_AGENT,
   'Accept-Language': 'en-US,en;q=0.9',
-  Cookie: 'SOCS=CAI; CONSENT=YES+1'
+  // PREF tz=UTC: without it YouTube renders "Scheduled for ..." in US Pacific
+  // time for a location-less server request (confirmed 2026-11-07: every
+  // time was exactly 8h off), while parseScheduled() reads it as UTC.
+  Cookie: 'SOCS=CAI; CONSENT=YES+1; PREF=tz=UTC'
 };
 
 // A finished stream shorter than this is a clip/short, not a race.
@@ -227,9 +230,9 @@ function parseRelativeAge(text) {
   return Date.now() - n * UNIT_MS[unit];
 }
 
-// "Scheduled for 10/18/26, 7:35 AM" -> a comparable epoch ms. The time zone
-// YouTube rendered it in isn't stated, so this is only used to ORDER upcoming
-// streams relative to each other, never shown as an absolute time.
+// "Scheduled for 10/18/26, 7:35 AM" -> epoch ms. PAGE_HEADERS (PREF tz=UTC)
+// and the browse context make YouTube render this in UTC, so the result is a
+// real absolute start time (used for display and live/upcoming status).
 function parseScheduled(text) {
   const m = /Scheduled for\s+(\d{1,2})\/(\d{1,2})\/(\d{2,4}),?\s+(\d{1,2}):(\d{2})\s*(AM|PM)/i.exec(text);
   if (!m) return null;
@@ -317,7 +320,8 @@ function fetchFirstPage(channel) {
 }
 
 function fetchContinuation(token, version, visitorData) {
-  const client = { clientName: 'WEB', clientVersion: version || '2.20260101.00.00', hl: 'en', gl: 'US' };
+  // timeZone/utcOffsetMinutes: same reason as PREF tz=UTC in PAGE_HEADERS.
+  const client = { clientName: 'WEB', clientVersion: version || '2.20260101.00.00', hl: 'en', gl: 'US', timeZone: 'UTC', utcOffsetMinutes: 0 };
   if (visitorData) client.visitorData = visitorData;
   return fetch('https://www.youtube.com/youtubei/v1/browse?prettyPrint=false', {
     method: 'POST',

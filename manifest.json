@@ -1,6 +1,6 @@
 {
   "name": "Yoru's Repo",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "scrapers": [
     {
       "id": "streamapi",
@@ -675,6 +675,67 @@
       "contentLanguage": [
         "en",
         "ja"
+      ]
+    },
+    {
+      "id": "twoembed",
+      "name": "2Embed",
+      "description": "2Embed (2embed.cc), played through its own player vidsrc.buzz: signed page token, per-server play API, HLS on vidsrc.buzz. Several servers per title; some deliver TS wrapped in PNG on tiktokcdn - see providers/twoembed.js.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/twoembed.js",
+      "enabled": true,
+      "formats": [
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=2embed.cc&sz=128",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "xpass",
+      "name": "Xpass",
+      "description": "Xpass (play.xpass.top): AES-GCM encrypted server list (key from the player build id, read from its script) with 20-45 servers per title, each checked before it is offered - see providers/xpass.js.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/xpass.js",
+      "enabled": true,
+      "formats": [
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=xpass.top&sz=128",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "vidzee",
+      "name": "Vidzee",
+      "description": "Vidzee (core.vidzee.wtf) streams API in plain-JSON mode: Peak, Dcloud, and per language Acme (v4) and TCloud (v6); English plus Hindi and other Indian dubs - see providers/vidzee.js.",
+      "version": "2.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/vidzee.js",
+      "enabled": true,
+      "formats": [
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=vidzee.wtf&sz=128",
+      "contentLanguage": [
+        "en",
+        "hi"
       ]
     }
   ]

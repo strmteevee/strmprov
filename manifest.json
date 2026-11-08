@@ -1,6 +1,6 @@
 {
   "name": "Yoru's Repo",
-  "version": "1.11.1",
+  "version": "1.12.0",
   "scrapers": [
     {
       "id": "streamapi",
@@ -132,7 +132,7 @@
     {
       "id": "vixsrc",
       "name": "Vixsrc",
-      "description": "Vixsrc M3U8 streaming with auto quality selection",
+      "description": "Vixsrc M3U8 streaming with auto quality selection. Off since 2026-11-08: vixsrc.to answers every request with a Cloudflare challenge (403).",
       "version": "1.1.1",
       "author": "Nuvio Team",
       "supportedTypes": [
@@ -140,7 +140,7 @@
         "tv"
       ],
       "filename": "providers/vixsrc.js",
-      "enabled": true,
+      "enabled": false,
       "logo": "https://vixsrc.to/favicon.ico",
       "contentLanguage": [
         "en"
@@ -512,7 +512,7 @@
     {
       "id": "desiflix",
       "name": "DesiFlix",
-      "description": "Relays the DesiFlix Stremio addon: direct 480p-1080p files, strong on Indian films and web series but also carries English titles - see providers/external-addon.js.",
+      "description": "Relays the DesiFlix Stremio addon: direct 480p-1080p files, strong on Indian films and web series but also carries English titles - see providers/external-addon.js. Off since 2026-11-08: the addon only answers for its own dsx: ids now; IMDb and TMDB ids always get an empty list.",
       "version": "1.0.0",
       "author": "Nuvio Team",
       "supportedTypes": [
@@ -524,7 +524,7 @@
         "name": "DesiFlix",
         "addonBaseUrl": "https://manifest.desitvhub.eu.org"
       },
-      "enabled": true,
+      "enabled": false,
       "formats": [
         "mkv",
         "mp4",

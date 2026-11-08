@@ -58,10 +58,11 @@ const PLAYBACK_HEADERS = {
 // actually reachable varies day to day - some sit behind a Cloudflare
 // bot-challenge, some 403 outright, some time out at the origin. Rather than
 // serve a pile of dead links that all fail the moment a user taps them,
-// validate each one and only return the ones that actually respond. There's
-// no JS-level timeout available in this sandbox (no setTimeout), so a hung
-// check is bounded only by the native fetch bridge's own ~30s timeout rather
-// than a tighter one - slower in the worst case, but still correct.
+// validate each one and only return the ones that actually respond. Nuvio's
+// sandbox has no setTimeout or AbortController, so there a hung check is
+// bounded only by the native fetch bridge's own ~30s timeout. Where they exist
+// (this server's Node) each check gets VALIDATE_TIMEOUT_MS: one host that never
+// answered (2026-11-08) otherwise held every film up until the client gave up.
 //
 // A plain HEAD/ranged-GET on the stream URL isn't enough for HLS (.m3u8)
 // streams: the manifest itself (and any nested variant playlist under it)
@@ -71,6 +72,17 @@ const PLAYBACK_HEADERS = {
 // master.m3u8 and its variant playlist both returned 200, while every
 // segment inside 403'd). So for .m3u8 URLs, walk the manifest chain down to
 // a real segment reference and validate that instead of the manifest.
+const VALIDATE_TIMEOUT_MS = 8000;
+const HAS_ABORT_TIMER = typeof AbortController !== 'undefined' && typeof setTimeout !== 'undefined';
+// A fetch whose answer (body included) counts as a failure once it takes longer than VALIDATE_TIMEOUT_MS.
+function checkFetch(url, options) {
+  if (!HAS_ABORT_TIMER) return fetch(url, options);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), VALIDATE_TIMEOUT_MS);
+  if (timer && typeof timer.unref === 'function') timer.unref();
+  return fetch(url, Object.assign({}, options, { signal: controller.signal }));
+}
+
 function isM3u8Url(url) {
   return /\.m3u8(\?|$)/i.test(url);
 }
@@ -104,7 +116,7 @@ function validateM3u8Chain(url, headers, hopsLeft) {
   if (isKnownSlowHost(url)) {
     return Promise.resolve(false);
   }
-  return fetch(url, { headers })
+  return checkFetch(url, { headers })
     .then(res => {
       if (!res.ok) return false;
       return res.text().then(text => {
@@ -133,14 +145,14 @@ function validateStreamUrl(stream) {
   // an origin timeout. Only fall back to a ranged GET when HEAD itself fails
   // outright (some CDNs reject the method with a hard connection error
   // rather than a clean status code).
-  return fetch(stream.url, { method: 'HEAD', headers: stream.headers })
+  return checkFetch(stream.url, { method: 'HEAD', headers: stream.headers })
     .then(res => res.ok || res.status === 206)
     .catch(() => rangedValidateUrl(stream.url, stream.headers));
 }
 
 function rangedValidateUrl(url, headers) {
   const rangedHeaders = Object.assign({}, headers, { Range: 'bytes=0-2048' });
-  return fetch(url, { method: 'GET', headers: rangedHeaders })
+  return checkFetch(url, { method: 'GET', headers: rangedHeaders })
     .then(res => res.ok || res.status === 206)
     .catch(() => false);
 }

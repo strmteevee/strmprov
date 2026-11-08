@@ -40,9 +40,13 @@ const BASE_URL = 'https://www.animeworld.so';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const TMDB_ANIMATION_GENRE_ID = 16;
 
+// The site lists a work under its Italian or its romanized Japanese title as
+// often as under the English one ("L'attacco dei Giganti", not "Attack on
+// Titan"), so those are searched too, in that order: English, Italian, then
+// alternative titles in Latin script from Japan.
 function getTmdbInfo(tmdbId, mediaType) {
     const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
-    const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
+    const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}&append_to_response=translations,alternative_titles`;
     return fetch(url, { headers: { 'User-Agent': USER_AGENT } })
         .then(res => res.json())
         .then(data => {
@@ -51,7 +55,20 @@ function getTmdbInfo(tmdbId, mediaType) {
             console.log(`[AnimeWorld] TMDB Info: "${title}" (${year})`);
             const genres = data.genres || [];
             const couldBeAnime = !genres.length || genres.some(g => g.id === TMDB_ANIMATION_GENRE_ID);
-            return { title, year, couldBeAnime };
+            const italian = ((data.translations && data.translations.translations) || [])
+                .filter(t => t.iso_639_1 === 'it' && t.data)
+                .map(t => t.data.name || t.data.title);
+            const alternatives = ((data.alternative_titles && (data.alternative_titles.results || data.alternative_titles.titles)) || [])
+                .filter(t => t.iso_3166_1 === 'JP' && /^[ -~À-ɏ]+$/.test(t.title || ''))
+                .map(t => t.title);
+            const seen = new Set();
+            const titles = [title, ...italian, ...alternatives].filter(t => {
+                const key = normalize(t);
+                if (!key || seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+            return { title, titles, year, couldBeAnime };
         });
 }
 
@@ -89,7 +106,7 @@ function findMatches(html, targetTitle, season) {
         const isDub = undubbed !== name;
         const normName = normalize(undubbed);
         let rank = -1;
-        if (laterSeason && laterSeason.test(normName)) rank = 0;
+        if (laterSeason && laterSeason.test(normName)) rank = isDub ? 0.5 : 0;
         else if (normName === target) rank = isDub ? 2 : 1;
         else if (normalize(undubbed.split(/\s*:\s/)[0]) === target) rank = isDub ? 4 : 3;
         if (rank >= 0) ranked.push({ href, name, rank });
@@ -161,35 +178,46 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return [];
         }
         const wantSeason = mediaType === 'tv' ? season : null;
-        const query = wantSeason > 1 ? `${mediaInfo.title} season ${season}` : mediaInfo.title;
-        return search(query).then(html => {
-            const candidates = findMatches(html, mediaInfo.title, wantSeason);
-            return pickCandidate(candidates, parseInt(mediaInfo.year, 10), wantSeason).then(picked => {
-                if (!picked) {
-                    console.log(`[AnimeWorld] No matching title found for "${query}"`);
+        // Each of the work's titles in turn, until one is found on the site. For a
+        // later season "<title> season N" first, then the title alone: the site
+        // names it "<title> N" and its search doesn't always bring that up for the former.
+        const searches = [];
+        mediaInfo.titles.slice(0, 4).forEach(title => {
+            if (wantSeason > 1) searches.push({ title, query: `${title} season ${season}` });
+            searches.push({ title, query: title });
+        });
+        const findWork = (list) => {
+            if (!list.length) return Promise.resolve(null);
+            const [{ title, query }, ...rest] = list;
+            return search(query)
+                .then(html => pickCandidate(findMatches(html, title, wantSeason), parseInt(mediaInfo.year, 10), wantSeason))
+                .then(picked => picked || findWork(rest));
+        };
+        return findWork(searches).then(picked => {
+            if (!picked) {
+                console.log(`[AnimeWorld] No matching title found for "${mediaInfo.titles.join('" / "')}"`);
+                return [];
+            }
+            const { match, page: { csrfToken, episodes } } = picked;
+            console.log(`[AnimeWorld] Matched: "${match.name}"`);
+            const targetNum = mediaType === 'tv' ? episode : 1;
+            const target = episodes.find(e => e.num === targetNum) || (mediaType !== 'tv' ? episodes[0] : null);
+            if (!target) {
+                console.log(`[AnimeWorld] No episode ${targetNum} found (${episodes.length} episode(s) listed)`);
+                return [];
+            }
+            return getEpisodeGrabber(target.id, csrfToken).then(grabber => {
+                if (!grabber) {
+                    console.log('[AnimeWorld] No grabber URL returned for episode');
                     return [];
                 }
-                const { match, page: { csrfToken, episodes } } = picked;
-                console.log(`[AnimeWorld] Matched: "${match.name}"`);
-                const targetNum = mediaType === 'tv' ? episode : 1;
-                const target = episodes.find(e => e.num === targetNum) || (mediaType !== 'tv' ? episodes[0] : null);
-                if (!target) {
-                    console.log(`[AnimeWorld] No episode ${targetNum} found (${episodes.length} episode(s) listed)`);
-                    return [];
-                }
-                return getEpisodeGrabber(target.id, csrfToken).then(grabber => {
-                    if (!grabber) {
-                        console.log('[AnimeWorld] No grabber URL returned for episode');
-                        return [];
-                    }
-                    return [{
-                        name: 'AnimeWorld',
-                        title: `${match.name}${mediaType === 'tv' ? ` E${episode}` : ''}`,
-                        url: grabber,
-                        quality: 'Unknown',
-                        provider: 'animeworld'
-                    }];
-                });
+                return [{
+                    name: 'AnimeWorld',
+                    title: `${match.name}${mediaType === 'tv' ? ` E${episode}` : ''}`,
+                    url: grabber,
+                    quality: 'Unknown',
+                    provider: 'animeworld'
+                }];
             });
         });
     }).catch(err => {

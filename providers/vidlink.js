@@ -316,6 +316,13 @@ function createStreamTitle(mediaInfo) {
 // attaches proxyHeaders when a stream has one, so omitting it here sends the
 // plain request the CDN actually wants, both for this file's own validation
 // and for real playback.
+//
+// "No headers" isn't something every player can do, though: OmniStream (and
+// most players) fills in a User-Agent of its own, and a browser-like one gets
+// the same 428 (checked 2026-11-08: a Chrome UA 428, okhttp/ExoPlayer 206). So
+// these streams say which User-Agent to send; the CDN takes it, and this file's
+// own validation sends the same one.
+const CDN_HEADERS = { "User-Agent": "okhttp/4.12.0" };
 function processVidlinkResponse(data, mediaInfo) {
   const streams = [];
   try {
@@ -435,6 +442,9 @@ function processVidlinkResponse(data, mediaInfo) {
       findUrls(data);
     }
     console.log(`[Vidlink] Extracted ${streams.length} streams from response`);
+    streams.forEach((stream) => {
+      if (!stream.headers) stream.headers = CDN_HEADERS;
+    });
   } catch (error) {
     console.error(`[Vidlink] Error processing response: ${error.message}`);
   }

@@ -1009,7 +1009,7 @@ function buildStreamResponse(type, rawId) {
             console.log(`[addon-server] No TMDB match for ${imdbId}`);
             return { streams: [] };
         }
-        return aggregate.aggregateStreams(found.tmdbId, found.mediaType, season, episode).then(({ streams }) => {
+        return aggregate.aggregateStreams(found.tmdbId, found.mediaType, season, episode, { reuse: true }).then(({ streams }) => {
             const stremioStreams = streams.map(s => {
                 const behaviorHints = { notWebReady: true };
                 if (s.headers && Object.keys(s.headers).length) {

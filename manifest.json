@@ -1,6 +1,6 @@
 {
   "name": "Yoru's Repo",
-  "version": "1.13.0",
+  "version": "1.13.1",
   "scrapers": [
     {
       "id": "streamapi",
@@ -701,7 +701,7 @@
       "id": "xpass",
       "name": "Xpass",
       "description": "Xpass (play.xpass.top): AES-GCM encrypted server list (key from the player build id, read from its script) with 20-45 servers per title, each checked before it is offered - see providers/xpass.js.",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": "Nuvio Team",
       "supportedTypes": [
         "movie",

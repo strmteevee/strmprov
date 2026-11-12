@@ -30,9 +30,11 @@ const BASE_URL = 'https://play.xpass.top';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const KNOWN_BUILD = 'spv3-build-1787821613-50e5fc97c9dce367';
 const BUILD_TTL_MS = 60 * 60 * 1000;
-const REQUEST_TIMEOUT_MS = 8000;
-const BATCH_SIZE = 4;
-const WANTED_STREAMS = 8;
+// Dead servers are the slow part (each costs its batch a full timeout); the
+// live ones answer within a second or two.
+const REQUEST_TIMEOUT_MS = 5000;
+const BATCH_SIZE = 6;
+const WANTED_STREAMS = 6;
 const MAX_SERVERS = 24;
 
 const HAS_ABORT_TIMER = typeof AbortController !== 'undefined' && typeof setTimeout !== 'undefined';

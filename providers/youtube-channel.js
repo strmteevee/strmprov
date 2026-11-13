@@ -528,7 +528,11 @@ function resolveHls(videoId) {
       return tryClient(0);
     })
     .then(value => {
-      if (value) hlsCache.set(videoId, { value, at: Date.now() });
+      if (value) {
+        const now = Date.now();
+        hlsCache.forEach((v, k) => { if (now - v.at >= HLS_CACHE_TTL_MS) hlsCache.delete(k); });
+        hlsCache.set(videoId, { value, at: now });
+      }
       return value;
     })
     .catch(err => {

@@ -713,6 +713,16 @@ function buildChannelsCatalog() {
 // season - no reason to redo that on every meta request for the same show.
 const TMDB_META_CACHE_TTL_MS = 1000 * 60 * 60 * 6;
 const tmdbMetaCache = new Map(); // "type:imdbId" -> { meta, timestamp }
+// A series' meta carries every episode with its overview, so the cache drops
+// what has expired and keeps no more than this many (oldest out first).
+const TMDB_META_CACHE_MAX = 150;
+function rememberTmdbMeta(key, meta) {
+    const now = Date.now();
+    tmdbMetaCache.forEach((v, k) => { if (now - v.timestamp >= TMDB_META_CACHE_TTL_MS) tmdbMetaCache.delete(k); });
+    tmdbMetaCache.delete(key);
+    tmdbMetaCache.set(key, { meta, timestamp: now });
+    while (tmdbMetaCache.size > TMDB_META_CACHE_MAX) tmdbMetaCache.delete(tmdbMetaCache.keys().next().value);
+}
 
 function tmdbCreditNames(details, job) {
     const list = job === 'cast' ? (details.credits && details.credits.cast) : (details.credits && details.credits.crew);
@@ -781,7 +791,7 @@ function buildTmdbFallbackMeta(imdbId, type) {
                 ? buildSeriesVideos(found.tmdbId, imdbId, details).then(videos => Object.assign(meta, { videos }))
                 : Promise.resolve(meta);
             return withVideos.then(finalMeta => {
-                tmdbMetaCache.set(cacheKey, { meta: finalMeta, timestamp: Date.now() });
+                rememberTmdbMeta(cacheKey, finalMeta);
                 return finalMeta;
             });
         });

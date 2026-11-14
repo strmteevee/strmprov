@@ -140,13 +140,35 @@ for pid in $(pids_of addon-server.js) $(pids_of admin-server.js) $(pids_of " ser
   esac
 done
 
+# Memory settings for the Node processes, as a systemd drop-in next to each
+# service (the service files themselves are the Pi's own and stay untouched).
+# Node's defaults suit a big machine: a 16MB young generation and a heap limit
+# of several GB let it collect late and keep what it once grew to. A stream
+# search runs ~27 providers at once, which sent the addon from 34MB to 183MB
+# (measured 2026-11-14), and it stayed above 115MB afterwards; with these it
+# peaked at 95MB and settled at 90MB, with the same streams in the same time.
+# MALLOC_ARENA_MAX keeps glibc from holding a memory pool per CPU core.
+MEMORY_DROPIN='[Service]
+Environment="NODE_OPTIONS=--max-semi-space-size=2 --max-old-space-size=256"
+Environment="MALLOC_ARENA_MAX=2"'
+memory_dropin() { # $1 = folder for the unit's drop-ins, $2 = command prefix (sudo or nothing)
+  [ "$(cat "$1/strmprov-memory.conf" 2>/dev/null)" = "$MEMORY_DROPIN" ] && return 1
+  $2 mkdir -p "$1" && printf '%s\n' "$MEMORY_DROPIN" | $2 tee "$1/strmprov-memory.conf" >/dev/null
+}
+
 if [ -n "$UNITS" ]; then
   # A user service (systemctl --user) restarts without sudo.
   for unit in $UNITS; do
     if systemctl --user cat "$unit" >/dev/null 2>&1; then
+      if memory_dropin "$HOME/.config/systemd/user/$unit.d" ""; then
+        echo "Memory settings added to $unit"; systemctl --user daemon-reload
+      fi
       echo "systemctl --user restart $unit"
       systemctl --user restart "$unit" || fail "Restarting $unit failed."
     else
+      if memory_dropin "/etc/systemd/system/$unit.d" sudo; then
+        echo "Memory settings added to $unit"; sudo systemctl daemon-reload
+      fi
       echo "sudo systemctl restart $unit"
       sudo systemctl restart "$unit" || fail "Restarting $unit failed."
     fi

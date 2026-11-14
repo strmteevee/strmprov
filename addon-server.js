@@ -1053,6 +1053,15 @@ function buildStreamResponse(type, rawId) {
     });
 }
 
+// One line per stream search, so the dashboard's log shows how much memory
+// the addon holds and whether it goes back down afterwards. `rss` is what the
+// Pi sees in use; `heap` is what the JavaScript itself still holds.
+function logMemory(id) {
+    const m = process.memoryUsage();
+    const mb = (n) => Math.round(n / 1048576);
+    console.log(`[addon-server] Memory after ${id}: rss ${mb(m.rss)} MB, heap ${mb(m.heapUsed)}/${mb(m.heapTotal)} MB`);
+}
+
 function notFound(res) {
     sendJson(res, 404, { error: 'Not found' });
 }
@@ -1152,7 +1161,10 @@ const server = http.createServer((req, res) => {
         if (type !== 'movie' && type !== 'series') {
             return sendJson(res, 200, { streams: [] });
         }
-        return buildStreamResponse(type, id).then(body => sendJson(res, 200, body));
+        return buildStreamResponse(type, id).then(body => {
+            sendJson(res, 200, body);
+            logMemory(id);
+        });
     }
 
     return notFound(res);

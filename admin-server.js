@@ -12,6 +12,10 @@
 
 try { process.loadEnvFile('.env'); } catch (e) { /* no .env file - fine, subtitle keys are optional */ }
 
+// First: may restart this process with memory settings (lib/memoryTuning.js).
+const memoryTuning = require('./lib/memoryTuning');
+memoryTuning.apply();
+
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -547,5 +551,6 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
     const ip = getLocalIp();
     console.log(`\n🛠️  Admin dashboard running at: http://${ip}:${PORT}/`);
+    console.log(`[admin-server] ${memoryTuning.describe()}`);
     console.log('Press Ctrl+C to stop\n');
 });

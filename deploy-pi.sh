@@ -147,10 +147,11 @@ done
 # search runs ~27 providers at once, which sent the addon from 34MB to 183MB
 # (measured 2026-11-14), and it stayed above 115MB afterwards; with these it
 # peaked at 95MB and settled at 90MB, with the same streams in the same time.
-# MALLOC_ARENA_MAX keeps glibc from holding a memory pool per CPU core.
+# MALLOC_ARENA_MAX keeps glibc from holding a memory pool per CPU core (the
+# servers also set these themselves at startup, see lib/memoryTuning.js).
 MEMORY_DROPIN='[Service]
 Environment="NODE_OPTIONS=--max-semi-space-size=2 --max-old-space-size=256"
-Environment="MALLOC_ARENA_MAX=2"'
+Environment="MALLOC_ARENA_MAX=2" "MALLOC_TRIM_THRESHOLD_=131072"'
 memory_dropin() { # $1 = folder for the unit's drop-ins, $2 = command prefix (sudo or nothing)
   [ "$(cat "$1/strmprov-memory.conf" 2>/dev/null)" = "$MEMORY_DROPIN" ] && return 1
   $2 mkdir -p "$1" && printf '%s\n' "$MEMORY_DROPIN" | $2 tee "$1/strmprov-memory.conf" >/dev/null

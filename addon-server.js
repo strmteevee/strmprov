@@ -12,6 +12,10 @@
 
 try { process.loadEnvFile('.env'); } catch (e) { /* no .env file - fine, the subtitle keys are optional */ }
 
+// First: may restart this process with memory settings (lib/memoryTuning.js).
+const memoryTuning = require('./lib/memoryTuning');
+memoryTuning.apply();
+
 const http = require('http');
 const os = require('os');
 const { URL } = require('url');
@@ -1059,7 +1063,7 @@ function buildStreamResponse(type, rawId) {
 function logMemory(id) {
     const m = process.memoryUsage();
     const mb = (n) => Math.round(n / 1048576);
-    console.log(`[addon-server] Memory after ${id}: rss ${mb(m.rss)} MB, heap ${mb(m.heapUsed)}/${mb(m.heapTotal)} MB`);
+    console.log(`[addon-server] Memory after ${id}: rss ${mb(m.rss)} MB, heap ${mb(m.heapUsed)}/${mb(m.heapTotal)} MB, buffers ${mb(m.arrayBuffers)} MB`);
 }
 
 function notFound(res) {
@@ -1173,6 +1177,7 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
     const ip = getLocalIp();
     console.log(`\n🚀 StrmProv addon server running at: http://${ip}:${PORT}/`);
+    console.log(`[addon-server] ${memoryTuning.describe()}`);
     console.log('Install this as a Nuvio/Stremio addon:');
     console.log(`  http://${ip}:${PORT}/manifest.json`);
     console.log('Press Ctrl+C to stop\n');

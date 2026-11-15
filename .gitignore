@@ -5,3 +5,4 @@ data/provider-health.json
 .env
 .env.local
 config/youtube-channels.json
+config/vpn.json

@@ -57,6 +57,7 @@ const fullraces = require('./providers/fullraces');
 const daddylive = require('./providers/daddylive');
 const youtubeChannel = require('./providers/youtube-channel');
 const liveGuide = require('./lib/liveGuide');
+const vpnCheck = require('./lib/vpnCheck');
 
 const PORT = 3100;
 
@@ -1160,14 +1161,21 @@ const server = http.createServer((req, res) => {
         const type = route[1];
         const idWithExt = decodeURIComponent(route.slice(2).join('/'));
         const id = idWithExt.replace(/\.json$/, '');
-        const custom = resolveCustomStreamResponse(id);
-        if (custom) return custom.then(body => sendJson(res, 200, body));
-        if (type !== 'movie' && type !== 'series') {
-            return sendJson(res, 200, { streams: [] });
-        }
-        return buildStreamResponse(type, id).then(body => {
-            sendJson(res, 200, body);
-            logMemory(id);
+        // Live channels and races fetch their streams too: the VPN check (lib/vpnCheck.js) covers them all.
+        return vpnCheck.check().then(vpn => {
+            if (!vpn.ok) {
+                console.log(`[addon-server] No streams for ${id}: ${vpn.reason}`);
+                return sendJson(res, 200, { streams: [] });
+            }
+            const custom = resolveCustomStreamResponse(id);
+            if (custom) return custom.then(body => sendJson(res, 200, body));
+            if (type !== 'movie' && type !== 'series') {
+                return sendJson(res, 200, { streams: [] });
+            }
+            return buildStreamResponse(type, id).then(body => {
+                sendJson(res, 200, body);
+                logMemory(id);
+            });
         });
     }
 

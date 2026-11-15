@@ -161,6 +161,18 @@
 
 <main>
 
+  <section class="panel" id="vpn-panel">
+    <h2>VPN</h2>
+    <p class="desc">With the check on, this server only searches for streams while its internet traffic goes out through the VPN: the network its public IP belongs to has to contain the name below (with the VPN on the router, nothing else shows it). Checked once a minute; when the lookup fails, nothing is searched either. The OmniStream app has the same check for playing (Settings → Playback).</p>
+    <div class="muted" id="vpn-status" style="margin-bottom:10px;">Checking…</div>
+    <div class="field-row">
+      <div class="field"><label><input type="checkbox" id="vpn-enabled" /> Only search with the VPN on</label></div>
+      <div class="field" style="flex:1; min-width:220px;"><label>VPN network (part of its name)</label><input type="text" id="vpn-network" placeholder="e.g. Proton AG" style="width:100%;" /></div>
+      <div class="field"><label>&nbsp;</label><button id="vpn-use-current">Use current network</button></div>
+      <div class="field"><label>&nbsp;</label><button class="primary" id="vpn-save">Save</button></div>
+    </div>
+  </section>
+
   <section class="panel" id="env-panel">
     <h2>API keys</h2>
     <p class="desc">Stored in this server's own <span class="mono">.env</span> file - saving here writes it directly, so there's no more copying the file over by hand on a remote box. Each key is optional; leave one blank to disable whatever depends on it. <strong>Restart addon-server.js (and this admin server) after saving</strong> for a changed key to actually take effect - each only reads <span class="mono">.env</span> once, at startup.</p>
@@ -567,6 +579,32 @@ document.getElementById('provider-health-reset').addEventListener('click', () =>
     .catch(e => toast(e.message, 'error'));
 });
 
+// ---- VPN ----
+
+let vpnCurrentName = null;
+function showVpn(data) {
+  vpnCurrentName = data.currentNetworkName;
+  document.getElementById('vpn-enabled').checked = !!data.enabled;
+  document.getElementById('vpn-network').value = data.network || '';
+  const where = data.currentNetwork ? `Public IP ${data.currentIp} is on ${data.currentNetwork}.` : 'The public IP could not be looked up.';
+  const state = !data.enabled ? 'Check is off.' : data.ok ? 'On the VPN: streams are searched.' : `${data.reason}: no streams are searched.`;
+  const el = document.getElementById('vpn-status');
+  el.textContent = `${state} ${where}`;
+  el.style.color = data.enabled && !data.ok ? 'var(--bad)' : '';
+}
+function loadVpn() {
+  return api('GET', '/api/vpn').then(showVpn);
+}
+document.getElementById('vpn-use-current').addEventListener('click', () => {
+  if (vpnCurrentName) document.getElementById('vpn-network').value = vpnCurrentName;
+  else toast('The current network is not known', 'error');
+});
+document.getElementById('vpn-save').addEventListener('click', () => {
+  api('POST', '/api/vpn', { enabled: document.getElementById('vpn-enabled').checked, network: document.getElementById('vpn-network').value })
+    .then(data => { showVpn(data); toast('VPN check saved', 'ok'); })
+    .catch(e => toast(e.message, 'error'));
+});
+
 // ---- Subtitles ----
 
 const SUBTITLE_LANGUAGES = [
@@ -730,7 +768,7 @@ function escapeHtml(str) {
   return String(str == null ? '' : str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-Promise.all([loadEnvKeys(), loadDeployConfig(), loadProviders(), loadYoutubeChannels(), loadProviderHealth(), loadSubtitlesConfig(), loadCatalogManifest()]).catch(e => toast(e.message, 'error'));
+Promise.all([loadEnvKeys(), loadDeployConfig(), loadProviders(), loadYoutubeChannels(), loadProviderHealth(), loadSubtitlesConfig(), loadCatalogManifest(), loadVpn()]).catch(e => toast(e.message, 'error'));
 </script>
 
 </body>

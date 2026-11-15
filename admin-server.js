@@ -43,6 +43,7 @@ process.on('unhandledRejection', (reason) => {
 const aggregate = require('./lib/aggregate');
 const subtitles = require('./lib/subtitles');
 const providerHealth = require('./lib/providerHealth');
+const vpnCheck = require('./lib/vpnCheck');
 const youtubeChannel = require('./providers/youtube-channel');
 
 const PORT = 3200;
@@ -350,6 +351,29 @@ function handleSetSubtitlesConfig(body, res) {
     handleGetSubtitlesConfig(res);
 }
 
+// ---- VPN check ----
+
+function handleGetVpn(res) {
+    vpnCheck.check(true).then(status => {
+        // With the check off this still shows which network the public IP is on.
+        const current = status.current ? Promise.resolve(status.current) : vpnCheck.lookupPublicNetwork();
+        return current.then(cur => sendJson(res, 200, Object.assign(vpnCheck.readConfig(), {
+            ok: status.ok,
+            reason: status.reason,
+            currentIp: cur ? cur.ip : null,
+            currentNetwork: cur ? cur.network : null,
+            currentNetworkName: cur ? vpnCheck.networkName(cur.network) : null
+        })));
+    }).catch(e => sendJson(res, 500, { error: e.message }));
+}
+
+function handleSetVpn(body, res) {
+    const network = typeof body.network === 'string' ? body.network.trim() : '';
+    if (body.enabled && !network) return sendJson(res, 400, { error: 'Set the VPN network before switching the check on' });
+    vpnCheck.writeConfig({ enabled: !!body.enabled, network });
+    handleGetVpn(res);
+}
+
 // ---- Provider health ----
 
 function handleGetProviderHealth(res) {
@@ -495,6 +519,13 @@ const server = http.createServer((req, res) => {
     // /api/deploy
     if (parts[0] === 'api' && parts[1] === 'deploy' && req.method === 'POST') {
         return handlePullAndRestart(res);
+    }
+    // /api/vpn
+    if (parts[0] === 'api' && parts[1] === 'vpn' && parts.length === 2 && req.method === 'GET') {
+        return handleGetVpn(res);
+    }
+    if (parts[0] === 'api' && parts[1] === 'vpn' && parts.length === 2 && req.method === 'POST') {
+        return readBody(req).then(body => handleSetVpn(body, res)).catch(e => sendJson(res, 400, { error: e.message }));
     }
     // /api/provider-health
     if (parts[0] === 'api' && parts[1] === 'provider-health' && parts.length === 2 && req.method === 'GET') {

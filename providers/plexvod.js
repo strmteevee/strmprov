@@ -1,19 +1,28 @@
 // Plex's free movies and shows ("Movies & Shows on Plex"), as catalogs of this
-// addon. No tunnel: Plex serves them in the Netherlands too (its rows there
-// include "Most Popular in Netherlands"). Tested 2026-11-15:
+// addon: what Plex offers in the Netherlands (asked directly) and in the US
+// (asked through the WireGuard tunnel assigned to "Plex (US)" on the admin
+// dashboard, lib/wireguard.js; left out while there is none), shown as one. A
+// title has the same id everywhere, so one that both countries have is there
+// once, from the Netherlands. Tested 2026-11-15 (NL) and 2026-11-16 (US):
 //   session  -> POST clients.plex.tv/api/v2/users/anonymous: an anonymous
-//               token, like Plex's website gets without a login.
-//   rows     -> vod.provider.plex.tv/hubs: ~55 rows ("Plex Picks", "Western"
-//               ...), each a mix of movies and shows, paged.
+//               token, like Plex's website gets without a login. The same
+//               token works in both countries: the address a request comes
+//               from decides what Plex offers.
+//   rows     -> vod.provider.plex.tv/hubs: 55 rows in NL, 72 in the US ("Plex
+//               Picks", "Western" ...), each a mix of movies and shows, paged.
 //   titles   -> /library/metadata/{id}, a show's seasons and a season's
-//               episodes as /children.
+//               episodes as /children. A US-only title is a 404 from NL.
 //   search   -> discover.provider.plex.tv/library/search finds any title;
 //               the ones that are on Plex for free are those the vod
 //               provider knows (2 of 30 for "western").
 //   playing  -> each title's HLS playlist (/library/parts/...-hls.m3u8) with
-//               the session token. Some titles are DRM-protected
-//               (Widevine/FairPlay, 9 of 30 in one row): those are left out,
-//               a player can't play them without Plex's own licence service.
+//               the session token. A US-only title's playlist is a 404 from
+//               NL too, but the playlists and video it points to play from
+//               anywhere: so only that first playlist comes through this
+//               server and the tunnel (playlist(), served at /plex/hls).
+//               Some titles are DRM-protected (Widevine/FairPlay, 9 of 30 in
+//               one row): those are left out, a player can't play them
+//               without Plex's own licence service.
 //
 // Ids: plexvod:movie:<id>, plexvod:series:<id>, an episode's video id
 // plexvod:ep:<id>. (The app's own Plex source has plex:live: for live TV.)
@@ -21,6 +30,15 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const wireguard = require('../lib/wireguard');
+const { tunnelFetch } = require('../lib/tunnelFetch');
+const { mergedPage } = require('../lib/mergedPages');
+
+// In order of preference. `source`: the name its tunnel is assigned under; none = asked directly.
+const REGIONS = [
+    { code: 'nl', source: null },
+    { code: 'us', source: 'plex-us' }
+];
 
 const VOD = 'https://vod.provider.plex.tv';
 const DISCOVER = 'https://discover.provider.plex.tv';
@@ -31,9 +49,14 @@ const SESSION_PATH = path.join(__dirname, '..', 'data', 'plex-session.json');
 const PAGE = 30;
 const HUBS_TTL_MS = 6 * 60 * 60 * 1000;
 const ITEMS_TTL_MS = 60 * 60 * 1000;
-const MAX_CACHED = 400;
+const MAX_CACHED = 600;
 const FEATURED_ROWS = 3;
 const SEARCH_LOOKUPS = 5;
+// Shows of a catalog page checked for a playable episode at once, and how long that answer is kept.
+const SHOW_CHECKS = 10;
+// How far a catalog is read for one page (lib/mergedPages.js).
+const MAX_ROUNDS = 12;
+const SHOW_CHECK_TTL_MS = 12 * 60 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 15000;
 
 const PREFIX = 'plexvod:';
@@ -53,6 +76,12 @@ function readSession() {
 
 function headers(s) {
     return { 'X-Plex-Client-Identifier': s.client, 'X-Plex-Product': PRODUCT, 'X-Plex-Version': VERSION, 'X-Plex-Platform': 'Chrome', 'X-Plex-Token': s.token || '', Accept: 'application/json' };
+}
+
+function timedFetch(url, options) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    return fetch(url, Object.assign({}, options, { signal: controller.signal })).finally(() => clearTimeout(timer));
 }
 
 function newSession() {
@@ -75,18 +104,31 @@ function getSession() {
     return session ? Promise.resolve(session) : newSession();
 }
 
-function timedFetch(url, options) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    return fetch(url, Object.assign({}, options, { signal: controller.signal })).finally(() => clearTimeout(timer));
+// ---- requests, per country -------------------------------------------------------
+
+function available(region) {
+    return !region.source || !!wireguard.proxyFor(region.source);
 }
 
-// A Plex API answer; with a new session once when Plex no longer knows the kept one.
-function get(url, renewed) {
-    return getSession().then(s => timedFetch(url, { headers: headers(s) })).then(r => {
-        if (r.status === 401 && !renewed) return newSession().then(() => get(url, true));
+function activeRegions() {
+    return REGIONS.filter(available);
+}
+
+// -> { status, json() } from [region]: directly, or through its tunnel.
+function request(url, region, s) {
+    if (!region.source) return timedFetch(url, { headers: headers(s) }).then(r => ({ status: r.status, json: () => r.json() }));
+    const proxy = wireguard.proxyFor(region.source);
+    if (!proxy) return Promise.reject(new Error(`Plex (${region.code.toUpperCase()}) has no running VPN tunnel`));
+    return tunnelFetch(proxy, url, { headers: headers(s), timeoutMs: REQUEST_TIMEOUT_MS })
+        .then(r => ({ status: r.status, json: () => Promise.resolve(JSON.parse(r.text())) }));
+}
+
+// A Plex API answer (null = Plex doesn't have it there); with a new session once when Plex no longer knows the kept one.
+function get(url, region, renewed) {
+    return getSession().then(s => request(url, region, s)).then(r => {
+        if (r.status === 401 && !renewed) return newSession().then(() => get(url, region, true));
         if (r.status === 404) return null;
-        if (!r.ok) throw new Error(`HTTP ${r.status} from ${new URL(url).host}`);
+        if (r.status < 200 || r.status >= 300) throw new Error(`HTTP ${r.status} from ${new URL(url).host}`);
         return r.json();
     });
 }
@@ -131,87 +173,147 @@ function toMeta(item) {
     };
 }
 
-function hubs() {
-    return cached('hubs', HUBS_TTL_MS, () => get(`${VOD}/hubs`).then(j => ((j && j.MediaContainer && j.MediaContainer.Hub) || [])
-        .filter(h => h.key && h.title).map(h => ({ title: h.title, key: h.key }))));
-}
-
-function hubItems(hub, start) {
-    return cached(`hub|${hub.key}|${start}`, ITEMS_TTL_MS, () => {
-        const sep = hub.key.includes('?') ? '&' : '?';
-        return get(`${VOD}${hub.key}${sep}X-Plex-Container-Start=${start}&X-Plex-Container-Size=${PAGE}&count=${PAGE}`)
-            .then(j => (j && j.MediaContainer && j.MediaContainer.Metadata) || []);
-    });
-}
-
-// The genre names the manifest offers (Plex's rows), known ones at once and
-// looked up again in the background when old.
-let knownRows = { titles: [], at: 0 };
-function genreOptions() {
-    if (Date.now() - knownRows.at > HUBS_TTL_MS) {
-        knownRows.at = Date.now();
-        hubs().then(list => { knownRows = { titles: list.map(h => h.title), at: Date.now() }; })
-            .catch(err => { knownRows.at = 0; console.error(`[PlexVOD] Rows failed: ${err.message}`); });
-    }
-    return knownRows.titles;
-}
-
 // The titles of [type] in some lists of items, each once.
 function unique(lists, type) {
     const seen = new Set();
     return [].concat(...lists).map(toMeta).filter(m => m && m.type === type && !seen.has(m.id) && seen.add(m.id));
 }
 
-// Rows from the start of [rows], a few at a time, until a page of [type] is
-// found or FEATURED_ROWS * 3 rows have been looked at.
-function fillFrom(rows, load, type) {
-    const lists = [];
+function hubs(region) {
+    return cached(`hubs|${region.code}`, HUBS_TTL_MS, () => get(`${VOD}/hubs`, region).then(j => ((j && j.MediaContainer && j.MediaContainer.Hub) || [])
+        .filter(h => h.key && h.title).map(h => ({ title: h.title, key: h.key }))));
+}
+
+// The country each listed title came from first (a row's items don't say), for the checks below.
+const listedIn = new Map(); // ratingKey -> region
+function hubItems(region, hub, start) {
+    return cached(`hub|${region.code}|${hub.key}|${start}`, ITEMS_TTL_MS, () => {
+        const sep = hub.key.includes('?') ? '&' : '?';
+        return get(`${VOD}${hub.key}${sep}X-Plex-Container-Start=${start}&X-Plex-Container-Size=${PAGE}&count=${PAGE}`, region)
+            .then(j => (j && j.MediaContainer && j.MediaContainer.Metadata) || []);
+    }).then(items => {
+        if (listedIn.size > 5000) listedIn.clear();
+        items.forEach(it => { if (it.ratingKey && !listedIn.has(it.ratingKey)) listedIn.set(it.ratingKey, region); });
+        return items;
+    });
+}
+
+// Whether a show has an episode that plays without DRM: a row lists shows
+// without saying, and whole shows are protected (in one US row 5 of 8 were).
+// Judged on its first season that has episodes; unknown (a failed request)
+// counts as playable.
+function showPlays(ratingKey, region) {
+    return cached(`plays|${ratingKey}`, SHOW_CHECK_TTL_MS, () => children(ratingKey, region).then(seasons => {
+        const tryNext = (i) => {
+            if (i >= seasons.length) return Promise.resolve(false);
+            return children(seasons[i].ratingKey, region).then(eps => (eps.length ? eps.some(freeHls) : tryNext(i + 1)));
+        };
+        return tryNext(0);
+    })).catch(() => true);
+}
+
+// Whether a catalog title plays: a movie in a catalog already does (toMeta), a show is checked.
+function plays(m) {
+    if (m.type !== 'series') return Promise.resolve(true);
+    const key = m.id.slice(m.id.lastIndexOf(':') + 1);
+    const region = listedIn.get(key);
+    return region ? showPlays(key, region) : metadata(key).then(hit => (hit ? showPlays(key, hit.region) : false));
+}
+
+// [metas] without the shows that have nothing playable, checked a few at a time.
+function playableOnly(metas) {
+    const out = [];
     const next = (i) => {
-        const found = unique(lists, type);
-        if (found.length >= PAGE || i >= Math.min(rows.length, FEATURED_ROWS * 3)) return Promise.resolve(found);
-        return Promise.all(rows.slice(i, i + FEATURED_ROWS).map(r => load(r).catch(() => []))).then(more => { lists.push(...more); return next(i + FEATURED_ROWS); });
+        if (i >= metas.length) return Promise.resolve(out);
+        return Promise.all(metas.slice(i, i + SHOW_CHECKS).map(plays))
+            .then(ok => { metas.slice(i, i + SHOW_CHECKS).forEach((m, n) => { if (ok[n]) out.push(m); }); return next(i + SHOW_CHECKS); });
     };
     return next(0);
+}
+
+// One country's k-th page (from 0) of [type]: of a row ([genre]), or without
+// one of Plex's own rows there: the first page of its next few rows.
+function regionPage(region, type, genre, k) {
+    return hubs(region).then(list => {
+        const picked = genre ? list.filter(h => h.title === genre) : list.slice(k * FEATURED_ROWS, (k + 1) * FEATURED_ROWS);
+        return Promise.all(picked.map(h => hubItems(region, h, genre ? k * PAGE : 0).catch(() => []))).then(lists => unique(lists, type));
+    });
+}
+
+// What every country gives for [ask], in the countries' order; one that fails is left out.
+function fromRegions(ask) {
+    return Promise.all(activeRegions().map(region => ask(region).catch(err => {
+        console.error(`[PlexVOD] ${region.code.toUpperCase()}: ${err.message}`);
+        return [];
+    }))).then(lists => [].concat(...lists));
+}
+
+// The genre names the manifest offers (Plex's rows, of every country), known
+// ones at once and looked up again in the background when old or the
+// countries with a tunnel changed.
+let knownRows = { titles: [], at: 0, regions: '' };
+function genreOptions() {
+    const active = activeRegions().map(r => r.code).join(',');
+    if (Date.now() - knownRows.at > HUBS_TTL_MS || knownRows.regions !== active) {
+        knownRows.at = Date.now();
+        knownRows.regions = active;
+        fromRegions(hubs).then(list => { knownRows = { titles: Array.from(new Set(list.map(h => h.title))), at: Date.now(), regions: active }; })
+            .catch(err => { knownRows.at = 0; console.error(`[PlexVOD] Rows failed: ${err.message}`); });
+    }
+    return knownRows.titles;
 }
 
 // type 'movie' | 'series'; extra { genre, search, skip }.
 function catalog(type, extra) {
     const e = extra || {};
     if (e.search) return search(type, e.search);
-    const start = Number(e.skip) || 0;
-    return hubs().then(list => {
-        if (e.genre) return Promise.all(list.filter(h => h.title === e.genre).map(h => hubItems(h, start).catch(() => []))).then(lists => unique(lists, type));
-        // No genre: Plex's first rows, as many as it takes to fill a page with this type (they mix both).
-        return fillFrom(list, h => hubItems(h, start), type);
+    return mergedPage({
+        regions: activeRegions(),
+        loadPage: (region, k) => regionPage(region, type, e.genre, k),
+        keys: (m) => [m.id],
+        accept: (metas) => Promise.all(metas.map(plays)),
+        skip: Number(e.skip) || 0,
+        size: PAGE,
+        maxRounds: MAX_ROUNDS
     });
 }
 
+// A title where Plex has it: { item, region }, the Netherlands first; null when nowhere.
 function metadata(ratingKey) {
-    return cached(`meta|${ratingKey}`, ITEMS_TTL_MS, () => get(`${VOD}/library/metadata/${ratingKey}`)
-        .then(j => (j && j.MediaContainer && (j.MediaContainer.Metadata || [])[0]) || null));
+    return cached(`meta|${ratingKey}`, ITEMS_TTL_MS, () => {
+        const tryRegion = (i) => {
+            const list = activeRegions();
+            if (i >= list.length) return Promise.resolve(null);
+            return get(`${VOD}/library/metadata/${ratingKey}`, list[i])
+                .then(j => (j && j.MediaContainer && (j.MediaContainer.Metadata || [])[0]) || null)
+                .catch(() => null)
+                .then(item => (item ? { item, region: list[i] } : tryRegion(i + 1)));
+        };
+        return tryRegion(0);
+    });
 }
 
-function children(ratingKey) {
-    return cached(`children|${ratingKey}`, ITEMS_TTL_MS, () => get(`${VOD}/library/metadata/${ratingKey}/children`)
+function children(ratingKey, region) {
+    return cached(`children|${region.code}|${ratingKey}`, ITEMS_TTL_MS, () => get(`${VOD}/library/metadata/${ratingKey}/children`, region)
         .then(j => (j && j.MediaContainer && j.MediaContainer.Metadata) || []));
 }
 
 // Plex's search covers every title anywhere; the free ones are those its
-// free catalogue knows, looked up a few at a time.
+// free catalogue knows (in either country), looked up a few at a time.
 function search(type, query) {
     const searchType = type === 'movie' ? 'movies' : 'tv';
-    return get(`${DISCOVER}/library/search?query=${encodeURIComponent(query)}&limit=30&searchTypes=${searchType}&searchProviders=discover,vod&includeMetadata=1`)
+    return get(`${DISCOVER}/library/search?query=${encodeURIComponent(query)}&limit=30&searchTypes=${searchType}&searchProviders=discover,vod&includeMetadata=1`, REGIONS[0])
         .then(j => {
             const keys = ((j && j.MediaContainer && j.MediaContainer.SearchResults) || [])
                 .flatMap(g => g.SearchResult || []).map(r => r.Metadata && r.Metadata.ratingKey).filter(Boolean);
-            const unique = Array.from(new Set(keys));
+            const wanted = Array.from(new Set(keys));
             const found = [];
             const next = (i) => {
-                if (i >= unique.length) return Promise.resolve(found);
-                return Promise.all(unique.slice(i, i + SEARCH_LOOKUPS).map(k => metadata(k).catch(() => null)))
-                    .then(items => { items.forEach(it => { const m = it && toMeta(it); if (m && m.type === type) found.push(m); }); return next(i + SEARCH_LOOKUPS); });
+                if (i >= wanted.length) return Promise.resolve(found);
+                return Promise.all(wanted.slice(i, i + SEARCH_LOOKUPS).map(k => metadata(k).catch(() => null)))
+                    .then(hits => { hits.forEach(hit => { const m = hit && toMeta(hit.item); if (m && m.type === type) found.push(m); }); return next(i + SEARCH_LOOKUPS); });
             };
-            return next(0);
+            return next(0).then(playableOnly);
         });
 }
 
@@ -223,11 +325,11 @@ function parseId(id) {
 function meta(id) {
     const p = parseId(id);
     if (!p || p.kind === 'ep') return Promise.resolve(null);
-    return metadata(p.id).then(item => {
-        if (!item) return null;
-        const base = toMeta(item);
+    return metadata(p.id).then(hit => {
+        if (!hit) return null;
+        const base = toMeta(hit.item);
         if (!base || p.kind === 'movie') return base;
-        return children(p.id).then(seasons => Promise.all(seasons.map(season => children(season.ratingKey).catch(() => [])
+        return children(p.id, hit.region).then(seasons => Promise.all(seasons.map(season => children(season.ratingKey, hit.region).catch(() => [])
             .then(episodes => episodes.filter(freeHls).map(ep => ({
                 id: `${PREFIX}ep:${ep.ratingKey}`,
                 title: ep.title,
@@ -240,20 +342,59 @@ function meta(id) {
     });
 }
 
-function streams(id) {
+// [relayBase]: this server's address as the client used it, for a title that
+// only plays through a tunnel.
+function streams(id, relayBase) {
     const p = parseId(id);
     if (!p || p.kind === 'series') return Promise.resolve([]);
-    return Promise.all([metadata(p.id), getSession()]).then(([item, s]) => {
-        const media = item && freeHls(item);
+    return Promise.all([metadata(p.id), getSession()]).then(([hit, s]) => {
+        const media = hit && freeHls(hit.item);
         if (!media) return [];
         const q = new URLSearchParams({ 'X-Plex-Token': s.token, 'X-Plex-Client-Identifier': s.client, 'X-Plex-Product': PRODUCT, 'X-Plex-Version': VERSION });
+        const direct = `${VOD}${media.Part[0].key}?${q}`;
         return [{
             name: 'Plex',
             title: [/^\d+$/.test(media.videoResolution || '') ? `${media.videoResolution}p` : null, 'Free with adverts'].filter(Boolean).join(' | '),
-            url: `${VOD}${media.Part[0].key}?${q}`,
+            url: hit.region.source ? relayUrl(relayBase, hit.region.code, direct) : direct,
             behaviorHints: { notWebReady: true }
         }];
     });
 }
 
-module.exports = { PREFIX, catalog, genreOptions, meta, streams, parseId };
+// ---- playlists through the tunnel ----------------------------------------------------
+
+// Only Plex's own hosts are fetched for a client: /plex/hls must not be an open proxy.
+const RELAY_HOSTS = /(^|\.)plex\.tv$/i;
+
+function relayUrl(base, regionCode, url) {
+    return `${base}/plex/hls?r=${regionCode}&u=${encodeURIComponent(url)}`;
+}
+
+// A playlist fetched through its country's tunnel. The playlists it points
+// to on Plex's own API host come through this server as well; everything
+// else (the video's playlists and segments on Plex's video hosts) is made
+// absolute and plays straight from Plex. -> { status, body } or throws.
+function playlist(url, relayBase, regionCode) {
+    const region = REGIONS.find(r => r.code === regionCode && r.source);
+    let target;
+    try { target = new URL(url); } catch (e) { return Promise.resolve({ status: 400, body: 'Bad address' }); }
+    if (!region) return Promise.resolve({ status: 400, body: 'Unknown region' });
+    if (target.protocol !== 'https:' || !RELAY_HOSTS.test(target.hostname)) return Promise.resolve({ status: 403, body: 'Not a Plex address' });
+    const proxy = wireguard.proxyFor(region.source);
+    if (!proxy) return Promise.resolve({ status: 502, body: 'No VPN tunnel' });
+    return tunnelFetch(proxy, target.href, { timeoutMs: REQUEST_TIMEOUT_MS }).then(r => {
+        if (r.status !== 200) return { status: r.status, body: r.text() };
+        const point = (ref) => {
+            const abs = new URL(ref, r.url || target.href);
+            return /\.m3u8$/i.test(abs.pathname) && RELAY_HOSTS.test(abs.hostname) ? relayUrl(relayBase, region.code, abs.href) : abs.href;
+        };
+        const body = r.text().split(/\r?\n/).map(line => {
+            if (!line) return line;
+            if (line.startsWith('#')) return line.replace(/URI="([^"]+)"/g, (m, ref) => `URI="${point(ref)}"`);
+            return point(line.trim());
+        }).join('\n');
+        return { status: 200, body };
+    });
+}
+
+module.exports = { PREFIX, catalog, genreOptions, meta, streams, playlist, parseId };

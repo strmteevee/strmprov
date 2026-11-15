@@ -325,7 +325,7 @@ function enabledYoutubeCatalogs() {
 }
 // Clients cache a manifest by version, so switching a channel on/off has to
 // change it: the patch number is the switch file's revision counter.
-const MANIFEST_BASE_VERSION = '1.26';
+const MANIFEST_BASE_VERSION = '1.27';
 function manifestVersion(base) {
     return `${base}.${youtubeChannel.settingsRevision()}`;
 }
@@ -1044,7 +1044,6 @@ function resolveCustomStreamResponse(id) {
     if (id.startsWith('fullraces:')) return buildFullracesStreamResponse(id);
     if (id.startsWith('daddylive:')) return buildDaddyliveStreamResponse(id);
     if (id.startsWith('ytlive:')) return buildYoutubeStreamResponse(id);
-    if (id.startsWith(plexvod.PREFIX)) return plexvod.streams(id).then(streams => ({ streams })).catch(err => { console.error(`[PlexVOD] ${err.message}`); return { streams: [] }; });
     return null;
 }
 
@@ -1168,15 +1167,17 @@ const server = http.createServer((req, res) => {
         logBuffer.clear('manual (admin dashboard)');
         return sendJson(res, 200, { cleared: true });
     }
-    // /pluto/hls?u= - a Pluto TV playlist through its tunnel (providers/plutotv.js).
-    if (parts[0] === 'pluto' && parts[1] === 'hls' && parts.length === 2 && req.method === 'GET') {
-        return plutotv.playlist(parsedUrl.searchParams.get('u') || '', `http://${req.headers.host}`)
+    // /pluto/hls?r=&u= and /plex/hls?r=&u= - a Pluto TV or Plex playlist through
+    // its region's tunnel (providers/plutotv.js, providers/plexvod.js).
+    if ((parts[0] === 'pluto' || parts[0] === 'plex') && parts[1] === 'hls' && parts.length === 2 && req.method === 'GET') {
+        const source = parts[0] === 'pluto' ? plutotv : plexvod;
+        return source.playlist(parsedUrl.searchParams.get('u') || '', `http://${req.headers.host}`, parsedUrl.searchParams.get('r') || undefined)
             .then(r => {
                 res.writeHead(r.status, { 'Content-Type': r.status === 200 ? 'application/vnd.apple.mpegurl' : 'text/plain', 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' });
                 res.end(r.body);
             })
             .catch(err => {
-                console.error(`[PlutoTV] Playlist failed: ${err.message}`);
+                console.error(`[${parts[0]}] Playlist failed: ${err.message}`);
                 res.writeHead(502, { 'Content-Type': 'text/plain' });
                 res.end('Playlist failed');
             });
@@ -1244,11 +1245,12 @@ const server = http.createServer((req, res) => {
                 console.log(`[addon-server] No streams for ${id}: ${vpn.reason}`);
                 return sendJson(res, 200, { streams: [] });
             }
-            if (id.startsWith(plutotv.PREFIX)) {
-                // Its playlists come through this server (providers/plutotv.js), at the address the client used.
-                return plutotv.streams(id, `http://${req.headers.host}`)
+            const relayed = id.startsWith(plutotv.PREFIX) ? plutotv : id.startsWith(plexvod.PREFIX) ? plexvod : null;
+            if (relayed) {
+                // Their playlists can come through this server and a tunnel, at the address the client used.
+                return relayed.streams(id, `http://${req.headers.host}`)
                     .then(streams => sendJson(res, 200, { streams }))
-                    .catch(err => { console.error(`[PlutoTV] ${err.message}`); sendJson(res, 200, { streams: [] }); });
+                    .catch(err => { console.error(`[${relayed === plutotv ? 'PlutoTV' : 'PlexVOD'}] ${err.message}`); sendJson(res, 200, { streams: [] }); });
             }
             const custom = resolveCustomStreamResponse(id);
             if (custom) return custom.then(body => sendJson(res, 200, body));

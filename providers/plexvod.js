@@ -386,6 +386,8 @@ function streamOf(item, region, s, relayBase) {
         quality: quality || undefined,
         url: region.source ? relayUrl(relayBase, region.code, direct) : direct,
         provider: 'plex',
+        // The service's own stream of the title (see addon-server.js: clients can put those first).
+        official: true,
         behaviorHints: { notWebReady: true }
     }];
 }

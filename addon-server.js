@@ -63,6 +63,7 @@ const plutotv = require('./providers/plutotv');
 const plexvod = require('./providers/plexvod');
 const relayAddress = require('./lib/relayAddress');
 const genreRows = require('./lib/genreRows');
+const regularTitle = require('./lib/regularTitle');
 const { tunnelFetch } = require('./lib/tunnelFetch');
 
 const PORT = 3100;
@@ -245,10 +246,12 @@ function buildManifest() {
 function plutoCatalogs() {
     const g = plutotv.genreOptions();
     const vodExtra = [{ name: 'genre', options: g.vod }, { name: 'search' }, { name: 'skip' }];
+    // `site`: these catalogs hold a service's own titles (not TMDB's again). Not a Stremio field:
+    // OmniStream offers each site as a place to search and browse of its own.
     return [
         { type: 'tv', id: 'pluto-live', name: 'Pluto TV', extra: [{ name: 'genre', options: g.live }] },
-        { type: 'movie', id: 'pluto-movies', name: 'Pluto TV Movies', extra: vodExtra },
-        { type: 'series', id: 'pluto-series', name: 'Pluto TV Series', extra: vodExtra }
+        { type: 'movie', id: 'pluto-movies', name: 'Pluto TV Movies', extra: vodExtra, site: 'Pluto TV' },
+        { type: 'series', id: 'pluto-series', name: 'Pluto TV Series', extra: vodExtra, site: 'Pluto TV' }
     ];
 }
 
@@ -256,8 +259,8 @@ function plutoCatalogs() {
 function plexCatalogs() {
     const extra = [{ name: 'genre', options: plexvod.genreOptions() }, { name: 'search' }, { name: 'skip' }];
     return [
-        { type: 'movie', id: 'plex-movies', name: 'Plex Movies', extra },
-        { type: 'series', id: 'plex-series', name: 'Plex Series', extra }
+        { type: 'movie', id: 'plex-movies', name: 'Plex Movies', extra, site: 'Plex' },
+        { type: 'series', id: 'plex-series', name: 'Plex Series', extra, site: 'Plex' }
     ];
 }
 
@@ -274,7 +277,8 @@ function serviceGenreCatalogs() {
         type: g.type,
         id: `${service.prefix}-${g.slug}-${g.type}`,
         name: `${service.name} ${g.label} ${g.type === 'movie' ? 'Movies' : 'Series'}`,
-        extra: [{ name: 'skip' }]
+        extra: [{ name: 'skip' }],
+        site: service.name
     }))));
 }
 // -> the titles of a service's genre catalog, or undefined when [id] isn't one.
@@ -284,6 +288,7 @@ function resolveServiceGenreCatalog(type, id, extra) {
     const match = service && m[3] === type ? genreRows.matcher(m[2], type) : null;
     if (!match) return undefined;
     return service.source.catalog(type, { match, skip: extra && extra.skip })
+        .then(regularTitle.asRegularTitles)
         .catch(err => { console.error(`[${service.name}] ${id}: ${err.message}`); return []; });
 }
 
@@ -354,7 +359,7 @@ function enabledYoutubeCatalogs() {
 }
 // Clients cache a manifest by version, so switching a channel on/off has to
 // change it: the patch number is the switch file's revision counter.
-const MANIFEST_BASE_VERSION = '1.29';
+const MANIFEST_BASE_VERSION = '1.30';
 function manifestVersion(base) {
     return `${base}.${youtubeChannel.settingsRevision()}`;
 }
@@ -989,10 +994,11 @@ function resolveCatalog(type, id, extra) {
     const serviceGenre = resolveServiceGenreCatalog(type, id, extra);
     if (serviceGenre) return serviceGenre;
     if ((id === 'plex-movies' && type === 'movie') || (id === 'plex-series' && type === 'series')) {
-        return plexvod.catalog(type, extra).catch(err => { console.error(`[PlexVOD] ${err.message}`); return []; });
+        // A service's title that surely is an ordinary one is handed out as that (lib/regularTitle.js).
+        return plexvod.catalog(type, extra).then(regularTitle.asRegularTitles).catch(err => { console.error(`[PlexVOD] ${err.message}`); return []; });
     }
     if ((id === 'pluto-movies' && type === 'movie') || (id === 'pluto-series' && type === 'series')) {
-        return plutotv.catalog(type, extra).catch(err => { console.error(`[PlutoTV] ${err.message}`); return []; });
+        return plutotv.catalog(type, extra).then(regularTitle.asRegularTitles).catch(err => { console.error(`[PlutoTV] ${err.message}`); return []; });
     }
     if (id === 'indycar-videos' && type === 'movie') {
         return buildIndycarCatalog();
@@ -1102,6 +1108,9 @@ function buildStreamResponse(type, rawId, relayBase) {
         return aggregate.aggregateStreams(found.tmdbId, found.mediaType, season, episode, { reuse: true }).then(({ streams }) => {
             const stremioStreams = relayAddress.resolve(streams, relayBase).map(s => {
                 const behaviorHints = { notWebReady: true };
+                // A service's own free stream of the title (Plex, Pluto TV), not a copy found
+                // elsewhere. Not a Stremio field: OmniStream reads it and can play those first.
+                if (s.official) behaviorHints.official = true;
                 if (s.headers && Object.keys(s.headers).length) {
                     behaviorHints.proxyHeaders = { request: s.headers };
                 }

@@ -38,6 +38,7 @@ const wireguard = require('../lib/wireguard');
 const { tunnelFetch } = require('../lib/tunnelFetch');
 const { mergedPage } = require('../lib/mergedPages');
 const { contentOnly, programmeRanges } = require('../lib/hlsContentOnly');
+const { matchingTitles, pickEpisode } = require('../lib/titleMatch');
 
 // In order of preference: of two titles with the same name, the earlier region's is shown.
 // `source` is the name the tunnel is assigned under (lib/wireguard.js SOURCES).
@@ -352,8 +353,42 @@ function streams(id, relayBase) {
         title: p.kind === 'ch' ? 'Live' : 'Free on Pluto TV',
         // A movie or episode: without the advert breaks stitched into it.
         url: relayUrl(relayBase, p.region.def.code, url, p.kind !== 'ch'),
+        provider: 'pluto',
+        // The service's own stream of the title (see addon-server.js: clients can put those first).
+        official: p.kind !== 'ch',
         behaviorHints: { notWebReady: true }
     }]);
+}
+
+// ---- as a source for ordinary titles (providers/pluto.js) -----------------------------------
+
+function isAvailable() {
+    return regions.some(r => r.available());
+}
+
+// The Pluto stream of [wanted]: { mediaType 'movie' | 'tv', titles: [names it
+// goes by], year, and for an episode season, episode, episodeTitle and
+// siblings (its season's episodes, [{ episode, title }]) } - or none. Looked
+// for by name in every region (lib/titleMatch.js); of a series the first
+// region's copy that has the episode.
+function streamsForTitle(wanted, relayBase) {
+    const type = wanted.mediaType === 'tv' ? 'series' : 'movie';
+    const name = (wanted.titles || [])[0];
+    if (!name) return Promise.resolve([]);
+    // The first of [hits] ([{ id }]) that gives a stream.
+    const tryHits = (hits, i) => {
+        if (i >= hits.length) return Promise.resolve([]);
+        if (type === 'movie') return streams(hits[i].id, relayBase).catch(() => []).then(s => (s.length ? s : tryHits(hits, i + 1)));
+        return meta(hits[i].id)
+            .then(m => pickEpisode((m && m.videos) || [], { season: wanted.season, episode: wanted.episode, title: wanted.episodeTitle }, wanted.siblings))
+            .catch(() => null)
+            .then(ep => (ep ? streams(ep.id, relayBase) : tryHits(hits, i + 1)));
+    };
+    const byName = () => fromRegions(r => r.search(type, name))
+        .then(found => matchingTitles(found.map(m => ({ name: m.name, year: m.releaseInfo, id: m.id })), wanted));
+    // The Pluto titles already known to be this one (a catalog listed them as it) first; else the ones found by name.
+    const known = (wanted.knownIds || []).map(id => ({ id }));
+    return tryHits(known, 0).then(s => (s.length ? s : byName().then(hits => tryHits(hits.filter(h => !known.some(k => k.id === h.id)), 0))));
 }
 
 // ---- playlists through the tunnel ----------------------------------------------------
@@ -439,4 +474,4 @@ function playlist(url, relayBase, regionCode, programmeOnly, pictureUrl) {
     });
 }
 
-module.exports = { PREFIX, catalog, liveCatalog, genreOptions, meta, streams, playlist, parseId };
+module.exports = { PREFIX, catalog, liveCatalog, genreOptions, meta, streams, streamsForTitle, isAvailable, playlist, parseId };

@@ -6,3 +6,8 @@ data/provider-health.json
 .env.local
 config/youtube-channels.json
 config/vpn.json
+config/wireguard/
+bin/wireproxy
+bin/wireproxy.exe
+data/plex-session.json
+bin/wireproxy.version

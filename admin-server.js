@@ -44,6 +44,7 @@ const aggregate = require('./lib/aggregate');
 const subtitles = require('./lib/subtitles');
 const providerHealth = require('./lib/providerHealth');
 const vpnCheck = require('./lib/vpnCheck');
+const wireguard = require('./lib/wireguard');
 const youtubeChannel = require('./providers/youtube-channel');
 
 const PORT = 3200;
@@ -374,6 +375,46 @@ function handleSetVpn(body, res) {
     handleGetVpn(res);
 }
 
+// ---- WireGuard tunnels ----
+// The files are written here; addon-server.js runs the tunnels and reports
+// their state (lib/wireguard.js).
+
+function handleGetTunnels(res) {
+    const state = wireguard.readState();
+    const fromAddon = new Promise(resolve => {
+        http.get(`${ADDON_SERVER_BASE}/tunnels`, r => {
+            let body = '';
+            r.on('data', c => { body += c; });
+            r.on('end', () => { try { resolve(JSON.parse(body).tunnels || []); } catch (e) { resolve(null); } });
+        }).on('error', () => resolve(null)).setTimeout(5000, function () { this.destroy(); resolve(null); });
+    });
+    fromAddon.then(live => sendJson(res, 200, {
+        addonReachable: !!live,
+        tunnels: Object.entries(state.tunnels).map(([name, t]) => Object.assign({ name, label: t.label, uploadedAt: t.uploadedAt }, (live || []).find(x => x.name === name) || {})),
+        uses: state.uses,
+        sources: wireguard.SOURCES
+    }));
+}
+
+function handleSaveTunnel(body, res) {
+    try {
+        wireguard.saveTunnel(String(body.name || '').trim().toLowerCase(), String(body.config || ''));
+        if (body.useFor) wireguard.setUse(body.useFor, String(body.name).trim().toLowerCase());
+    } catch (e) {
+        return sendJson(res, 400, { error: e.message });
+    }
+    handleGetTunnels(res);
+}
+
+function handleSetTunnelUse(body, res) {
+    try {
+        wireguard.setUse(String(body.source || ''), body.tunnel ? String(body.tunnel) : null);
+    } catch (e) {
+        return sendJson(res, 400, { error: e.message });
+    }
+    handleGetTunnels(res);
+}
+
 // ---- Provider health ----
 
 function handleGetProviderHealth(res) {
@@ -519,6 +560,23 @@ const server = http.createServer((req, res) => {
     // /api/deploy
     if (parts[0] === 'api' && parts[1] === 'deploy' && req.method === 'POST') {
         return handlePullAndRestart(res);
+    }
+    // /api/tunnels
+    if (parts[0] === 'api' && parts[1] === 'tunnels' && parts.length === 2 && req.method === 'GET') {
+        return handleGetTunnels(res);
+    }
+    if (parts[0] === 'api' && parts[1] === 'tunnels' && parts.length === 2 && req.method === 'POST') {
+        return readBody(req).then(body => handleSaveTunnel(body, res)).catch(e => sendJson(res, 400, { error: e.message }));
+    }
+    if (parts[0] === 'api' && parts[1] === 'tunnels' && parts[2] === 'use' && parts.length === 3 && req.method === 'POST') {
+        return readBody(req).then(body => handleSetTunnelUse(body, res)).catch(e => sendJson(res, 400, { error: e.message }));
+    }
+    if (parts[0] === 'api' && parts[1] === 'tunnels' && parts.length === 4 && parts[3] === 'test' && req.method === 'GET') {
+        return proxyAddonServerJson(`${ADDON_SERVER_BASE}/tunnels/test?name=${encodeURIComponent(decodeURIComponent(parts[2]))}`, res);
+    }
+    if (parts[0] === 'api' && parts[1] === 'tunnels' && parts.length === 3 && req.method === 'DELETE') {
+        wireguard.deleteTunnel(decodeURIComponent(parts[2]));
+        return handleGetTunnels(res);
     }
     // /api/vpn
     if (parts[0] === 'api' && parts[1] === 'vpn' && parts.length === 2 && req.method === 'GET') {

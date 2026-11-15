@@ -58,6 +58,10 @@ const daddylive = require('./providers/daddylive');
 const youtubeChannel = require('./providers/youtube-channel');
 const liveGuide = require('./lib/liveGuide');
 const vpnCheck = require('./lib/vpnCheck');
+const wireguard = require('./lib/wireguard');
+const plutotv = require('./providers/plutotv');
+const plexvod = require('./providers/plexvod');
+const { tunnelFetch } = require('./lib/tunnelFetch');
 
 const PORT = 3100;
 
@@ -219,7 +223,7 @@ function buildManifest() {
             // already has full TMDB access for every stream lookup, so it can
             // fill that gap itself - a TMDB-backed fallback for any movie/
             // series 'tt' id, not just this addon's own custom catalogs.
-            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:', 'daddylive:'] },
+            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:', 'daddylive:', 'pluto:', 'plexvod:'] },
             // Scoped to real tt-id content only - neither IndyCar's nor
             // F1/F2/F3/Academy's own custom id schemes have a
             // subtitle concept, and Cinemeta already handles meta for the
@@ -228,13 +232,37 @@ function buildManifest() {
         ],
         types: ['movie', 'series', 'tv'],
         catalogs: buildCatalogs(),
-        idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:', 'daddylive:'],
+        idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:', 'daddylive:', 'pluto:', 'plexvod:'],
         behaviorHints: { configurable: false, configurationRequired: false }
     };
 }
 
+// Pluto TV (providers/plutotv.js, through the VPN tunnel set for it on the
+// dashboard): live channels, and movies and series with Pluto's categories as
+// genres and a search. Empty while no tunnel is set.
+function plutoCatalogs() {
+    const g = plutotv.genreOptions();
+    const vodExtra = [{ name: 'genre', options: g.vod }, { name: 'search' }, { name: 'skip' }];
+    return [
+        { type: 'tv', id: 'pluto-live', name: 'Pluto TV', extra: [{ name: 'genre', options: g.live }] },
+        { type: 'movie', id: 'pluto-movies', name: 'Pluto TV Movies', extra: vodExtra },
+        { type: 'series', id: 'pluto-series', name: 'Pluto TV Series', extra: vodExtra }
+    ];
+}
+
+// Plex's free movies and shows (providers/plexvod.js), its rows as genres.
+function plexCatalogs() {
+    const extra = [{ name: 'genre', options: plexvod.genreOptions() }, { name: 'search' }, { name: 'skip' }];
+    return [
+        { type: 'movie', id: 'plex-movies', name: 'Plex Movies', extra },
+        { type: 'series', id: 'plex-series', name: 'Plex Series', extra }
+    ];
+}
+
 function buildCatalogs() {
     return [
+        ...plutoCatalogs(),
+        ...plexCatalogs(),
         // Plain TMDB browse catalogs (see the DISCOVER_CATALOG_* constants/
         // builders above).
         { type: 'movie', id: 'strmprov-new-movie', name: 'New' },
@@ -297,7 +325,7 @@ function enabledYoutubeCatalogs() {
 }
 // Clients cache a manifest by version, so switching a channel on/off has to
 // change it: the patch number is the switch file's revision counter.
-const MANIFEST_BASE_VERSION = '1.25';
+const MANIFEST_BASE_VERSION = '1.26';
 function manifestVersion(base) {
     return `${base}.${youtubeChannel.settingsRevision()}`;
 }
@@ -925,7 +953,16 @@ function buildSubtitlesResponse(type, rawId) {
 
 // Catalog dispatch. Resolves to `null`, not an empty array,
 // when `id`/`type` doesn't match anything known here.
-function resolveCatalog(type, id) {
+function resolveCatalog(type, id, extra) {
+    if (id === 'pluto-live' && type === 'tv') {
+        return plutotv.liveCatalog(extra).catch(err => { console.error(`[PlutoTV] ${err.message}`); return []; });
+    }
+    if ((id === 'plex-movies' && type === 'movie') || (id === 'plex-series' && type === 'series')) {
+        return plexvod.catalog(type, extra).catch(err => { console.error(`[PlexVOD] ${err.message}`); return []; });
+    }
+    if ((id === 'pluto-movies' && type === 'movie') || (id === 'pluto-series' && type === 'series')) {
+        return plutotv.catalog(type, extra).catch(err => { console.error(`[PlutoTV] ${err.message}`); return []; });
+    }
     if (id === 'indycar-videos' && type === 'movie') {
         return buildIndycarCatalog();
     }
@@ -983,6 +1020,12 @@ function resolveMeta(type, id) {
     if (id.startsWith('daddylive:') && type === 'tv') {
         return buildDaddyliveMeta(id);
     }
+    if (id.startsWith(plexvod.PREFIX)) {
+        return plexvod.meta(id).catch(err => { console.error(`[PlexVOD] ${err.message}`); return null; });
+    }
+    if (id.startsWith(plutotv.PREFIX)) {
+        return plutotv.meta(id).catch(err => { console.error(`[PlutoTV] ${err.message}`); return null; });
+    }
     if (id.startsWith('ytlive:') && (type === 'tv' || type === 'movie')) {
         return buildYoutubeMeta(id);
     }
@@ -1001,6 +1044,7 @@ function resolveCustomStreamResponse(id) {
     if (id.startsWith('fullraces:')) return buildFullracesStreamResponse(id);
     if (id.startsWith('daddylive:')) return buildDaddyliveStreamResponse(id);
     if (id.startsWith('ytlive:')) return buildYoutubeStreamResponse(id);
+    if (id.startsWith(plexvod.PREFIX)) return plexvod.streams(id).then(streams => ({ streams })).catch(err => { console.error(`[PlexVOD] ${err.message}`); return { streams: [] }; });
     return null;
 }
 
@@ -1124,6 +1168,37 @@ const server = http.createServer((req, res) => {
         logBuffer.clear('manual (admin dashboard)');
         return sendJson(res, 200, { cleared: true });
     }
+    // /pluto/hls?u= - a Pluto TV playlist through its tunnel (providers/plutotv.js).
+    if (parts[0] === 'pluto' && parts[1] === 'hls' && parts.length === 2 && req.method === 'GET') {
+        return plutotv.playlist(parsedUrl.searchParams.get('u') || '', `http://${req.headers.host}`)
+            .then(r => {
+                res.writeHead(r.status, { 'Content-Type': r.status === 200 ? 'application/vnd.apple.mpegurl' : 'text/plain', 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' });
+                res.end(r.body);
+            })
+            .catch(err => {
+                console.error(`[PlutoTV] Playlist failed: ${err.message}`);
+                res.writeHead(502, { 'Content-Type': 'text/plain' });
+                res.end('Playlist failed');
+            });
+    }
+    // /tunnels, /tunnels/test?name= - the WireGuard tunnels this process runs
+    // (lib/wireguard.js), for the admin dashboard: their state, and which
+    // public IP a request through one comes out on.
+    if (parts[0] === 'tunnels' && parts.length === 1 && req.method === 'GET') {
+        return sendJson(res, 200, { tunnels: wireguard.status() });
+    }
+    if (parts[0] === 'tunnels' && parts[1] === 'test' && parts.length === 2 && req.method === 'GET') {
+        const name = parsedUrl.searchParams.get('name');
+        const t = wireguard.status().find(x => x.name === name);
+        if (!t) return sendJson(res, 404, { error: `No tunnel named ${name}` });
+        if (!t.running) return sendJson(res, 200, { ok: false, error: t.error || 'The tunnel is not running' });
+        return tunnelFetch({ host: '127.0.0.1', port: t.port }, 'https://ipinfo.io/json', { timeoutMs: 15000 })
+            .then(r => {
+                const j = JSON.parse(r.text());
+                sendJson(res, 200, { ok: true, ip: j.ip, place: [j.city, j.country].filter(Boolean).join(', '), network: j.org });
+            })
+            .catch(e => sendJson(res, 200, { ok: false, error: e.message }));
+    }
 
     // Installs made when this server still had profiles point at
     // /profile/<n>/...; those URLs serve the same addon, so they keep working
@@ -1138,7 +1213,9 @@ const server = http.createServer((req, res) => {
     if (resource === 'catalog' && route.length >= 3) {
         const type = route[1];
         const id = route[2].replace(/\.json$/, '');
-        return Promise.resolve(resolveCatalog(type, id)).then(metas => sendJson(res, 200, { metas: metas || [] }));
+        // Stremio's extras ("genre=Drama&skip=30", "search=...") come as the path's last part.
+        const extra = route[3] ? Object.fromEntries(new URLSearchParams(decodeURIComponent(route[3].replace(/\.json$/, '')))) : {};
+        return Promise.resolve(resolveCatalog(type, id, extra)).then(metas => sendJson(res, 200, { metas: metas || [] }));
     }
 
     if (resource === 'meta' && route.length >= 3) {
@@ -1167,6 +1244,12 @@ const server = http.createServer((req, res) => {
                 console.log(`[addon-server] No streams for ${id}: ${vpn.reason}`);
                 return sendJson(res, 200, { streams: [] });
             }
+            if (id.startsWith(plutotv.PREFIX)) {
+                // Its playlists come through this server (providers/plutotv.js), at the address the client used.
+                return plutotv.streams(id, `http://${req.headers.host}`)
+                    .then(streams => sendJson(res, 200, { streams }))
+                    .catch(err => { console.error(`[PlutoTV] ${err.message}`); sendJson(res, 200, { streams: [] }); });
+            }
             const custom = resolveCustomStreamResponse(id);
             if (custom) return custom.then(body => sendJson(res, 200, body));
             if (type !== 'movie' && type !== 'series') {
@@ -1186,6 +1269,8 @@ server.listen(PORT, () => {
     const ip = getLocalIp();
     console.log(`\n🚀 StrmProv addon server running at: http://${ip}:${PORT}/`);
     console.log(`[addon-server] ${memoryTuning.describe()}`);
+    // The WireGuard tunnels uploaded on the dashboard (lib/wireguard.js).
+    wireguard.sync();
     console.log('Install this as a Nuvio/Stremio addon:');
     console.log(`  http://${ip}:${PORT}/manifest.json`);
     console.log('Press Ctrl+C to stop\n');

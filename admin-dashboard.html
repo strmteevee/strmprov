@@ -173,6 +173,22 @@
     </div>
   </section>
 
+  <section class="panel" id="tunnels-panel">
+    <h2>VPN tunnels</h2>
+    <p class="desc">WireGuard configs (e.g. from Proton VPN: Downloads → WireGuard configuration) for sources that only work from another country, like Pluto TV from the US. Only that source's own requests go through its tunnel; everything else on this server is untouched. The config holds a private key: it is stored on this server only (readable by its own user), never in git. IPv6 is left out (it didn't route through the tunnel).</p>
+    <table>
+      <thead><tr><th>Tunnel</th><th>Server</th><th>State</th><th>Used by</th><th></th></tr></thead>
+      <tbody id="tunnels-body"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+    </table>
+    <div class="field-row" style="margin-top:14px;">
+      <div class="field"><label>Name</label><input type="text" id="tunnel-name" placeholder="e.g. us" style="width:110px;" /></div>
+      <div class="field"><label>WireGuard config (.conf)</label><input type="file" id="tunnel-file" accept=".conf,text/plain" /></div>
+      <div class="field"><label>Use for</label><select id="tunnel-use-for"></select></div>
+      <div class="field"><label>&nbsp;</label><button class="primary" id="tunnel-upload">Upload</button></div>
+    </div>
+    <div class="field-row" id="tunnel-uses" style="margin-top:6px;"></div>
+  </section>
+
   <section class="panel" id="env-panel">
     <h2>API keys</h2>
     <p class="desc">Stored in this server's own <span class="mono">.env</span> file - saving here writes it directly, so there's no more copying the file over by hand on a remote box. Each key is optional; leave one blank to disable whatever depends on it. <strong>Restart addon-server.js (and this admin server) after saving</strong> for a changed key to actually take effect - each only reads <span class="mono">.env</span> once, at startup.</p>
@@ -579,6 +595,63 @@ document.getElementById('provider-health-reset').addEventListener('click', () =>
     .catch(e => toast(e.message, 'error'));
 });
 
+// ---- VPN tunnels ----
+
+let tunnelData = null;
+function showTunnels(data) {
+  tunnelData = data;
+  const body = document.getElementById('tunnels-body');
+  body.innerHTML = data.tunnels.length ? data.tunnels.map(t => {
+    const state = !data.addonReachable ? '<span class="muted">addon not reachable</span>'
+      : t.running ? `<span style="color:var(--good)">running</span>` : `<span style="color:var(--bad)">stopped${t.error ? ': ' + escapeHtml(t.error) : ''}</span>`;
+    return `<tr><td class="mono">${escapeHtml(t.name)}</td><td>${escapeHtml(t.label)}</td><td>${state} <span class="muted" id="tunnel-test-${escapeHtml(t.name)}"></span></td>` +
+      `<td>${escapeHtml((t.usedBy || []).join(', ') || '-')}</td>` +
+      `<td><button data-test="${escapeHtml(t.name)}">Test</button> <button class="danger" data-delete="${escapeHtml(t.name)}">Delete</button></td></tr>`;
+  }).join('') : '<tr><td colspan="5" class="muted">No tunnels yet.</td></tr>';
+  const sources = Object.entries(data.sources);
+  document.getElementById('tunnel-use-for').innerHTML = '<option value="">(nothing yet)</option>' + sources.map(([id, name]) => `<option value="${id}">${escapeHtml(name)}</option>`).join('');
+  document.getElementById('tunnel-uses').innerHTML = sources.map(([id, name]) =>
+    `<div class="field"><label>${escapeHtml(name)} goes through</label><select data-use="${id}"><option value="">no tunnel</option>` +
+    data.tunnels.map(t => `<option value="${escapeHtml(t.name)}" ${data.uses[id] === t.name ? 'selected' : ''}>${escapeHtml(t.name)} (${escapeHtml(t.label)})</option>`).join('') +
+    '</select></div>').join('');
+}
+function loadTunnels() {
+  return api('GET', '/api/tunnels').then(showTunnels);
+}
+document.getElementById('tunnels-body').addEventListener('click', (e) => {
+  const test = e.target.getAttribute('data-test');
+  const del = e.target.getAttribute('data-delete');
+  if (test) {
+    const out = document.getElementById('tunnel-test-' + test);
+    out.textContent = 'testing…';
+    api('GET', `/api/tunnels/${encodeURIComponent(test)}/test`)
+      .then(r => { out.textContent = r.ok ? `→ ${r.ip}, ${r.place} (${r.network})` : `✗ ${r.error}`; })
+      .catch(err => { out.textContent = `✗ ${err.message}`; });
+  }
+  if (del && confirm(`Delete tunnel "${del}" and its config? Sources using it stop working until another tunnel is chosen.`)) {
+    api('DELETE', `/api/tunnels/${encodeURIComponent(del)}`).then(d => { showTunnels(d); toast('Tunnel deleted', 'ok'); }).catch(err => toast(err.message, 'error'));
+  }
+});
+document.getElementById('tunnel-uses').addEventListener('change', (e) => {
+  const source = e.target.getAttribute('data-use');
+  if (!source) return;
+  api('POST', '/api/tunnels/use', { source, tunnel: e.target.value })
+    .then(d => { showTunnels(d); toast('Saved', 'ok'); }).catch(err => toast(err.message, 'error'));
+});
+document.getElementById('tunnel-upload').addEventListener('click', () => {
+  const name = document.getElementById('tunnel-name').value.trim().toLowerCase();
+  const file = document.getElementById('tunnel-file').files[0];
+  if (!name || !file) return toast('Give the tunnel a name and choose its .conf file', 'error');
+  file.text().then(config => api('POST', '/api/tunnels', { name, config, useFor: document.getElementById('tunnel-use-for').value || undefined }))
+    .then(d => {
+      showTunnels(d);
+      document.getElementById('tunnel-file').value = '';
+      toast(`Tunnel ${name} saved; it starts within a few seconds`, 'ok');
+      setTimeout(loadTunnels, 4000);
+    })
+    .catch(err => toast(err.message, 'error'));
+});
+
 // ---- VPN ----
 
 let vpnCurrentName = null;
@@ -768,7 +841,7 @@ function escapeHtml(str) {
   return String(str == null ? '' : str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-Promise.all([loadEnvKeys(), loadDeployConfig(), loadProviders(), loadYoutubeChannels(), loadProviderHealth(), loadSubtitlesConfig(), loadCatalogManifest(), loadVpn()]).catch(e => toast(e.message, 'error'));
+Promise.all([loadEnvKeys(), loadDeployConfig(), loadProviders(), loadYoutubeChannels(), loadProviderHealth(), loadSubtitlesConfig(), loadCatalogManifest(), loadVpn(), loadTunnels()]).catch(e => toast(e.message, 'error'));
 </script>
 
 </body>

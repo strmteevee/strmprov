@@ -122,6 +122,40 @@ if [ "$OLD" != "$NEW" ] && git diff --name-only "$OLD" "$NEW" | grep -q '^packag
   npm install --omit=dev --no-audit --no-fund || fail "npm install failed. Nothing was restarted."
 fi
 
+# -- 3b. wireproxy ---------------------------------------------------------
+# The WireGuard tunnels some sources use (lib/wireguard.js, Pluto TV) run in
+# wireproxy, a single program from its GitHub releases (windtf/wireproxy, ISC
+# licence), kept in bin/. Installed when missing or not this version, and
+# only when its download matches the release's published checksum. A failure
+# here doesn't stop the update: only the tunnels wait for it.
+WIREPROXY_VERSION=v1.1.3
+install_wireproxy() {
+  case "$(uname -m)" in
+    aarch64|arm64) asset=wireproxy_linux_arm64.tar.gz ;;
+    armv7l|armv6l|armhf) asset=wireproxy_linux_arm.tar.gz ;;
+    x86_64) asset=wireproxy_linux_amd64.tar.gz ;;
+    *) echo "No wireproxy build for $(uname -m); VPN tunnels won't run."; return 1 ;;
+  esac
+  base="https://github.com/windtf/wireproxy/releases/download/$WIREPROXY_VERSION"
+  tmp=$(mktemp -d) || return 1
+  if curl -fsSL -o "$tmp/$asset" "$base/$asset" && curl -fsSL -o "$tmp/checksums.txt" "$base/checksums.txt" \
+     && (cd "$tmp" && grep " \*\?$asset\$" checksums.txt | sed 's/ \*/  /' | sha256sum -c --status) \
+     && mkdir "$tmp/x" && tar -xzf "$tmp/$asset" -C "$tmp/x" \
+     && found=$(find "$tmp/x" -type f -name wireproxy | head -1) && [ -n "$found" ]; then
+    mkdir -p bin && install -m 755 "$found" bin/wireproxy && echo "$WIREPROXY_VERSION" > bin/wireproxy.version
+    rm -rf "$tmp"
+    echo "wireproxy $WIREPROXY_VERSION installed in bin/"
+  else
+    rm -rf "$tmp"
+    echo "Could not download or verify wireproxy $WIREPROXY_VERSION; VPN tunnels won't run until the next update."
+    return 1
+  fi
+}
+if [ ! -x bin/wireproxy ] || [ "$(cat bin/wireproxy.version 2>/dev/null)" != "$WIREPROXY_VERSION" ]; then
+  say "Installing wireproxy (for VPN tunnels)"
+  install_wireproxy || true
+fi
+
 # -- 4. Restart ------------------------------------------------------------
 say "Restarting"
 UNITS=""

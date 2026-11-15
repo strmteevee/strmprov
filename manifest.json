@@ -1,6 +1,6 @@
 {
   "name": "Yoru's Repo",
-  "version": "1.13.1",
+  "version": "1.14.0",
   "scrapers": [
     {
       "id": "streamapi",
@@ -736,6 +736,26 @@
       "contentLanguage": [
         "en",
         "hi"
+      ]
+    },
+    {
+      "id": "plex",
+      "name": "Plex",
+      "description": "Plex's free movies and shows (Netherlands, plus US and UK through their VPN tunnels), matched by TMDB id; without adverts in the stream; DRM-protected titles left out - see providers/plex.js.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/plex.js",
+      "enabled": true,
+      "formats": [
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=plex.tv&sz=128",
+      "contentLanguage": [
+        "en"
       ]
     }
   ]

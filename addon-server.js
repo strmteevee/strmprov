@@ -61,6 +61,7 @@ const vpnCheck = require('./lib/vpnCheck');
 const wireguard = require('./lib/wireguard');
 const plutotv = require('./providers/plutotv');
 const plexvod = require('./providers/plexvod');
+const relayAddress = require('./lib/relayAddress');
 const { tunnelFetch } = require('./lib/tunnelFetch');
 
 const PORT = 3100;
@@ -1052,7 +1053,8 @@ function resolveCustomStreamResponse(id) {
 // with this exact release. Nuvio shows a subtitle's `name` as its selector
 // label, and providers vary in whether their language value is a short code
 // ("en") or a full word ("English"), so a longer value is assumed readable.
-function buildStreamResponse(type, rawId) {
+// [relayBase]: this server's address as the client used it (lib/relayAddress.js).
+function buildStreamResponse(type, rawId, relayBase) {
     const mediaType = type === 'series' ? 'tv' : 'movie';
     const [imdbId, seasonStr, episodeStr] = rawId.split(':');
     const season = seasonStr ? parseInt(seasonStr, 10) : null;
@@ -1068,7 +1070,7 @@ function buildStreamResponse(type, rawId) {
             return { streams: [] };
         }
         return aggregate.aggregateStreams(found.tmdbId, found.mediaType, season, episode, { reuse: true }).then(({ streams }) => {
-            const stremioStreams = streams.map(s => {
+            const stremioStreams = relayAddress.resolve(streams, relayBase).map(s => {
                 const behaviorHints = { notWebReady: true };
                 if (s.headers && Object.keys(s.headers).length) {
                     behaviorHints.proxyHeaders = { request: s.headers };
@@ -1167,11 +1169,12 @@ const server = http.createServer((req, res) => {
         logBuffer.clear('manual (admin dashboard)');
         return sendJson(res, 200, { cleared: true });
     }
-    // /pluto/hls?r=&u= and /plex/hls?r=&u= - a Pluto TV or Plex playlist through
+    // /pluto/hls?r=&u= (&c=1: without its advert breaks, &v=: the picture playlist a sound one follows)
+    // and /plex/hls?r=&u= - a Pluto TV or Plex playlist through
     // its region's tunnel (providers/plutotv.js, providers/plexvod.js).
     if ((parts[0] === 'pluto' || parts[0] === 'plex') && parts[1] === 'hls' && parts.length === 2 && req.method === 'GET') {
         const source = parts[0] === 'pluto' ? plutotv : plexvod;
-        return source.playlist(parsedUrl.searchParams.get('u') || '', `http://${req.headers.host}`, parsedUrl.searchParams.get('r') || undefined)
+        return source.playlist(parsedUrl.searchParams.get('u') || '', `http://${req.headers.host}`, parsedUrl.searchParams.get('r') || undefined, parsedUrl.searchParams.get('c') === '1', parsedUrl.searchParams.get('v') || undefined)
             .then(r => {
                 res.writeHead(r.status, { 'Content-Type': r.status === 200 ? 'application/vnd.apple.mpegurl' : 'text/plain', 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' });
                 res.end(r.body);
@@ -1257,7 +1260,7 @@ const server = http.createServer((req, res) => {
             if (type !== 'movie' && type !== 'series') {
                 return sendJson(res, 200, { streams: [] });
             }
-            return buildStreamResponse(type, id).then(body => {
+            return buildStreamResponse(type, id, `http://${req.headers.host}`).then(body => {
                 sendJson(res, 200, body);
                 logMemory(id);
             });

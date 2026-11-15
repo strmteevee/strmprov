@@ -361,17 +361,54 @@ function meta(id) {
 function streams(id, relayBase) {
     const p = parseId(id);
     if (!p || p.kind === 'series') return Promise.resolve([]);
-    return Promise.all([metadata(p.id), getSession()]).then(([hit, s]) => {
-        const media = hit && freeHls(hit.item);
-        if (!media) return [];
-        const q = new URLSearchParams({ 'X-Plex-Token': s.token, 'X-Plex-Client-Identifier': s.client, 'X-Plex-Product': PRODUCT, 'X-Plex-Version': VERSION });
-        const direct = `${VOD}${media.Part[0].key}?${q}`;
-        return [{
-            name: 'Plex',
-            title: [/^\d+$/.test(media.videoResolution || '') ? `${media.videoResolution}p` : null, 'Free with adverts'].filter(Boolean).join(' | '),
-            url: hit.region.source ? relayUrl(relayBase, hit.region.code, direct) : direct,
-            behaviorHints: { notWebReady: true }
-        }];
+    return Promise.all([metadata(p.id), getSession()]).then(([hit, s]) => (hit ? streamOf(hit.item, hit.region, s, relayBase) : []));
+}
+
+// The stream of a movie or episode [item] as [region] has it; none when it only has it DRM-protected.
+function streamOf(item, region, s, relayBase) {
+    const media = freeHls(item);
+    if (!media) return [];
+    const q = new URLSearchParams({ 'X-Plex-Token': s.token, 'X-Plex-Client-Identifier': s.client, 'X-Plex-Product': PRODUCT, 'X-Plex-Version': VERSION });
+    const direct = `${VOD}${media.Part[0].key}?${q}`;
+    const quality = /^\d+$/.test(media.videoResolution || '') ? `${media.videoResolution}p` : null;
+    return [{
+        name: 'Plex',
+        // The stream is the film itself: Plex's adverts come from its own player, not the stream.
+        title: [quality, 'Free on Plex'].filter(Boolean).join(' | '),
+        quality: quality || undefined,
+        url: region.source ? relayUrl(relayBase, region.code, direct) : direct,
+        provider: 'plex',
+        behaviorHints: { notWebReady: true }
+    }];
+}
+
+// ---- as a source for ordinary titles (providers/plex.js) ----------------------------------
+
+// The Plex stream of the title TMDB knows as [tmdbId] ('movie' | 'tv', with
+// season and episode numbers), or none. Plex's own index says which of its
+// titles that is; the free catalogue of each country says whether it plays.
+function streamsForTmdb(tmdbId, mediaType, season, episode, relayBase) {
+    const type = mediaType === 'tv' ? 2 : 1;
+    return get(`${DISCOVER}/library/metadata/matches?type=${type}&guid=${encodeURIComponent(`tmdb://${tmdbId}`)}`, REGIONS[0]).then(j => {
+        const match = j && j.MediaContainer && (j.MediaContainer.Metadata || [])[0];
+        if (!match || !match.ratingKey) return [];
+        if (mediaType !== 'tv') return streams(`${PREFIX}movie:${match.ratingKey}`, relayBase);
+        if (!season || !episode) return [];
+        // The episode, in the first country whose copy of it plays.
+        const list = activeRegions();
+        const tryRegion = (i) => {
+            if (i >= list.length) return Promise.resolve([]);
+            const region = list[i];
+            return children(match.ratingKey, region)
+                .then(seasons => {
+                    const s = seasons.find(x => Number(x.index) === Number(season));
+                    return s ? children(s.ratingKey, region) : [];
+                })
+                .then(episodes => episodes.find(e => Number(e.index) === Number(episode) && freeHls(e)))
+                .catch(() => null)
+                .then(ep => (ep ? getSession().then(s => streamOf(ep, region, s, relayBase)) : tryRegion(i + 1)));
+        };
+        return tryRegion(0);
     });
 }
 
@@ -411,4 +448,4 @@ function playlist(url, relayBase, regionCode) {
     });
 }
 
-module.exports = { PREFIX, catalog, genreOptions, meta, streams, playlist, parseId };
+module.exports = { PREFIX, catalog, genreOptions, meta, streams, streamsForTmdb, playlist, parseId };

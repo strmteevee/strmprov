@@ -4,6 +4,10 @@ const path = require('path');
 const os = require('os');
 const { URL } = require('url');
 const { readManifest, aggregateStreams } = require('./lib/aggregate');
+const relayAddress = require('./lib/relayAddress');
+
+// Where addon-server.js listens (it serves the relayed playlists).
+const ADDON_PORT = 3100;
 
 const PORT = 3000;
 
@@ -27,7 +31,7 @@ function sendJson(res, status, body) {
 // GET /api/streams?tmdbId=550&type=movie
 // GET /api/streams?tmdbId=1396&type=tv&season=1&episode=1
 // GET /api/streams?tmdbId=550&type=movie&providers=vidrock,moviebox
-function handleStreamsApi(query, res) {
+function handleStreamsApi(query, res, relayHost) {
     const tmdbId = query.get('tmdbId');
     const mediaType = query.get('type') === 'tv' ? 'tv' : 'movie';
     const season = query.get('season') ? parseInt(query.get('season'), 10) : null;
@@ -46,7 +50,9 @@ function handleStreamsApi(query, res) {
         : [];
 
     aggregateStreams(tmdbId, mediaType, season, episode, { providerIds })
-        .then(({ streams, perProvider, totalMs }) => {
+        .then(({ streams: found, perProvider, totalMs }) => {
+            // Streams that play through the addon server (lib/relayAddress.js): on this machine, at its port.
+            const streams = relayAddress.resolve(found, `http://${relayHost}:${ADDON_PORT}`);
             sendJson(res, 200, {
                 tmdbId,
                 mediaType,
@@ -97,7 +103,7 @@ const server = http.createServer((req, res) => {
     const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
     if (parsedUrl.pathname === '/api/streams') {
-        return handleStreamsApi(parsedUrl.searchParams, res);
+        return handleStreamsApi(parsedUrl.searchParams, res, parsedUrl.hostname);
     }
     if (parsedUrl.pathname === '/api/providers') {
         return handleProvidersApi(res);

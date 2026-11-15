@@ -22,6 +22,12 @@
 //               the playlists go through this server and the tunnel
 //               (playlist(), served at /pluto/hls), and the segments in them
 //               are left pointing straight at Pluto.
+//   adverts  -> stitched into the stream: a film's playlist is the film in
+//               stretches with advert breaks between them (Pretty Woman: 120
+//               minutes of film in 13 stretches, 20 minutes of adverts). For
+//               movies and episodes the playlists given out have only the
+//               film left in (lib/hlsContentOnly.js). Live channels are left
+//               as they are: there a left-out break is a hole to wait in.
 //
 // Ids: pluto:ch:<channel>, pluto:movie:<id>, pluto:series:<id>, and an
 // episode's video id pluto:ep:<id> for the US; the same with the region in
@@ -31,6 +37,7 @@ const crypto = require('crypto');
 const wireguard = require('../lib/wireguard');
 const { tunnelFetch } = require('../lib/tunnelFetch');
 const { mergedPage } = require('../lib/mergedPages');
+const { contentOnly, programmeRanges } = require('../lib/hlsContentOnly');
 
 // In order of preference: of two titles with the same name, the earlier region's is shown.
 // `source` is the name the tunnel is assigned under (lib/wireguard.js SOURCES).
@@ -333,8 +340,9 @@ function streams(id, relayBase) {
     if (!p || p.kind === 'series') return Promise.resolve([]);
     return p.region.streamUrl(p.kind, p.id).then(url => [{
         name: 'Pluto TV',
-        title: p.kind === 'ch' ? 'Live' : 'Free with adverts',
-        url: relayUrl(relayBase, p.region.def.code, url),
+        title: p.kind === 'ch' ? 'Live' : 'Free on Pluto TV',
+        // A movie or episode: without the advert breaks stitched into it.
+        url: relayUrl(relayBase, p.region.def.code, url, p.kind !== 'ch'),
         behaviorHints: { notWebReady: true }
     }]);
 }
@@ -344,30 +352,79 @@ function streams(id, relayBase) {
 // Only Pluto's own hosts are fetched for a client: /pluto/hls must not be an open proxy.
 const RELAY_HOSTS = /(^|\.)(pluto\.tv|plutotv\.net)$/i;
 
-function relayUrl(base, regionCode, url) {
-    return `${base}/pluto/hls?r=${regionCode}&u=${encodeURIComponent(url)}`;
+function plutoUrl(url) {
+    try {
+        const u = new URL(url);
+        return /^https?:$/.test(u.protocol) && RELAY_HOSTS.test(u.hostname) ? u : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+// [programmeOnly]: the playlist (and the ones it points to) is given out
+// without its advert breaks. [picture]: for a sound or subtitle playlist, the
+// picture playlist whose breaks it follows.
+function relayUrl(base, regionCode, url, programmeOnly, picture) {
+    return `${base}/pluto/hls?r=${regionCode}${programmeOnly ? '&c=1' : ''}&u=${encodeURIComponent(url)}${picture ? `&v=${encodeURIComponent(picture)}` : ''}`;
+}
+
+// The stretches of a picture playlist that are programme (lib/hlsContentOnly.js),
+// kept a while: the sound and subtitle playlists of the same stream ask for them too.
+const RANGES_TTL_MS = 10 * 60 * 1000;
+const rangesKept = new Map(); // picture playlist address -> { at, ranges: Promise }
+function rangesOf(pictureUrl, region) {
+    const now = Date.now();
+    rangesKept.forEach((v, k) => { if (now - v.at >= RANGES_TTL_MS) rangesKept.delete(k); });
+    const kept = rangesKept.get(pictureUrl);
+    if (kept) return kept.ranges;
+    const ranges = tunnelFetch(region.proxy(), pictureUrl, { timeoutMs: 15000 }).then(r => {
+        if (r.status !== 200) throw new Error(`HTTP ${r.status} for the picture playlist`);
+        return programmeRanges(r.text(), pictureUrl);
+    });
+    rangesKept.set(pictureUrl, { at: now, ranges });
+    // A failed look-up isn't kept: the next request asks again.
+    ranges.catch(() => rangesKept.delete(pictureUrl));
+    return ranges;
 }
 
 // A playlist fetched through its region's tunnel, with every playlist it
 // points to sent through this server too and everything else (segments, keys,
 // subtitles files) made absolute so the player fetches it straight from Pluto.
+// With [programmeOnly], a picture playlist loses its advert breaks, and a
+// sound or subtitle playlist ([pictureUrl] given) the same stretches: when
+// those can't be found out it fails rather than play out of step.
 // -> { status, body } or throws.
-function playlist(url, relayBase, regionCode) {
+function playlist(url, relayBase, regionCode, programmeOnly, pictureUrl) {
     const region = regionByCode(regionCode || REGIONS[0].code);
-    let target;
-    try { target = new URL(url); } catch (e) { return Promise.resolve({ status: 400, body: 'Bad address' }); }
+    const target = plutoUrl(url);
     if (!region) return Promise.resolve({ status: 400, body: 'Unknown region' });
-    if (!/^https?:$/.test(target.protocol) || !RELAY_HOSTS.test(target.hostname)) return Promise.resolve({ status: 403, body: 'Not a Pluto TV address' });
-    return tunnelFetch(region.proxy(), target.href, { timeoutMs: 15000 }).then(r => {
+    if (!target) return Promise.resolve({ status: 403, body: 'Not a Pluto TV address' });
+    const picture = pictureUrl ? plutoUrl(pictureUrl) : null;
+    if (pictureUrl && !picture) return Promise.resolve({ status: 403, body: 'Not a Pluto TV address' });
+    return Promise.all([
+        tunnelFetch(region.proxy(), target.href, { timeoutMs: 15000 }),
+        programmeOnly && picture ? rangesOf(picture.href, region) : undefined
+    ]).then(([r, ranges]) => {
         if (r.status !== 200) return { status: r.status, body: r.text() };
-        const point = (ref) => {
+        let text = r.text();
+        const master = !/#EXTINF/.test(text);
+        if (programmeOnly && !master) {
+            const cut = contentOnly(text, target.href, ranges);
+            if (cut.removedSeconds > 0 && !picture) console.log(`[PlutoTV] Playlist without its ${cut.breaks} advert break(s): ${Math.round(cut.keptSeconds / 60)} min of programme, ${Math.round(cut.removedSeconds / 60)} min left out`);
+            text = cut.text;
+        }
+        // In a master playlist: the first picture playlist, which the sound and subtitles follow.
+        const firstPicture = master && programmeOnly ? (text.split(/\r?\n/).find(l => l.trim() && !l.startsWith('#')) || '').trim() : '';
+        const pictureRef = firstPicture ? new URL(firstPicture, target.href).href : null;
+        const point = (ref, follows) => {
             const abs = new URL(ref, target.href);
-            return /\.m3u8$/i.test(abs.pathname) && RELAY_HOSTS.test(abs.hostname) ? relayUrl(relayBase, region.def.code, abs.href) : abs.href;
+            return /\.m3u8$/i.test(abs.pathname) && RELAY_HOSTS.test(abs.hostname) ? relayUrl(relayBase, region.def.code, abs.href, programmeOnly, follows) : abs.href;
         };
-        const body = r.text().split(/\r?\n/).map(line => {
+        const body = text.split(/\r?\n/).map(line => {
             if (!line) return line;
-            if (line.startsWith('#')) return line.replace(/URI="([^"]+)"/g, (m, ref) => `URI="${point(ref)}"`);
-            return point(line.trim());
+            // A tag's address: a sound or subtitle playlist in a master (it follows the picture), a key or map elsewhere.
+            if (line.startsWith('#')) return line.replace(/URI="([^"]+)"/g, (m, ref) => `URI="${point(ref, line.startsWith('#EXT-X-MEDIA') ? pictureRef : null)}"`);
+            return point(line.trim(), null);
         }).join('\n');
         return { status: 200, body };
     });

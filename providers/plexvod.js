@@ -1,9 +1,11 @@
 // Plex's free movies and shows ("Movies & Shows on Plex"), as catalogs of this
 // addon: what Plex offers in the Netherlands (asked directly) and in the US
-// (asked through the WireGuard tunnel assigned to "Plex (US)" on the admin
-// dashboard, lib/wireguard.js; left out while there is none), shown as one. A
-// title has the same id everywhere, so one that both countries have is there
-// once, from the Netherlands. Tested 2026-11-15 (NL) and 2026-11-16 (US):
+// and the UK (each asked through the WireGuard tunnel assigned to "Plex (US)"
+// / "Plex (UK)" on the admin dashboard, lib/wireguard.js; left out while
+// there is none), shown as one. A title has the same id everywhere, so one
+// that several countries have is there once, from the first that has it
+// (the Netherlands, then the US). In the rows on 2026-11-16 the UK had 769
+// free movies neither of the others had. Tested 2026-11-15 (NL) and 2026-11-16 (US):
 //   session  -> POST clients.plex.tv/api/v2/users/anonymous: an anonymous
 //               token, like Plex's website gets without a login. The same
 //               token works in both countries: the address a request comes
@@ -37,7 +39,8 @@ const { mergedPage } = require('../lib/mergedPages');
 // In order of preference. `source`: the name its tunnel is assigned under; none = asked directly.
 const REGIONS = [
     { code: 'nl', source: null },
-    { code: 'us', source: 'plex-us' }
+    { code: 'us', source: 'plex-us' },
+    { code: 'uk', source: 'plex-uk' }
 ];
 
 const VOD = 'https://vod.provider.plex.tv';
@@ -257,7 +260,10 @@ function genreOptions() {
     if (Date.now() - knownRows.at > HUBS_TTL_MS || knownRows.regions !== active) {
         knownRows.at = Date.now();
         knownRows.regions = active;
-        fromRegions(hubs).then(list => { knownRows = { titles: Array.from(new Set(list.map(h => h.title))), at: Date.now(), regions: active }; })
+        // A country that gave nothing (its tunnel still starting) is asked again at the next call.
+        Promise.all(activeRegions().map(r => hubs(r).catch(() => []))).then(lists => {
+            knownRows = { titles: Array.from(new Set([].concat(...lists).map(h => h.title))), at: lists.every(l => l.length) ? Date.now() : 0, regions: active };
+        })
             .catch(err => { knownRows.at = 0; console.error(`[PlexVOD] Rows failed: ${err.message}`); });
     }
     return knownRows.titles;
@@ -278,18 +284,26 @@ function catalog(type, extra) {
     });
 }
 
-// A title where Plex has it: { item, region }, the Netherlands first; null when nowhere.
+// A title where Plex has it: { item, region }, in the countries' order; null
+// when nowhere. A movie or episode one country only has DRM-protected is
+// looked for in the next (an episode of "Borgen" was known in the Netherlands
+// but only played in the UK); when none plays it, the first that has it.
 function metadata(ratingKey) {
     return cached(`meta|${ratingKey}`, ITEMS_TTL_MS, () => {
-        const tryRegion = (i) => {
-            const list = activeRegions();
-            if (i >= list.length) return Promise.resolve(null);
+        const list = activeRegions();
+        const tryRegion = (i, firstHit) => {
+            if (i >= list.length) return Promise.resolve(firstHit);
             return get(`${VOD}/library/metadata/${ratingKey}`, list[i])
                 .then(j => (j && j.MediaContainer && (j.MediaContainer.Metadata || [])[0]) || null)
                 .catch(() => null)
-                .then(item => (item ? { item, region: list[i] } : tryRegion(i + 1)));
+                .then(item => {
+                    if (!item) return tryRegion(i + 1, firstHit);
+                    const hit = { item, region: list[i] };
+                    const playable = item.type === 'show' || item.type === 'season' || !!freeHls(item);
+                    return playable ? hit : tryRegion(i + 1, firstHit || hit);
+                });
         };
-        return tryRegion(0);
+        return tryRegion(0, null);
     });
 }
 

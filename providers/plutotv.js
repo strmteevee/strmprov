@@ -305,7 +305,8 @@ function genreOptions() {
         knownGenres.regions = active;
         const names = (list) => Array.from(new Set(list.map(c => c.name)));
         Promise.all([fromRegions(r => r.vodCategories()), fromRegions(r => r.liveCategories())])
-            .then(([vod, live]) => { knownGenres = { vod: names(vod), live: names(live), at: Date.now(), regions: active }; })
+            // Nothing found (a tunnel still starting) is asked again at the next call.
+            .then(([vod, live]) => { knownGenres = { vod: names(vod), live: names(live), at: vod.length && live.length ? Date.now() : 0, regions: active }; })
             .catch(err => { knownGenres.at = 0; console.error(`[PlutoTV] Categories failed: ${err.message}`); });
     }
     return knownGenres;

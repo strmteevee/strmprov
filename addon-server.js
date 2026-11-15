@@ -325,7 +325,7 @@ function enabledYoutubeCatalogs() {
 }
 // Clients cache a manifest by version, so switching a channel on/off has to
 // change it: the patch number is the switch file's revision counter.
-const MANIFEST_BASE_VERSION = '1.27';
+const MANIFEST_BASE_VERSION = '1.28';
 function manifestVersion(base) {
     return `${base}.${youtubeChannel.settingsRevision()}`;
 }
@@ -1273,6 +1273,10 @@ server.listen(PORT, () => {
     console.log(`[addon-server] ${memoryTuning.describe()}`);
     // The WireGuard tunnels uploaded on the dashboard (lib/wireguard.js).
     wireguard.sync();
+    // Pluto's and Plex's genre lists are part of the manifest, which is built at once from what is
+    // known: looked up now (and once more, for tunnels that needed a moment), so a client's first
+    // manifest already has them.
+    [1000, 8000].forEach(ms => setTimeout(() => { plutotv.genreOptions(); plexvod.genreOptions(); }, ms).unref());
     console.log('Install this as a Nuvio/Stremio addon:');
     console.log(`  http://${ip}:${PORT}/manifest.json`);
     console.log('Press Ctrl+C to stop\n');

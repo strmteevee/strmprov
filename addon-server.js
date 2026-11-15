@@ -62,6 +62,7 @@ const wireguard = require('./lib/wireguard');
 const plutotv = require('./providers/plutotv');
 const plexvod = require('./providers/plexvod');
 const relayAddress = require('./lib/relayAddress');
+const genreRows = require('./lib/genreRows');
 const { tunnelFetch } = require('./lib/tunnelFetch');
 
 const PORT = 3100;
@@ -260,10 +261,37 @@ function plexCatalogs() {
     ];
 }
 
+// Pluto's and Plex's movies and series per genre ("Plex Comedy Movies"), each a
+// catalog of its own so a client can show it as a row: filled from the
+// service's rows whose name says the genre (lib/genreRows.js). Only the ones
+// a service has rows for, going by the row names known now.
+const GENRE_SERVICES = [
+    { prefix: 'pluto', name: 'Pluto TV', source: plutotv, rowNames: () => plutotv.genreOptions().vod },
+    { prefix: 'plex', name: 'Plex', source: plexvod, rowNames: () => plexvod.genreOptions() }
+];
+function serviceGenreCatalogs() {
+    return [].concat(...GENRE_SERVICES.map(service => genreRows.available(service.rowNames()).map(g => ({
+        type: g.type,
+        id: `${service.prefix}-${g.slug}-${g.type}`,
+        name: `${service.name} ${g.label} ${g.type === 'movie' ? 'Movies' : 'Series'}`,
+        extra: [{ name: 'skip' }]
+    }))));
+}
+// -> the titles of a service's genre catalog, or undefined when [id] isn't one.
+function resolveServiceGenreCatalog(type, id, extra) {
+    const m = /^(pluto|plex)-(.+)-(movie|series)$/.exec(id);
+    const service = m && GENRE_SERVICES.find(s => s.prefix === m[1]);
+    const match = service && m[3] === type ? genreRows.matcher(m[2], type) : null;
+    if (!match) return undefined;
+    return service.source.catalog(type, { match, skip: extra && extra.skip })
+        .catch(err => { console.error(`[${service.name}] ${id}: ${err.message}`); return []; });
+}
+
 function buildCatalogs() {
     return [
         ...plutoCatalogs(),
         ...plexCatalogs(),
+        ...serviceGenreCatalogs(),
         // Plain TMDB browse catalogs (see the DISCOVER_CATALOG_* constants/
         // builders above).
         { type: 'movie', id: 'strmprov-new-movie', name: 'New' },
@@ -326,7 +354,7 @@ function enabledYoutubeCatalogs() {
 }
 // Clients cache a manifest by version, so switching a channel on/off has to
 // change it: the patch number is the switch file's revision counter.
-const MANIFEST_BASE_VERSION = '1.28';
+const MANIFEST_BASE_VERSION = '1.29';
 function manifestVersion(base) {
     return `${base}.${youtubeChannel.settingsRevision()}`;
 }
@@ -958,6 +986,8 @@ function resolveCatalog(type, id, extra) {
     if (id === 'pluto-live' && type === 'tv') {
         return plutotv.liveCatalog(extra).catch(err => { console.error(`[PlutoTV] ${err.message}`); return []; });
     }
+    const serviceGenre = resolveServiceGenreCatalog(type, id, extra);
+    if (serviceGenre) return serviceGenre;
     if ((id === 'plex-movies' && type === 'movie') || (id === 'plex-series' && type === 'series')) {
         return plexvod.catalog(type, extra).catch(err => { console.error(`[PlexVOD] ${err.message}`); return []; });
     }

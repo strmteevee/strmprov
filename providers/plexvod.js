@@ -11,7 +11,8 @@
 //               token works in both countries: the address a request comes
 //               from decides what Plex offers.
 //   rows     -> vod.provider.plex.tv/hubs: 55 rows in NL, 72 in the US ("Plex
-//               Picks", "Western" ...), each a mix of movies and shows, paged.
+//               Picks", "Western" ...), each a mix of at most 50 movies and
+//               shows.
 //   titles   -> /library/metadata/{id}, a show's seasons and a season's
 //               episodes as /children. A US-only title is a 404 from NL.
 //   search   -> discover.provider.plex.tv/library/search finds any title;
@@ -189,12 +190,14 @@ function hubs(region) {
 
 // The country each listed title came from first (a row's items don't say), for the checks below.
 const listedIn = new Map(); // ratingKey -> region
-function hubItems(region, hub, start) {
-    return cached(`hub|${region.code}|${hub.key}|${start}`, ITEMS_TTL_MS, () => {
-        const sep = hub.key.includes('?') ? '&' : '?';
-        return get(`${VOD}${hub.key}${sep}X-Plex-Container-Start=${start}&X-Plex-Container-Size=${PAGE}&count=${PAGE}`, region)
-            .then(j => (j && j.MediaContainer && j.MediaContainer.Metadata) || []);
-    }).then(items => {
+// A row's titles. A row is a fixed set of at most 50, handed out whole and in
+// another order at every request, whatever start or size is asked for
+// (checked 2026-11-17: six requests, the same 50 titles each time). So it is
+// asked once and kept as long as the list of rows, which keeps a catalog's
+// order - and with it its paging - the same in between.
+function hubItems(region, hub) {
+    return cached(`hub|${region.code}|${hub.key}`, HUBS_TTL_MS, () => get(`${VOD}${hub.key}`, region)
+        .then(j => (j && j.MediaContainer && j.MediaContainer.Metadata) || [])).then(items => {
         if (listedIn.size > 5000) listedIn.clear();
         items.forEach(it => { if (it.ratingKey && !listedIn.has(it.ratingKey)) listedIn.set(it.ratingKey, region); });
         return items;
@@ -234,12 +237,14 @@ function playableOnly(metas) {
     return next(0);
 }
 
-// One country's k-th page (from 0) of [type]: of a row ([genre]), or without
-// one of Plex's own rows there: the first page of its next few rows.
-function regionPage(region, type, genre, k) {
+// One country's k-th helping (from 0) of [type] from the rows [pick] chooses
+// by name (all of them without one): its next few rows. null when it has no
+// rows left: the country has no more.
+function regionPage(region, type, pick, k) {
     return hubs(region).then(list => {
-        const picked = genre ? list.filter(h => h.title === genre) : list.slice(k * FEATURED_ROWS, (k + 1) * FEATURED_ROWS);
-        return Promise.all(picked.map(h => hubItems(region, h, genre ? k * PAGE : 0).catch(() => []))).then(lists => unique(lists, type));
+        const rows = (pick ? list.filter(h => pick(h.title)) : list).slice(k * FEATURED_ROWS, (k + 1) * FEATURED_ROWS);
+        if (!rows.length) return null;
+        return Promise.all(rows.map(row => hubItems(region, row).catch(() => []))).then(lists => unique(lists, type));
     });
 }
 
@@ -269,13 +274,16 @@ function genreOptions() {
     return knownRows.titles;
 }
 
-// type 'movie' | 'series'; extra { genre, search, skip }.
+// type 'movie' | 'series'; extra { genre, search, skip, match }: `genre` is
+// one of Plex's own rows by name, `match` a function choosing rows by name
+// (a genre catalog, lib/genreRows.js).
 function catalog(type, extra) {
     const e = extra || {};
     if (e.search) return search(type, e.search);
+    const pick = e.match || (e.genre ? (name) => name === e.genre : null);
     return mergedPage({
         regions: activeRegions(),
-        loadPage: (region, k) => regionPage(region, type, e.genre, k),
+        loadPage: (region, k) => regionPage(region, type, pick, k),
         keys: (m) => [m.id],
         accept: (metas) => Promise.all(metas.map(plays)),
         skip: Number(e.skip) || 0,

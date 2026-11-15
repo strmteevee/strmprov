@@ -196,12 +196,18 @@ function createRegion(def) {
         return [].concat(...lists).map(toMeta).filter(m => m && m.type === type);
     }
 
-    // type 'movie' | 'series'; this region's k-th page (from 0) of a genre, or
-    // without one of Pluto's own rows: the first page of its next few categories.
-    function page(type, genre, k) {
+    // type 'movie' | 'series'; this region's k-th helping (from 0) of the
+    // categories [pick] chooses by name (all of them without one): a few
+    // category pages at a time, every category's first page before any second.
+    // null when those pages had nothing at all: the region has no more.
+    function page(type, pick, k) {
         return vodCategories().then(cats => {
-            const picked = genre ? cats.filter(c => c.name === genre) : cats.slice(k * FEATURED_ROWS, (k + 1) * FEATURED_ROWS);
-            return Promise.all(picked.map(c => categoryItems(c.id, genre ? k + 1 : 1).catch(() => []))).then(lists => metas(lists, type));
+            const rows = pick ? cats.filter(c => pick(c.name)) : cats;
+            if (!rows.length) return null;
+            const turns = [];
+            for (let i = k * FEATURED_ROWS; i < (k + 1) * FEATURED_ROWS; i++) turns.push({ row: rows[i % rows.length], page: Math.floor(i / rows.length) + 1 });
+            return Promise.all(turns.map(t => categoryItems(t.row.id, t.page).catch(() => [])))
+                .then(lists => (lists.some(l => l.length) ? metas(lists, type) : null));
         });
     }
 
@@ -285,13 +291,16 @@ function liveCatalog(extra) {
     return fromRegions(r => r.channels()).then(list => unique(genre ? list.filter(c => (c.genres || []).includes(genre)) : list));
 }
 
-// type 'movie' | 'series'; extra { genre, search, skip }.
+// type 'movie' | 'series'; extra { genre, search, skip, match }: `genre` is
+// one of Pluto's own categories by name, `match` a function choosing
+// categories by name (a genre catalog, lib/genreRows.js).
 function catalog(type, extra) {
     const e = extra || {};
     if (e.search) return fromRegions(r => r.search(type, e.search)).then(unique);
+    const pick = e.match || (e.genre ? (name) => name === e.genre : null);
     return mergedPage({
         regions: regions.filter(r => r.available()),
-        loadPage: (r, k) => r.page(type, e.genre, k),
+        loadPage: (r, k) => r.page(type, pick, k),
         keys: titleKeys,
         skip: Number(e.skip) || 0,
         size: PAGE,

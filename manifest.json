@@ -1,6 +1,6 @@
 {
   "name": "Yoru's Repo",
-  "version": "1.15.0",
+  "version": "1.16.0",
   "scrapers": [
     {
       "id": "streamapi",

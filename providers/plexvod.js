@@ -28,7 +28,7 @@
 //               without Plex's own licence service.
 //
 // Ids: plexvod:movie:<id>, plexvod:series:<id>, an episode's video id
-// plexvod:ep:<id>. (The app's own Plex source has plex:live: for live TV.)
+// plexvod:ep:<id>. (Live channels are plex:live:, providers/plexlive.js.)
 
 const crypto = require('crypto');
 const fs = require('fs');
@@ -372,12 +372,16 @@ function streams(id, relayBase) {
     return Promise.all([metadata(p.id), getSession()]).then(([hit, s]) => (hit ? streamOf(hit.item, hit.region, s, relayBase) : []));
 }
 
+// What a playlist address carries of the session [s].
+function sessionQuery(s) {
+    return new URLSearchParams({ 'X-Plex-Token': s.token, 'X-Plex-Client-Identifier': s.client, 'X-Plex-Product': PRODUCT, 'X-Plex-Version': VERSION }).toString();
+}
+
 // The stream of a movie or episode [item] as [region] has it; none when it only has it DRM-protected.
 function streamOf(item, region, s, relayBase) {
     const media = freeHls(item);
     if (!media) return [];
-    const q = new URLSearchParams({ 'X-Plex-Token': s.token, 'X-Plex-Client-Identifier': s.client, 'X-Plex-Product': PRODUCT, 'X-Plex-Version': VERSION });
-    const direct = `${VOD}${media.Part[0].key}?${q}`;
+    const direct = `${VOD}${media.Part[0].key}?${sessionQuery(s)}`;
     const quality = /^\d+$/.test(media.videoResolution || '') ? `${media.videoResolution}p` : null;
     return [{
         name: 'Plex',
@@ -458,4 +462,8 @@ function playlist(url, relayBase, regionCode) {
     });
 }
 
-module.exports = { PREFIX, catalog, genreOptions, meta, streams, streamsForTmdb, playlist, parseId };
+module.exports = {
+    PREFIX, catalog, genreOptions, meta, streams, streamsForTmdb, playlist, parseId,
+    // For Plex's live channels (providers/plexlive.js): the same session and countries.
+    get, getSession, sessionQuery, activeRegions, relayUrl
+};

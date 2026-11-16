@@ -61,6 +61,7 @@ const vpnCheck = require('./lib/vpnCheck');
 const wireguard = require('./lib/wireguard');
 const plutotv = require('./providers/plutotv');
 const plexvod = require('./providers/plexvod');
+const plexlive = require('./providers/plexlive');
 const relayAddress = require('./lib/relayAddress');
 const genreRows = require('./lib/genreRows');
 const regularTitle = require('./lib/regularTitle');
@@ -226,7 +227,7 @@ function buildManifest() {
             // already has full TMDB access for every stream lookup, so it can
             // fill that gap itself - a TMDB-backed fallback for any movie/
             // series 'tt' id, not just this addon's own custom catalogs.
-            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:', 'daddylive:', 'pluto:', 'plexvod:'] },
+            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:', 'daddylive:', 'pluto:', 'plexvod:', 'plex:live:'] },
             // Scoped to real tt-id content only - neither IndyCar's nor
             // F1/F2/F3/Academy's own custom id schemes have a
             // subtitle concept, and Cinemeta already handles meta for the
@@ -235,7 +236,7 @@ function buildManifest() {
         ],
         types: ['movie', 'series', 'tv'],
         catalogs: buildCatalogs(),
-        idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:', 'daddylive:', 'pluto:', 'plexvod:'],
+        idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:', 'daddylive:', 'pluto:', 'plexvod:', 'plex:live:'],
         behaviorHints: { configurable: false, configurationRequired: false }
     };
 }
@@ -255,10 +256,12 @@ function plutoCatalogs() {
     ];
 }
 
-// Plex's free movies and shows (providers/plexvod.js), its rows as genres.
+// Plex's free live channels (providers/plexlive.js) with its categories as genres, and its
+// free movies and shows (providers/plexvod.js), its rows as genres.
 function plexCatalogs() {
     const extra = [{ name: 'genre', options: plexvod.genreOptions() }, { name: 'search' }, { name: 'skip' }];
     return [
+        { type: 'tv', id: 'plex-live', name: 'Plex', extra: [{ name: 'genre', options: plexlive.genreOptions() }] },
         { type: 'movie', id: 'plex-movies', name: 'Plex Movies', extra, site: 'Plex' },
         { type: 'series', id: 'plex-series', name: 'Plex Series', extra, site: 'Plex' }
     ];
@@ -359,7 +362,7 @@ function enabledYoutubeCatalogs() {
 }
 // Clients cache a manifest by version, so switching a channel on/off has to
 // change it: the patch number is the switch file's revision counter.
-const MANIFEST_BASE_VERSION = '1.30';
+const MANIFEST_BASE_VERSION = '1.31';
 function manifestVersion(base) {
     return `${base}.${youtubeChannel.settingsRevision()}`;
 }
@@ -991,6 +994,9 @@ function resolveCatalog(type, id, extra) {
     if (id === 'pluto-live' && type === 'tv') {
         return plutotv.liveCatalog(extra).catch(err => { console.error(`[PlutoTV] ${err.message}`); return []; });
     }
+    if (id === 'plex-live' && type === 'tv') {
+        return plexlive.liveCatalog(extra).catch(err => { console.error(`[PlexLive] ${err.message}`); return []; });
+    }
     const serviceGenre = resolveServiceGenreCatalog(type, id, extra);
     if (serviceGenre) return serviceGenre;
     if ((id === 'plex-movies' && type === 'movie') || (id === 'plex-series' && type === 'series')) {
@@ -1056,6 +1062,9 @@ function resolveMeta(type, id) {
     }
     if (id.startsWith('daddylive:') && type === 'tv') {
         return buildDaddyliveMeta(id);
+    }
+    if (id.startsWith(plexlive.PREFIX)) {
+        return plexlive.meta(id).catch(err => { console.error(`[PlexLive] ${err.message}`); return null; });
     }
     if (id.startsWith(plexvod.PREFIX)) {
         return plexvod.meta(id).catch(err => { console.error(`[PlexVOD] ${err.message}`); return null; });
@@ -1287,12 +1296,12 @@ const server = http.createServer((req, res) => {
                 console.log(`[addon-server] No streams for ${id}: ${vpn.reason}`);
                 return sendJson(res, 200, { streams: [] });
             }
-            const relayed = id.startsWith(plutotv.PREFIX) ? plutotv : id.startsWith(plexvod.PREFIX) ? plexvod : null;
+            const relayed = id.startsWith(plutotv.PREFIX) ? plutotv : id.startsWith(plexvod.PREFIX) ? plexvod : id.startsWith(plexlive.PREFIX) ? plexlive : null;
             if (relayed) {
                 // Their playlists can come through this server and a tunnel, at the address the client used.
                 return relayed.streams(id, `http://${req.headers.host}`)
                     .then(streams => sendJson(res, 200, { streams }))
-                    .catch(err => { console.error(`[${relayed === plutotv ? 'PlutoTV' : 'PlexVOD'}] ${err.message}`); sendJson(res, 200, { streams: [] }); });
+                    .catch(err => { console.error(`[${relayed === plutotv ? 'PlutoTV' : 'Plex'}] ${err.message}`); sendJson(res, 200, { streams: [] }); });
             }
             const custom = resolveCustomStreamResponse(id);
             if (custom) return custom.then(body => sendJson(res, 200, body));
@@ -1318,7 +1327,7 @@ server.listen(PORT, () => {
     // Pluto's and Plex's genre lists are part of the manifest, which is built at once from what is
     // known: looked up now (and once more, for tunnels that needed a moment), so a client's first
     // manifest already has them.
-    [1000, 8000].forEach(ms => setTimeout(() => { plutotv.genreOptions(); plexvod.genreOptions(); }, ms).unref());
+    [1000, 8000].forEach(ms => setTimeout(() => { plutotv.genreOptions(); plexvod.genreOptions(); plexlive.genreOptions(); }, ms).unref());
     console.log('Install this as a Nuvio/Stremio addon:');
     console.log(`  http://${ip}:${PORT}/manifest.json`);
     console.log('Press Ctrl+C to stop\n');

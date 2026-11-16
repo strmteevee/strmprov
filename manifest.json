@@ -1,6 +1,6 @@
 {
   "name": "Yoru's Repo",
-  "version": "1.17.0",
+  "version": "1.18.0",
   "scrapers": [
     {
       "id": "streamapi",
@@ -774,6 +774,26 @@
         "m3u8"
       ],
       "logo": "https://www.google.com/s2/favicons?domain=pluto.tv&sz=128",
+      "contentLanguage": [
+        "en"
+      ]
+    },
+    {
+      "id": "tubi",
+      "name": "Tubi",
+      "description": "Tubi's free movies and series (US, looked up through a US VPN tunnel), found in its sitemap and checked by IMDb id, episodes by title; without adverts in the stream; DRM-protected titles left out - see providers/tubi.js.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/tubi.js",
+      "enabled": true,
+      "formats": [
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=tubitv.com&sz=128",
       "contentLanguage": [
         "en"
       ]

@@ -10,4 +10,5 @@ config/wireguard/
 bin/wireproxy
 bin/wireproxy.exe
 data/plex-session.json
+data/tubi-index.txt*
 bin/wireproxy.version

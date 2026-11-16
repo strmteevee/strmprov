@@ -1344,6 +1344,8 @@ server.listen(PORT, () => {
     // known: looked up now (and once more, for tunnels that needed a moment), so a client's first
     // manifest already has them.
     [1000, 8000].forEach(ms => setTimeout(() => { plutotv.genreOptions(); plexvod.genreOptions(); plexlive.genreOptions(); }, ms).unref());
+    // The list of Tubi's films (providers/tubi.js), once the tunnels are up: before a first search asks for it.
+    setTimeout(() => require('./providers/tubi').warmUp(), 20000).unref();
     console.log('Install this as a Nuvio/Stremio addon:');
     console.log(`  http://${ip}:${PORT}/manifest.json`);
     console.log('Press Ctrl+C to stop\n');

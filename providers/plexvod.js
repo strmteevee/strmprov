@@ -158,6 +158,12 @@ function freeHls(item) {
     return (item.Media || []).find(m => m.protocol === 'hls' && !m.drm && (m.Part || []).length);
 }
 
+// A protected version a player with Widevine of its own can play: DASH, with
+// Plex's licence service (tested 2026-11-16: it answers an anonymous session).
+function widevineDash(item) {
+    return (item.Media || []).find(m => m.protocol === 'dash' && (m.Part || []).some(p => p.drm === 'widevine' && p.key && p.license));
+}
+
 function toMeta(item) {
     const type = item.type === 'movie' ? 'movie' : item.type === 'show' ? 'series' : null;
     if (!type) return null;
@@ -380,7 +386,7 @@ function sessionQuery(s) {
 // The stream of a movie or episode [item] as [region] has it; none when it only has it DRM-protected.
 function streamOf(item, region, s, relayBase) {
     const media = freeHls(item);
-    if (!media) return [];
+    if (!media) return protectedStreamOf(item, region, s);
     const direct = `${VOD}${media.Part[0].key}?${sessionQuery(s)}`;
     const quality = /^\d+$/.test(media.videoResolution || '') ? `${media.videoResolution}p` : null;
     return [{
@@ -393,6 +399,29 @@ function streamOf(item, region, s, relayBase) {
         // The service's own stream of the title (see addon-server.js: clients can put those first).
         official: true,
         behaviorHints: { notWebReady: true }
+    }];
+}
+
+// The stream of a title [region] only has protected: its DASH version with
+// the address of Plex's Widevine licence service, for a client whose player
+// asks for the licence itself (`drm`, not a Stremio field: OmniStream reads
+// it; nothing is decrypted here). Only for the country asked directly: the
+// licence request of another country's title would have to come from there.
+function protectedStreamOf(item, region, s) {
+    const media = widevineDash(item);
+    if (!media || region.source) return [];
+    const part = media.Part.find(p => p.drm === 'widevine' && p.key && p.license);
+    const quality = /^\d+$/.test(media.videoResolution || '') ? `${media.videoResolution}p` : null;
+    const drm = { widevine: { licenseUrl: `${VOD}${part.license}?${sessionQuery(s)}&X-Plex-DRM=widevine` } };
+    return [{
+        name: 'Plex',
+        title: [quality, 'Free on Plex'].filter(Boolean).join(' | '),
+        quality: quality || undefined,
+        url: `${VOD}${part.key}?${sessionQuery(s)}`,
+        provider: 'plex',
+        official: true,
+        drm,
+        behaviorHints: { notWebReady: true, drm }
     }];
 }
 
@@ -418,7 +447,7 @@ function streamsForTmdb(tmdbId, mediaType, season, episode, relayBase) {
                     const s = seasons.find(x => Number(x.index) === Number(season));
                     return s ? children(s.ratingKey, region) : [];
                 })
-                .then(episodes => episodes.find(e => Number(e.index) === Number(episode) && freeHls(e)))
+                .then(episodes => episodes.find(e => Number(e.index) === Number(episode) && (freeHls(e) || (!region.source && widevineDash(e)))))
                 .catch(() => null)
                 .then(ep => (ep ? getSession().then(s => streamOf(ep, region, s, relayBase)) : tryRegion(i + 1)));
         };

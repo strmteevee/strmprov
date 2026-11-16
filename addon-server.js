@@ -291,8 +291,13 @@ function resolveServiceGenreCatalog(type, id, extra) {
     const match = service && m[3] === type ? genreRows.matcher(m[2], type) : null;
     if (!match) return undefined;
     return service.source.catalog(type, { match, skip: extra && extra.skip })
-        .then(regularTitle.asRegularTitles)
+        .then(metas => regularTitle.asRegularTitles(metas, episodesAt(service.source)))
         .catch(err => { console.error(`[${service.name}] ${id}: ${err.message}`); return []; });
+}
+
+// For lib/regularTitle.js: a series' episodes at the service that lists it.
+function episodesAt(source) {
+    return (meta) => source.meta(meta.id).then(m => (m && m.videos) || []);
 }
 
 function buildCatalogs() {
@@ -362,7 +367,7 @@ function enabledYoutubeCatalogs() {
 }
 // Clients cache a manifest by version, so switching a channel on/off has to
 // change it: the patch number is the switch file's revision counter.
-const MANIFEST_BASE_VERSION = '1.31';
+const MANIFEST_BASE_VERSION = '1.32';
 function manifestVersion(base) {
     return `${base}.${youtubeChannel.settingsRevision()}`;
 }
@@ -1001,10 +1006,10 @@ function resolveCatalog(type, id, extra) {
     if (serviceGenre) return serviceGenre;
     if ((id === 'plex-movies' && type === 'movie') || (id === 'plex-series' && type === 'series')) {
         // A service's title that surely is an ordinary one is handed out as that (lib/regularTitle.js).
-        return plexvod.catalog(type, extra).then(regularTitle.asRegularTitles).catch(err => { console.error(`[PlexVOD] ${err.message}`); return []; });
+        return plexvod.catalog(type, extra).then(metas => regularTitle.asRegularTitles(metas, episodesAt(plexvod))).catch(err => { console.error(`[PlexVOD] ${err.message}`); return []; });
     }
     if ((id === 'pluto-movies' && type === 'movie') || (id === 'pluto-series' && type === 'series')) {
-        return plutotv.catalog(type, extra).then(regularTitle.asRegularTitles).catch(err => { console.error(`[PlutoTV] ${err.message}`); return []; });
+        return plutotv.catalog(type, extra).then(metas => regularTitle.asRegularTitles(metas, episodesAt(plutotv))).catch(err => { console.error(`[PlutoTV] ${err.message}`); return []; });
     }
     if (id === 'indycar-videos' && type === 'movie') {
         return buildIndycarCatalog();
@@ -1120,6 +1125,8 @@ function buildStreamResponse(type, rawId, relayBase) {
                 // A service's own free stream of the title (Plex, Pluto TV), not a copy found
                 // elsewhere. Not a Stremio field: OmniStream reads it and can play those first.
                 if (s.official) behaviorHints.official = true;
+                // A protected stream with the service's own licence address (providers/plexvod.js), for a player that asks for the licence itself.
+                if (s.drm) behaviorHints.drm = s.drm;
                 if (s.headers && Object.keys(s.headers).length) {
                     behaviorHints.proxyHeaders = { request: s.headers };
                 }
@@ -1232,6 +1239,12 @@ const server = http.createServer((req, res) => {
                 res.writeHead(502, { 'Content-Type': 'text/plain' });
                 res.end('Playlist failed');
             });
+    }
+    // /probe/tubi - how Tubi offers its titles, seen through a US tunnel (lib/tubiProbe.js): a look before anything is built for it.
+    if (parts[0] === 'probe' && parts[1] === 'tubi' && parts.length === 2 && req.method === 'GET') {
+        return require('./lib/tubiProbe').probe()
+            .then(report => sendJson(res, 200, report))
+            .catch(err => sendJson(res, 200, { ok: false, reason: err.message }));
     }
     // /tunnels, /tunnels/test?name= - the WireGuard tunnels this process runs
     // (lib/wireguard.js), for the admin dashboard: their state, and which

@@ -1242,7 +1242,10 @@ const server = http.createServer((req, res) => {
     }
     // /probe/tubi - how Tubi offers its titles, seen through a US tunnel (lib/tubiProbe.js): a look before anything is built for it.
     if (parts[0] === 'probe' && parts[1] === 'tubi' && parts.length === 2 && req.method === 'GET') {
-        return require('./lib/tubiProbe').probe()
+        const q = parsedUrl.searchParams;
+        // ?u=<one of Tubi's own addresses>: that address as it answers through the tunnel (&m=POST, &b=<body>, &a=<bearer token>, &from=, &max=).
+        const tubi = require('./lib/tubiProbe');
+        return (q.get('u') ? tubi.look(q.get('u'), { method: q.get('m'), body: q.get('b'), bearer: q.get('a'), from: q.get('from'), max: q.get('max') }) : tubi.probe())
             .then(report => sendJson(res, 200, report))
             .catch(err => sendJson(res, 200, { ok: false, reason: err.message }));
     }

@@ -1,6 +1,6 @@
 {
   "name": "Yoru's Repo",
-  "version": "1.19.0",
+  "version": "1.20.0",
   "scrapers": [
     {
       "id": "streamapi",
@@ -741,7 +741,7 @@
     {
       "id": "plex",
       "name": "Plex",
-      "description": "Plex's free movies and shows (Netherlands, plus US and UK through their VPN tunnels), matched by TMDB id; without adverts in the stream; DRM-protected titles left out - see providers/plex.js.",
+      "description": "Plex's free movies and shows (Netherlands, plus US and UK through their VPN tunnels), matched by TMDB id; without adverts in the stream; a title Plex only has protected comes with its Widevine licence address, for a player that asks for the licence itself - see providers/plex.js.",
       "version": "1.0.0",
       "author": "Nuvio Team",
       "supportedTypes": [
@@ -781,7 +781,7 @@
     {
       "id": "tubi",
       "name": "Tubi",
-      "description": "Tubi's free movies and series (US, looked up through a US VPN tunnel), found in its sitemap and checked by IMDb id, episodes by title; without adverts in the stream; DRM-protected titles left out - see providers/tubi.js.",
+      "description": "Tubi's free movies and series (US, looked up through a US VPN tunnel), found in its sitemap and checked by IMDb id, episodes by title; without adverts in the stream; a title Tubi only has protected comes with its Widevine licence address, for a player that asks for the licence itself - see providers/tubi.js.",
       "version": "1.0.0",
       "author": "Nuvio Team",
       "supportedTypes": [

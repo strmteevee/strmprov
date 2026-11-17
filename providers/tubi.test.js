@@ -5,7 +5,11 @@ const { addressNames, filmIn, seriesIn, seasonListIn, streamOf, isTitle, episode
 
 const pageOf = (id, film) => `<script>window.__data={"auth":{"x":undefined},"video":{"byId":{"7":{"id":"7","video_resources":[]},"${id}":${JSON.stringify(Object.assign({ id, video_resources: [] }, film))}}}};</script>`;
 const plain = { type: 'hlsv6', resolution: '720P', manifest: { url: 'https://nc.tubi.video/a/b.m3u8?token=t', duration: 100 } };
-const guarded = { type: 'hlsv6_widevine_nonclearlead', resolution: '1080P', manifest: { url: 'https://nc.tubi.video/a/c.m3u8' }, license_server: { url: 'https://license.tubi.video/x' } };
+// As a protected title has them: one that wants a protected screen connection, one that doesn't; H.265 and H.264; other systems too.
+const guarded = { type: 'hlsv6_widevine_nonclearlead', codec: 'H264', resolution: '720P', manifest: { url: 'https://nc.tubi.video/a/c.m3u8' }, license_server: { url: 'https://license.example/x?hd', hdcp_version: 'hdcp_v1' } };
+const guardedAnyScreen = { type: 'hlsv6_widevine_nonclearlead', codec: 'H264', resolution: '576P', manifest: { url: 'https://nc.tubi.video/a/d.m3u8' }, license_server: { url: 'https://license.example/x?sd', hdcp_version: 'hdcp_disabled' } };
+const guardedHevc = Object.assign({}, guardedAnyScreen, { codec: 'H265', manifest: { url: 'https://nc.tubi.video/a/e.m3u8' } });
+const playready = Object.assign({}, guardedAnyScreen, { type: 'hlsv6_playready_psshv0', manifest: { url: 'https://nc.tubi.video/a/f.m3u8' } });
 
 test('a title as Tubi writes it in an address, an apostrophe and "&" both ways', () => {
     assert.deepStrictEqual(addressNames(['Dauntless: The Battle of Midway']), ['dauntless-the-battle-of-midway']);
@@ -29,8 +33,23 @@ test('a film page gives the film, its plain stream and its subtitles', () => {
     assert.strictEqual(filmIn(html, '43'), null);
 });
 
-test('a film only offered protected, or to a signed-in viewer, gives no stream', () => {
-    assert.deepStrictEqual(streamOf(filmIn(pageOf('1', { video_resources: [guarded] }), '1')), []);
+test('a film only offered protected gives its Widevine streams with their licence address, the better picture first', () => {
+    const streams = streamOf(filmIn(pageOf('1', { video_resources: [guardedHevc, guardedAnyScreen, playready, guarded] }), '1'));
+    assert.deepStrictEqual(streams.map(s => [s.url, s.quality, s.drm.widevine.licenseUrl]), [
+        [guarded.manifest.url, '720p', 'https://license.example/x?hd'],
+        [guardedAnyScreen.manifest.url, '576p', 'https://license.example/x?sd']
+    ]);
+    assert.deepStrictEqual(streams[0].behaviorHints.drm, streams[0].drm);
+    // The plain stream alone where there is one, without a licence.
+    const free = streamOf(filmIn(pageOf('1', { video_resources: [guardedAnyScreen, plain] }), '1'));
+    assert.strictEqual(free.length, 1);
+    assert.strictEqual(free[0].url, plain.manifest.url);
+    assert.strictEqual(free[0].drm, undefined);
+    // Only another system, or a codec not every TV plays: nothing.
+    assert.deepStrictEqual(streamOf(filmIn(pageOf('1', { video_resources: [guardedHevc, playready] }), '1')), []);
+});
+
+test('a film for signed-in viewers only gives no stream', () => {
     assert.deepStrictEqual(streamOf(filmIn(pageOf('1', { needs_login: true, video_resources: [plain] }), '1')), []);
 });
 
@@ -58,7 +77,8 @@ test('a series page gives its first season whole and lists the episodes of every
     assert.strictEqual(found.imdbId, 'tt0000300');
     assert.deepStrictEqual(found.episodes.map(e => [e.id, e.season, e.episode, e.title]), [['11', 1, 1, 'Pilot'], ['12', 1, 2, 'The Second One']]);
     assert.strictEqual(streamOf(found.episodes[0]).length, 1);
-    assert.strictEqual(streamOf(found.episodes[1]).length, 0);
+    // (The second episode is only offered protected: its Widevine stream.)
+    assert.strictEqual(streamOf(found.episodes[1])[0].drm.widevine.licenseUrl, 'https://license.example/x?hd');
     assert.deepStrictEqual(seasonListIn(html), [{ id: '11', season: 1, episode: 1 }, { id: '12', season: 1, episode: 2 }, { id: '21', season: 2, episode: 1 }]);
     assert.deepStrictEqual(seasonListIn('<html></html>'), []);
 });

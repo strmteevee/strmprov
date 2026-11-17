@@ -24,12 +24,24 @@
 //               (tubitv.com/tv-shows/<id>) carries it like a film's does, and
 //               counts when its title is the asked episode's.
 //   playing  -> of 16 films picked at random 14 had a plain HLS stream
-//               ("hlsv6"), 2 only protected ones (Widevine/PlayReady/FairPlay
-//               with a licence service): those are left out. The plain
-//               stream's playlists and video load from anywhere, so they are
-//               given out as they are. The stream is the film itself (45
-//               minutes of film, no breaks): Tubi's adverts come from its own
-//               player.
+//               ("hlsv6"), 2 only protected ones; of the 40 most popular 12
+//               had none plain ("Training Day", "The Fifth Element"). The
+//               plain stream's playlists and video load from anywhere, so
+//               they are given out as they are. The stream is the film itself
+//               (45 minutes of film, no breaks): Tubi's adverts come from its
+//               own player.
+//   protected-> such a title has HLS streams for Widevine, PlayReady and
+//               FairPlay, each with the address of Tubi's licence service
+//               (license.adrise.tv, with a token in it), in two kinds: one
+//               that wants a protected screen connection ("hdcp_v1", 720p)
+//               and one that doesn't ("hdcp_disabled", 576p or 480p). The
+//               Widevine ones are given out with their licence address
+//               (`drm`, not a Stremio field: OmniStream's player asks for the
+//               licence itself with the TV's own Widevine; nothing is
+//               decrypted here): the 720p one first, by request, and the one
+//               for any screen after it, for a TV whose connection the first
+//               doesn't accept. Their playlists and the licence service
+//               answer from anywhere too (checked 2026-11-17).
 
 const fs = require('fs');
 const path = require('path');
@@ -196,7 +208,10 @@ function playable(data) {
     return {
         needsLogin: data.needs_login === true,
         resources: (Array.isArray(data.video_resources) ? data.video_resources : []).map(r => ({
-            type: r && r.type, resolution: r && r.resolution, protected: !!(r && r.license_server), url: r && r.manifest && r.manifest.url
+            type: r && r.type, resolution: r && r.resolution, codec: r && r.codec, url: r && r.manifest && r.manifest.url,
+            protected: !!(r && r.license_server),
+            licence: (r && r.license_server && r.license_server.url) || null,
+            hdcp: (r && r.license_server && r.license_server.hdcp_version) || null
         })),
         subtitles: (Array.isArray(data.subtitles) ? data.subtitles : []).filter(s => s && s.url).map(s => ({ url: s.url, lang: s.lang_alpha3 || s.lang }))
     };
@@ -280,24 +295,34 @@ function titlePage(kind, id) {
     return found;
 }
 
-// The stream of a film or episode as its page describes it; none when it is only offered protected or to a signed-in viewer.
+// The streams of a film or episode as its page describes it: the plain one; else its Widevine ones
+// with their licence address - the one that wants a protected screen connection (the better
+// picture) and after it the one that plays on any screen. None when it is only offered to a signed-in viewer.
 function streamOf(f) {
     if (f.needsLogin) return [];
     const plain = f.resources.find(r => /^hlsv\d$/.test(r.type || '') && !r.protected && r.url);
-    if (!plain) return [];
-    const quality = /^\d+p$/i.test(plain.resolution || '') ? plain.resolution.toLowerCase() : null;
-    return [{
+    if (plain) return [stream(f, plain, null)];
+    // (H.264: every TV plays it.)
+    const guarded = f.resources.filter(r => /^hlsv\d_widevine/.test(r.type || '') && r.codec === 'H264' && r.licence && r.url);
+    const anyScreen = (r) => r.hdcp === 'hdcp_disabled';
+    return [guarded.find(r => !anyScreen(r)), guarded.find(anyScreen)].filter(Boolean)
+        .map(r => stream(f, r, { widevine: { licenseUrl: r.licence } }));
+}
+
+function stream(f, resource, drm) {
+    const quality = /^\d+p$/i.test(resource.resolution || '') ? resource.resolution.toLowerCase() : null;
+    return Object.assign({
         name: 'Tubi',
         // The stream is the film itself: Tubi's adverts come from its own player, not the stream.
         title: [quality, 'Free on Tubi'].filter(Boolean).join(' | '),
         quality: quality || undefined,
-        url: plain.url,
+        url: resource.url,
         provider: 'tubi',
         // The service's own stream of the title (see addon-server.js: clients can put those first).
         official: true,
         subtitles: f.subtitles,
-        behaviorHints: { notWebReady: true }
-    }];
+        behaviorHints: Object.assign({ notWebReady: true }, drm ? { drm } : {})
+    }, drm ? { drm } : {});
 }
 
 // Whether a title on Tubi ([t]) is the asked one: by its IMDb id when Tubi

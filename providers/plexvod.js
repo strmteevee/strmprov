@@ -386,7 +386,7 @@ function sessionQuery(s) {
 // The stream of a movie or episode [item] as [region] has it; none when it only has it DRM-protected.
 function streamOf(item, region, s, relayBase) {
     const media = freeHls(item);
-    if (!media) return protectedStreamOf(item, region, s);
+    if (!media) return protectedStreamOf(item, region, s, relayBase);
     const direct = `${VOD}${media.Part[0].key}?${sessionQuery(s)}`;
     const quality = /^\d+$/.test(media.videoResolution || '') ? `${media.videoResolution}p` : null;
     return [{
@@ -405,19 +405,26 @@ function streamOf(item, region, s, relayBase) {
 // The stream of a title [region] only has protected: its DASH version with
 // the address of Plex's Widevine licence service, for a client whose player
 // asks for the licence itself (`drm`, not a Stremio field: OmniStream reads
-// it; nothing is decrypted here). Only for the country asked directly: the
-// licence request of another country's title would have to come from there.
-function protectedStreamOf(item, region, s) {
+// it; nothing is decrypted here). A title of a country that is asked through
+// a tunnel has both its DASH description and its licence request come
+// through this server and that tunnel (dash(), licence(): the request and
+// the answer are passed on as they are, sealed between the player's Widevine
+// and Plex's licence service); the video itself plays straight from Plex.
+function protectedStreamOf(item, region, s, relayBase) {
     const media = widevineDash(item);
-    if (!media || region.source) return [];
+    if (!media) return [];
     const part = media.Part.find(p => p.drm === 'widevine' && p.key && p.license);
     const quality = /^\d+$/.test(media.videoResolution || '') ? `${media.videoResolution}p` : null;
-    const drm = { widevine: { licenseUrl: `${VOD}${part.license}?${sessionQuery(s)}&X-Plex-DRM=widevine` } };
+    const description = `${VOD}${part.key}?${sessionQuery(s)}`;
+    const licence = `${VOD}${part.license}?${sessionQuery(s)}&X-Plex-DRM=widevine`;
+    const through = (what, address) => `${relayBase}/plex/${what}?r=${region.code}&u=${encodeURIComponent(address)}`;
+    const drm = { widevine: { licenseUrl: region.source ? through('licence', licence) : licence } };
     return [{
         name: 'Plex',
         title: [quality, 'Free on Plex'].filter(Boolean).join(' | '),
         quality: quality || undefined,
-        url: `${VOD}${part.key}?${sessionQuery(s)}`,
+        // (Named .mpd: a player goes by that to know it is DASH.)
+        url: region.source ? through('dash.mpd', description) : description,
         provider: 'plex',
         official: true,
         drm,
@@ -447,7 +454,7 @@ function streamsForTmdb(tmdbId, mediaType, season, episode, relayBase) {
                     const s = seasons.find(x => Number(x.index) === Number(season));
                     return s ? children(s.ratingKey, region) : [];
                 })
-                .then(episodes => episodes.find(e => Number(e.index) === Number(episode) && (freeHls(e) || (!region.source && widevineDash(e)))))
+                .then(episodes => episodes.find(e => Number(e.index) === Number(episode) && (freeHls(e) || widevineDash(e))))
                 .catch(() => null)
                 .then(ep => (ep ? getSession().then(s => streamOf(ep, region, s, relayBase)) : tryRegion(i + 1)));
         };
@@ -491,8 +498,39 @@ function playlist(url, relayBase, regionCode) {
     });
 }
 
+// ---- a protected title of another country: its description and its licence through the tunnel ----
+
+// The tunnel of [regionCode] and [url] as one of Plex's own addresses, or what is wrong: { proxy, target } | { status, body }.
+function throughTunnel(url, regionCode) {
+    const region = REGIONS.find(r => r.code === regionCode && r.source);
+    let target;
+    try { target = new URL(url); } catch (e) { return { status: 400, body: 'Bad address' }; }
+    if (!region) return { status: 400, body: 'Unknown region' };
+    if (target.protocol !== 'https:' || !RELAY_HOSTS.test(target.hostname)) return { status: 403, body: 'Not a Plex address' };
+    const proxy = wireguard.proxyFor(region.source);
+    return proxy ? { proxy, target } : { status: 502, body: 'No VPN tunnel' };
+}
+
+// A title's DASH description as its country gives it (it names where the video is: that plays from anywhere). -> { status, body }.
+function dash(url, regionCode) {
+    const t = throughTunnel(url, regionCode);
+    if (!t.proxy) return Promise.resolve(t);
+    return tunnelFetch(t.proxy, t.target.href, { timeoutMs: REQUEST_TIMEOUT_MS }).then(r => ({ status: r.status, body: r.text() }));
+}
+
+// A player's Widevine licence request ([body], a Buffer) passed on to Plex's licence service from
+// the title's country, and the service's answer as it is. -> { status, type, body: Buffer }.
+function licence(url, regionCode, body) {
+    const t = throughTunnel(url, regionCode);
+    if (!t.proxy) return Promise.resolve(t);
+    return tunnelFetch(t.proxy, t.target.href, {
+        method: 'POST', body, timeoutMs: REQUEST_TIMEOUT_MS,
+        headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': body.length }
+    }).then(r => ({ status: r.status, type: r.headers['content-type'], body: r.buffer() }));
+}
+
 module.exports = {
-    PREFIX, catalog, genreOptions, meta, streams, streamsForTmdb, playlist, parseId,
+    PREFIX, catalog, genreOptions, meta, streams, streamsForTmdb, playlist, dash, licence, parseId,
     // For Plex's live channels (providers/plexlive.js): the same session and countries.
     get, getSession, sessionQuery, activeRegions, relayUrl
 };

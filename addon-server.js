@@ -1306,6 +1306,33 @@ const server = http.createServer((req, res) => {
             .then(report => sendJson(res, 200, report))
             .catch(err => sendJson(res, 200, { ok: false, reason: err.message }));
     }
+    // /plex/dash.mpd?r=&u= and POST /plex/licence?r=&u= - a protected Plex title of another country
+    // (providers/plexvod.js): its DASH description, and the player's licence request passed on, through that country's tunnel.
+    if (parts[0] === 'plex' && parts[1] === 'dash.mpd' && parts.length === 2 && req.method === 'GET') {
+        return plexvod.dash(parsedUrl.searchParams.get('u') || '', parsedUrl.searchParams.get('r') || '')
+            .then(r => {
+                res.writeHead(r.status, { 'Content-Type': r.status === 200 ? 'application/dash+xml' : 'text/plain', 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' });
+                res.end(r.body);
+            })
+            .catch(err => { console.error(`[plex] DASH description failed: ${err.message}`); res.writeHead(502, { 'Content-Type': 'text/plain' }); res.end('Failed'); });
+    }
+    if (parts[0] === 'plex' && parts[1] === 'licence' && parts.length === 2 && req.method === 'POST') {
+        // (A licence request is a few kilobytes: more than this isn't one.)
+        const MAX_LICENCE_REQUEST = 64 * 1024;
+        const chunks = [];
+        let size = 0;
+        req.on('data', c => { size += c.length; if (size <= MAX_LICENCE_REQUEST) chunks.push(c); });
+        req.on('end', () => {
+            if (size > MAX_LICENCE_REQUEST) { res.writeHead(413, { 'Content-Type': 'text/plain' }); return res.end('Too large'); }
+            plexvod.licence(parsedUrl.searchParams.get('u') || '', parsedUrl.searchParams.get('r') || '', Buffer.concat(chunks))
+                .then(r => {
+                    res.writeHead(r.status, { 'Content-Type': r.type || 'application/octet-stream', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
+                    res.end(r.body);
+                })
+                .catch(err => { console.error(`[plex] Licence request failed: ${err.message}`); res.writeHead(502, { 'Content-Type': 'text/plain' }); res.end('Failed'); });
+        });
+        return undefined;
+    }
     // /tunnels, /tunnels/test?name= - the WireGuard tunnels this process runs
     // (lib/wireguard.js), for the admin dashboard: their state, and which
     // public IP a request through one comes out on.

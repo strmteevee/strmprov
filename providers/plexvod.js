@@ -160,7 +160,11 @@ function freeHls(item) {
 
 // A protected version a player with Widevine of its own can play: DASH, with
 // Plex's licence service (tested 2026-11-16: it answers an anonymous session).
+// Not a title Plex rents out: in the US its catalogue lists those too, with a
+// price and protected versions only ("The Hunger Games": rentalPrice "$3.99"),
+// and they don't play without paying (tested 2026-11-17: a 404).
 function widevineDash(item) {
+    if (item.price != null || item.rentalPrice != null) return undefined;
     return (item.Media || []).find(m => m.protocol === 'dash' && (m.Part || []).some(p => p.drm === 'widevine' && p.key && p.license));
 }
 

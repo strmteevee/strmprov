@@ -40,11 +40,15 @@ test('a film only offered protected gives its Widevine streams with their licenc
         [guardedAnyScreen.manifest.url, '576p', 'https://license.example/x?sd']
     ]);
     assert.deepStrictEqual(streams[0].behaviorHints.drm, streams[0].drm);
-    // The plain stream alone where there is one, without a licence.
-    const free = streamOf(filmIn(pageOf('1', { video_resources: [guardedAnyScreen, plain] }), '1'));
+    // The plain stream alone where its picture is as good as the protected ones', without a licence.
+    const free = streamOf(filmIn(pageOf('1', { video_resources: [guardedAnyScreen, guarded, plain] }), '1'));
     assert.strictEqual(free.length, 1);
     assert.strictEqual(free[0].url, plain.manifest.url);
     assert.strictEqual(free[0].drm, undefined);
+    // A plain stream with a lesser picture: the protected one with the better picture first, the plain one after it.
+    const low = Object.assign({}, plain, { type: 'hlsv3', resolution: '480P', manifest: { url: 'https://nc.tubi.video/a/low.m3u8' } });
+    const both = streamOf(filmIn(pageOf('1', { video_resources: [guarded, playready, low] }), '1'));
+    assert.deepStrictEqual(both.map(x => [x.quality, !!x.drm]), [['720p', true], ['480p', false]]);
     // Only another system, or a codec not every TV plays: nothing.
     assert.deepStrictEqual(streamOf(filmIn(pageOf('1', { video_resources: [guardedHevc, playready] }), '1')), []);
 });

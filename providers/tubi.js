@@ -295,18 +295,22 @@ function titlePage(kind, id) {
     return found;
 }
 
-// The streams of a film or episode as its page describes it: the plain one; else its Widevine ones
-// with their licence address - the one that wants a protected screen connection (the better
-// picture) and after it the one that plays on any screen. None when it is only offered to a signed-in viewer.
+// The streams of a film or episode as its page describes it, the best picture first: its plain
+// one, and its Widevine ones with their licence address - the one that wants a protected screen
+// connection and the one that plays on any screen - where their picture is better than the plain
+// one's ("The Hunger Games": plain in 480p, protected in 720p). None when it is only offered to a signed-in viewer.
 function streamOf(f) {
     if (f.needsLogin) return [];
+    const height = (r) => Number((/^(\d+)p$/i.exec(r.resolution || '') || [])[1]) || 0;
     const plain = f.resources.find(r => /^hlsv\d$/.test(r.type || '') && !r.protected && r.url);
-    if (plain) return [stream(f, plain, null)];
     // (H.264: every TV plays it.)
     const guarded = f.resources.filter(r => /^hlsv\d_widevine/.test(r.type || '') && r.codec === 'H264' && r.licence && r.url);
     const anyScreen = (r) => r.hdcp === 'hdcp_disabled';
-    return [guarded.find(r => !anyScreen(r)), guarded.find(anyScreen)].filter(Boolean)
-        .map(r => stream(f, r, { widevine: { licenseUrl: r.licence } }));
+    const offered = [plain, guarded.find(r => !anyScreen(r)), guarded.find(anyScreen)]
+        .filter(r => r && (r === plain || !plain || height(r) > height(plain)));
+    // (A stable sort: of two with the same picture the plain one, then the one for any screen last.)
+    return offered.sort((a, b) => height(b) - height(a))
+        .map(r => stream(f, r, r === plain ? null : { widevine: { licenseUrl: r.licence } }));
 }
 
 function stream(f, resource, drm) {

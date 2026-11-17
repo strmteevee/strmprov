@@ -295,6 +295,60 @@ function resolveServiceGenreCatalog(type, id, extra) {
         .catch(err => { console.error(`[${service.name}] ${id}: ${err.message}`); return []; });
 }
 
+// Tubi's movies and series (providers/tubi.js plays them). Tubi's own lists
+// are behind a token its player signs for, so these catalogs go by what TMDB
+// knows to be on Tubi in the US (its "watch providers", JustWatch's data):
+// ordinary titles, most popular first, with TMDB's genres and a search. That
+// data runs behind now and then: a title in here can turn out to have left
+// Tubi, or to be offered protected only. Only offered while a US tunnel runs
+// (without one Tubi plays nothing).
+const TUBI = { name: 'Tubi', provider: '73', region: 'US', page: 20 };
+// The genres as this addon's other catalogs have them, and two more that TMDB has a genre for.
+const TUBI_GENRES = GENRE_CATALOGS.concat([
+    { slug: 'documentary', label: 'Documentary', movie: { with_genres: '99' }, tv: { with_genres: '99' } },
+    { slug: 'reality', label: 'Reality', tv: { with_genres: '10764|10767' } }
+]);
+function tubiAvailable() {
+    return !!(wireguard.proxyFor('plex-us') || wireguard.proxyFor('plutotv'));
+}
+function tubiCatalogs() {
+    if (!tubiAvailable()) return [];
+    const extra = [{ name: 'search' }, { name: 'skip' }];
+    const genres = [];
+    TUBI_GENRES.forEach(g => [['movie', 'movie', 'Movies'], ['series', 'tv', 'Series']].forEach(([type, media, word]) => {
+        if (g[media]) genres.push({ type, id: `tubi-${g.slug}-${type}`, name: `${TUBI.name} ${g.label} ${word}`, extra: [{ name: 'skip' }], site: TUBI.name });
+    }));
+    return [
+        { type: 'movie', id: 'tubi-movies', name: 'Tubi Movies', extra, site: TUBI.name },
+        { type: 'series', id: 'tubi-series', name: 'Tubi Series', extra, site: TUBI.name }
+    ].concat(genres);
+}
+// -> the titles of a Tubi catalog, or undefined when [id] isn't one.
+function resolveTubiCatalog(type, id, extra) {
+    const m = /^tubi-(?:(movies|series)|(.+)-(movie|series))$/.exec(id);
+    if (!m || (m[1] ? (m[1] === 'movies' ? 'movie' : 'series') : m[3]) !== type) return undefined;
+    const media = type === 'series' ? 'tv' : 'movie';
+    const genre = m[2] ? TUBI_GENRES.find(g => g.slug === m[2]) : null;
+    if (m[2] && !(genre && genre[media])) return undefined;
+    const e = extra || {};
+    const params = { watch_region: TUBI.region, with_watch_providers: TUBI.provider };
+    // (A genre TMDB needs two questions for: the first one here.)
+    if (genre) Object.assign(params, [].concat(genre[media])[0]);
+    if (e.search) params.with_text_query = String(e.search);
+    const page = Math.floor((Number(e.skip) || 0) / TUBI.page) + 1;
+    // (TMDB looks for the words in a title's description too: the ones that have them in their name first.)
+    const words = e.search ? String(e.search).toLowerCase().split(/\s+/).filter(Boolean) : [];
+    const named = (item) => { const name = String(item.title || item.name || '').toLowerCase(); return words.every(w => name.includes(w)); };
+    return tmdb.discoverPage(media, params, page)
+        .then(items => (words.length ? items.filter(named).concat(items.filter(i => !named(i))) : items))
+        .then(items => Promise.all(items.map(item => tmdbItemToMeta(item, media, type).then(meta => meta && Object.assign(meta, {
+            background: tmdb.backdropUrl(item.backdrop_path) || undefined,
+            imdbRating: item.vote_average ? Number(item.vote_average).toFixed(1) : undefined
+        })))))
+        .then(metas => metas.filter(Boolean))
+        .catch(err => { console.error(`[Tubi] ${id}: ${err.message}`); return []; });
+}
+
 // For lib/regularTitle.js: a series' episodes at the service that lists it.
 function episodesAt(source) {
     return (meta) => source.meta(meta.id).then(m => (m && m.videos) || []);
@@ -305,6 +359,7 @@ function buildCatalogs() {
         ...plutoCatalogs(),
         ...plexCatalogs(),
         ...serviceGenreCatalogs(),
+        ...tubiCatalogs(),
         // Plain TMDB browse catalogs (see the DISCOVER_CATALOG_* constants/
         // builders above).
         { type: 'movie', id: 'strmprov-new-movie', name: 'New' },
@@ -367,7 +422,7 @@ function enabledYoutubeCatalogs() {
 }
 // Clients cache a manifest by version, so switching a channel on/off has to
 // change it: the patch number is the switch file's revision counter.
-const MANIFEST_BASE_VERSION = '1.32';
+const MANIFEST_BASE_VERSION = '1.33';
 function manifestVersion(base) {
     return `${base}.${youtubeChannel.settingsRevision()}`;
 }
@@ -1002,6 +1057,8 @@ function resolveCatalog(type, id, extra) {
     if (id === 'plex-live' && type === 'tv') {
         return plexlive.liveCatalog(extra).catch(err => { console.error(`[PlexLive] ${err.message}`); return []; });
     }
+    const tubiTitles = resolveTubiCatalog(type, id, extra);
+    if (tubiTitles) return tubiTitles;
     const serviceGenre = resolveServiceGenreCatalog(type, id, extra);
     if (serviceGenre) return serviceGenre;
     if ((id === 'plex-movies' && type === 'movie') || (id === 'plex-series' && type === 'series')) {

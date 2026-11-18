@@ -29,6 +29,12 @@
 //   For addons with a known "slow means empty" pattern - CNCVerse, confirmed
 //   live 2026-11-01, answers an episode either within ~4 s with links or
 //   after ~39 s with nothing, so waiting past that only holds up the search.
+// - probeTimeoutMs: optional, how long one returned link may take to show it
+//   plays (default PROBE_TIMEOUT_MS). For addons that hand out many links of
+//   their own relay that never answer - PenguPlay, measured 2026-11-18: every
+//   link that played had answered within 1.5 s, while some twenty others ran
+//   into the limit each time (their relay gives a 502 after 10 s, or a
+//   playlist after 15 s), so the whole search took the limit, every time.
 const DEFAULT_TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 
@@ -109,11 +115,35 @@ function isForeignDubbedAudio(description) {
 // the whole chain for one link.
 const PROBE_TIMEOUT_MS = 7000;
 
+// Only the start of a playlist is read - up to its first address, which is
+// all the check uses. A film's playlist lists thousands of segments, and from
+// a slow host the rest took 1.6 s to arrive (yastream, measured 2026-11-18).
 function fetchPlaylist(url, headers, signal) {
   return fetch(url, signal ? { headers, signal } : { headers }).then((res) => {
     if (!res.ok) return null;
-    return res.text().then((text) => (/^#EXTM3U/.test(text.trim()) ? { text, url: res.url || url } : null));
+    return playlistStart(res).then((text) => (/^#EXTM3U/.test(text.trim()) ? { text, url: res.url || url } : null));
   });
+}
+
+function playlistStart(res) {
+  if (!res.body || typeof res.body.getReader !== "function" || typeof TextDecoder === "undefined") return res.text();
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  const more = () => reader.read().then(({ done, value }) => {
+    if (value) text += decoder.decode(value, { stream: true });
+    const whole = done ? text : text.slice(0, text.lastIndexOf("\n") + 1);
+    const hasAddress = whole.split("\n").some((l) => l.trim() && !l.trim().startsWith("#"));
+    // Not a playlist at all: no need for the rest of it either.
+    const other = text.trimStart().length >= 7 && !text.trimStart().startsWith("#EXTM3U");
+    if (done) return text;
+    if (hasAddress || other) {
+      reader.cancel().catch(() => {});
+      return whole;
+    }
+    return more();
+  });
+  return more();
 }
 
 function firstUri(playlist) {
@@ -150,9 +180,9 @@ function isHlsPlayable(stream, signal) {
   });
 }
 
-function isReachable(stream) {
+function isReachable(stream, timeoutMs) {
   const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-  const timer = controller ? setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS) : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs || PROBE_TIMEOUT_MS) : null;
   const signal = controller ? controller.signal : null;
   const headers = Object.assign({ Range: "bytes=0-1024" }, stream.headers || {});
   const check = /\.m3u8(\?|$)/i.test(stream.url)
@@ -181,6 +211,7 @@ function createProvider(config) {
   const configSegment = configJson ? `/${encodeURIComponent(JSON.stringify(configJson))}` : "";
   const requestTimeoutMs = Number(config && config.timeoutMs) || 0;
   const seriesTimeoutMs = Number(config && config.seriesTimeoutMs) || 0;
+  const probeTimeoutMs = Number(config && config.probeTimeoutMs) || PROBE_TIMEOUT_MS;
 
   function getStreams(tmdbId, mediaType = "movie", season = null, episode = null) {
     console.log(`[${providerLabel}] Fetching streams for TMDB: ${tmdbId}, Type: ${mediaType}`);
@@ -234,7 +265,7 @@ function createProvider(config) {
               size: parseSize(description)
             });
           }
-          return Promise.all(streams.map(isReachable)).then((alive) => {
+          return Promise.all(streams.map((s) => isReachable(s, probeTimeoutMs))).then((alive) => {
             const working = streams.filter((_, i) => alive[i]);
             console.log(`[${providerLabel}] Got ${working.length} usable stream(s)` + (working.length < streams.length ? ` (dropped ${streams.length - working.length} dead or non-video)` : ""));
             return working;

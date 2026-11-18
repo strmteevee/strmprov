@@ -42,23 +42,26 @@ var BASE_URL = "https://4khdhub.click";
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
 var DOMAINS_URL = "https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json";
-var domainCache = { url: BASE_URL, ts: 0 };
+var domainCache = { url: BASE_URL, ts: 0, asking: null };
+// One request at a time: getStreams asks for the address while TMDB is still
+// answering, and the search that follows waits for that same request.
 function fetchLatestDomain() {
-  return __async(this, null, function* () {
-    const now = Date.now();
-    if (now - domainCache.ts < 36e5)
-      return domainCache.url;
-    try {
-      const response = yield fetch(DOMAINS_URL);
-      const data = yield response.json();
+  const now = Date.now();
+  if (now - domainCache.ts < 36e5)
+    return Promise.resolve(domainCache.url);
+  if (!domainCache.asking) {
+    domainCache.asking = fetch(DOMAINS_URL).then((response) => response.json()).then((data) => {
       if (data && data["4khdhub"]) {
         domainCache.url = data["4khdhub"];
         domainCache.ts = now;
       }
-    } catch (e) {
-    }
-    return domainCache.url;
-  });
+    }).catch(() => {
+    }).then(() => {
+      domainCache.asking = null;
+      return domainCache.url;
+    });
+  }
+  return domainCache.asking;
 }
 // Confirmed live (2026-09-22): fanning out to extractHubCloud for every item
 // on a movie's page (up to a dozen, all in parallel) is only as fast as the
@@ -382,17 +385,23 @@ function extractHubCloud(hubCloudUrl, baseMeta) {
         });
       }
     });
-    const resolved = yield Promise.all(results.map((r) => __async(this, null, function* () {
-      if (r.source !== "HubCloud 10Gbps")
-        return r;
-      const link = yield resolveHubCloudFinalLink(r.url);
-      if (!link) {
-        console.log(`[4KHDHub] Could not resolve final link for HubCloud 10Gbps, dropping`);
-        return null;
-      }
-      return __spreadProps(__spreadValues({}, r), { url: link });
-    })));
-    return resolved.filter(Boolean);
+    return results;
+  });
+}
+// Where a link of the links page really leads: a "HubCloud 10Gbps" link is a
+// redirect that has to be followed first, the others are the file's address
+// already. Done per link (see getStreams), so that a slow redirect doesn't
+// hold up the other links of the same page - measured 2026-11-18: 2-4 s for
+// the redirect at a busy moment, with the direct links next to it waiting.
+function finalLink(r) {
+  if (r.source !== "HubCloud 10Gbps")
+    return Promise.resolve(r);
+  return resolveHubCloudFinalLink(r.url).then((link) => {
+    if (!link) {
+      console.log(`[4KHDHub] Could not resolve final link for HubCloud 10Gbps, dropping`);
+      return null;
+    }
+    return __spreadProps(__spreadValues({}, r), { url: link });
   });
 }
 function resolveHubCloudFinalLink(url) {
@@ -403,6 +412,8 @@ function resolveHubCloudFinalLink(url) {
       const fetchOptions = __spreadValues({ headers: { "User-Agent": USER_AGENT } }, controller ? { signal: controller.signal } : {});
       const response = yield fetch(url, fetchOptions);
       if (timer) clearTimeout(timer);
+      // Only where the link leads is wanted, not what is there.
+      if (response.body && typeof response.body.cancel === "function") response.body.cancel().catch(() => {});
       const finalUrl = response.url || url;
       try {
         const link = new URL(finalUrl).searchParams.get("link");
@@ -421,6 +432,7 @@ function resolveHubCloudFinalLink(url) {
 var cheerio3 = require("cheerio-without-node-native");
 function getStreams(tmdbId, type, season, episode) {
   return __async(this, null, function* () {
+    fetchLatestDomain();
     const tmdbDetails = yield getTmdbDetails(tmdbId, type);
     if (!tmdbDetails)
       return [];
@@ -455,37 +467,68 @@ function getStreams(tmdbId, type, season, episode) {
       });
     }
     console.log(`[4KHDHub] Processing ${itemsToProcess.length} items`);
-    const streamPromises = itemsToProcess.map((item) => __async(this, null, function* () {
+    let found = 0;
+    const alive = yield firstAndSoonAfter((add) => Promise.all(itemsToProcess.map((item, at) => __async(this, null, function* () {
       try {
         const sourceResult = yield extractSourceResults($, item);
         if (sourceResult && sourceResult.url) {
           console.log(`[4KHDHub] Extracting from HubCloud: ${sourceResult.url}`);
           const extractedLinks = yield extractHubCloud(sourceResult.url, sourceResult.meta);
-          return extractedLinks.map((link) => ({
-            name: `4KHDHub - ${link.source}${sourceResult.meta.height ? ` ${sourceResult.meta.height}p` : ""}`,
-            title: `${link.meta.title}
+          found += extractedLinks.length;
+          // Each link is looked at as soon as it is known, rather than after
+          // the slowest item of the page has been worked out.
+          yield Promise.all(extractedLinks.map((found, n) => finalLink(found).then((link) => link && isStreamReachable(link).then((ok) => {
+            if (!ok) return;
+            add(at * 100 + n, {
+              name: `4KHDHub - ${link.source}${sourceResult.meta.height ? ` ${sourceResult.meta.height}p` : ""}`,
+              title: `${link.meta.title}
 ${formatBytes(link.meta.bytes || 0)}`,
-            url: link.url,
-            quality: sourceResult.meta.height ? `${sourceResult.meta.height}p` : void 0,
-            behaviorHints: {
-              bingeGroup: `4khdhub-${link.source}`
-            }
-          }));
+              url: link.url,
+              quality: sourceResult.meta.height ? `${sourceResult.meta.height}p` : void 0,
+              behaviorHints: {
+                bingeGroup: `4khdhub-${link.source}`
+              }
+            });
+          }))));
         }
-        return [];
       } catch (err) {
         console.log(`[4KHDHub] Item processing error: ${err.message}`);
-        return [];
       }
-    }));
-    const results = yield Promise.all(streamPromises);
-    const streams = results.reduce((acc, val) => acc.concat(val), []);
-    const checks = yield Promise.all(streams.map(isStreamReachable));
-    const alive = streams.filter((_, i) => checks[i]);
-    if (alive.length < streams.length) {
-      console.log(`[4KHDHub] Dropping ${streams.length - alive.length}/${streams.length} unreachable stream(s)`);
+    }))));
+    if (alive.length < found) {
+      console.log(`[4KHDHub] ${found - alive.length}/${found} stream(s) left out: unreachable, or not there in time`);
     }
     return alive;
+  });
+}
+// The items of a page are the same title in several sizes, each worked out
+// through its own chain of pages and then test-fetched. Measured 2026-11-18:
+// the links normally arrive within a second or two of each other, but now and
+// then a page or a test-fetch hangs until its 10 s limit (searches of 10 and
+// 13 s where the others took 4-5), and the whole answer waited for it. So
+// once the first working link is there, the rest get STRAGGLER_GRACE_MS more;
+// what isn't there by then is left out. `work(add)` does the searching and
+// calls add(place, stream) for each working link; the streams come back in the
+// order of their place on the page. Without a timer (Nuvio's sandbox)
+// everything is waited for, as before.
+const STRAGGLER_GRACE_MS = 2000;
+function firstAndSoonAfter(work) {
+  return new Promise((resolve) => {
+    const found = [];
+    let timer = null;
+    let over = false;
+    const finish = () => {
+      if (over) return;
+      over = true;
+      if (timer) clearTimeout(timer);
+      resolve(found.sort((a, b) => a.place - b.place).map((f) => f.stream));
+    };
+    const add = (place, stream) => {
+      if (over) return;
+      found.push({ place, stream });
+      if (!timer && typeof setTimeout !== "undefined") timer = setTimeout(finish, STRAGGLER_GRACE_MS);
+    };
+    work(add).then(finish, finish);
   });
 }
 // Confirmed live 2026-11-01 that some "Direct R2" worker links answer 403

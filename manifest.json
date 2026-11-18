@@ -237,7 +237,8 @@
         "configJson": {
           "auth_token": "CwgTS317M83kEQR4ErRaW_IOI0hJIU00Y91Umm97ZC0",
           "disable_direct": true
-        }
+        },
+        "probeTimeoutMs": 3500
       },
       "enabled": true,
       "formats": [

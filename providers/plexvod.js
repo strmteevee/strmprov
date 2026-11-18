@@ -153,6 +153,24 @@ function cached(key, ttlMs, load) {
 
 // ---- titles ------------------------------------------------------------------------
 
+// A title, season or episode as Plex describes it, with only what is used
+// here. Plex's own description is some 20 times that (every cast member,
+// picture and sound track), and the lists of them are kept for hours:
+// measured 2026-11-18, eight catalog pages held 39 MB of them.
+function slim(item) {
+    const out = {};
+    ['type', 'ratingKey', 'title', 'thumb', 'art', 'summary', 'year', 'duration', 'audienceRating', 'index', 'parentIndex', 'originallyAvailableAt', 'price', 'rentalPrice']
+        .forEach(k => { if (item[k] != null) out[k] = item[k]; });
+    if (item.Genre) out.Genre = item.Genre.map(g => ({ tag: g.tag }));
+    if (item.Media) {
+        out.Media = item.Media.map(m => ({
+            protocol: m.protocol, drm: m.drm, videoResolution: m.videoResolution,
+            Part: (m.Part || []).map(p => ({ key: p.key, drm: p.drm, license: p.license }))
+        }));
+    }
+    return out;
+}
+
 // Playable without DRM: a movie or episode with at least one unprotected HLS version.
 function freeHls(item) {
     return (item.Media || []).find(m => m.protocol === 'hls' && !m.drm && (m.Part || []).length);
@@ -207,7 +225,7 @@ const listedIn = new Map(); // ratingKey -> region
 // order - and with it its paging - the same in between.
 function hubItems(region, hub) {
     return cached(`hub|${region.code}|${hub.key}`, HUBS_TTL_MS, () => get(`${VOD}${hub.key}`, region)
-        .then(j => (j && j.MediaContainer && j.MediaContainer.Metadata) || [])).then(items => {
+        .then(j => ((j && j.MediaContainer && j.MediaContainer.Metadata) || []).map(slim))).then(items => {
         if (listedIn.size > 5000) listedIn.clear();
         items.forEach(it => { if (it.ratingKey && !listedIn.has(it.ratingKey)) listedIn.set(it.ratingKey, region); });
         return items;
@@ -314,8 +332,9 @@ function metadata(ratingKey) {
             return get(`${VOD}/library/metadata/${ratingKey}`, list[i])
                 .then(j => (j && j.MediaContainer && (j.MediaContainer.Metadata || [])[0]) || null)
                 .catch(() => null)
-                .then(item => {
-                    if (!item) return tryRegion(i + 1, firstHit);
+                .then(found => {
+                    if (!found) return tryRegion(i + 1, firstHit);
+                    const item = slim(found);
                     const hit = { item, region: list[i] };
                     const playable = item.type === 'show' || item.type === 'season' || !!freeHls(item);
                     return playable ? hit : tryRegion(i + 1, firstHit || hit);
@@ -327,7 +346,7 @@ function metadata(ratingKey) {
 
 function children(ratingKey, region) {
     return cached(`children|${region.code}|${ratingKey}`, ITEMS_TTL_MS, () => get(`${VOD}/library/metadata/${ratingKey}/children`, region)
-        .then(j => (j && j.MediaContainer && j.MediaContainer.Metadata) || []));
+        .then(j => ((j && j.MediaContainer && j.MediaContainer.Metadata) || []).map(slim)));
 }
 
 // Plex's search covers every title anywhere; the free ones are those its

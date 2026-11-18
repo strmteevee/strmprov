@@ -1224,6 +1224,14 @@ function logMemory(id) {
     console.log(`[addon-server] Memory after ${id}: rss ${mb(m.rss)} MB, heap ${mb(m.heapUsed)}/${mb(m.heapTotal)} MB, buffers ${mb(m.arrayBuffers)} MB`);
 }
 
+// What this process holds, for the dashboard and for looking into growth: in MB, as the Pi counts it
+// (rss), the JavaScript's own (heap) and what lies outside it (buffers, other native memory).
+function memoryReport() {
+    const m = process.memoryUsage();
+    const mb = (n) => Math.round(n / 104857.6) / 10;
+    return { rssMb: mb(m.rss), heapUsedMb: mb(m.heapUsed), heapTotalMb: mb(m.heapTotal), externalMb: mb(m.external), buffersMb: mb(m.arrayBuffers), uptimeMinutes: Math.round(process.uptime() / 60) };
+}
+
 function notFound(res) {
     sendJson(res, 404, { error: 'Not found' });
 }
@@ -1332,6 +1340,10 @@ const server = http.createServer((req, res) => {
                 .catch(err => { console.error(`[plex] Licence request failed: ${err.message}`); res.writeHead(502, { 'Content-Type': 'text/plain' }); res.end('Failed'); });
         });
         return undefined;
+    }
+    // /memory - what this process holds now (see memoryReport).
+    if (parts[0] === 'memory' && parts.length === 1 && req.method === 'GET') {
+        return sendJson(res, 200, memoryReport());
     }
     // /tunnels, /tunnels/test?name= - the WireGuard tunnels this process runs
     // (lib/wireguard.js), for the admin dashboard: their state, and which

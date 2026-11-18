@@ -171,9 +171,20 @@ function createRegion(def) {
             .then(j => (j.categories || []).map(c => ({ id: c._id, name: c.name }))));
     }
 
+    // A category's page of titles, with only what toMeta uses: Pluto's own
+    // description of a title is many times that, and up to MAX_CACHED pages are kept.
     function categoryItems(categoryId, page) {
         return cached(`items|${categoryId}|${page}`, ITEMS_TTL_MS, () => api('vod', `/v4/vod/categories/${categoryId}/items?offset=${PAGE}&page=${page}`)
-            .then(j => j.items || []));
+            .then(j => (j.items || []).map(slimItem)));
+    }
+
+    function slimItem(item) {
+        const out = {};
+        ['_id', 'id', 'type', 'name', 'description', 'summary', 'genre', 'duration', 'originalReleaseDate']
+            .forEach(k => { if (item[k] != null) out[k] = item[k]; });
+        if (item.covers) out.covers = item.covers.map(c => ({ aspectRatio: c.aspectRatio, url: c.url }));
+        if (item.featuredImage && item.featuredImage.path) out.featuredImage = { path: item.featuredImage.path };
+        return out;
     }
 
     function toMeta(item) {

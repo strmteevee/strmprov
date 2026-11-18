@@ -143,20 +143,31 @@ function idsFor(kind, names) {
         if (age === Infinity) return build.then(() => (indexAge() === Infinity ? [] : idsFor(kind, names)));
     }
     if (age === Infinity) return Promise.resolve([]);
-    return fs.promises.readFile(INDEX_PATH, 'utf8').then(text => {
+    return listing().then(list => {
         const ids = [];
         names.forEach(name => {
             const key = `\n${KINDS[kind].mark}:${name}\t`;
-            let at = text.indexOf(key);
+            let at = list.indexOf(key);
             while (at !== -1) {
-                const end = text.indexOf('\n', at + key.length);
-                const id = text.slice(at + key.length, end === -1 ? undefined : end);
+                const end = list.indexOf('\n', at + key.length);
+                const id = list.toString('latin1', at + key.length, end === -1 ? list.length : end);
                 if (id && !ids.includes(id)) ids.push(id);
-                at = text.indexOf(key, at + key.length);
+                at = list.indexOf(key, at + key.length);
             }
         });
         return ids;
     }).catch(() => []);
+}
+
+// The list file's bytes, read once and kept until the file is written anew:
+// 2.5 MB that stay, rather than a string of that size made and thrown away
+// at every search (searched as bytes: the names in it are plain ASCII).
+let listed = null; // { mtimeMs, bytes }
+function listing() {
+    return fs.promises.stat(INDEX_PATH).then(st => {
+        if (listed && listed.mtimeMs === st.mtimeMs) return listed.bytes;
+        return fs.promises.readFile(INDEX_PATH).then(bytes => { listed = { mtimeMs: st.mtimeMs, bytes }; return bytes; });
+    });
 }
 
 // A title as Tubi writes it in an address ("Dauntless: The Battle of Midway"

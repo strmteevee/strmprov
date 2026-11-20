@@ -298,47 +298,65 @@ function resolveServiceGenreCatalog(type, id, extra) {
         .catch(err => { console.error(`[${service.name}] ${id}: ${err.message}`); return []; });
 }
 
-// Tubi's movies and series (providers/tubi.js plays them). Tubi's own lists
-// are behind a token its player signs for, so these catalogs go by what TMDB
-// knows to be on Tubi in the US (its "watch providers", JustWatch's data):
-// ordinary titles, most popular first, with TMDB's genres and a search. That
-// data runs behind now and then: a title in here can turn out to have left
-// Tubi, or to be offered protected only. Only offered while a US tunnel runs
-// (without one Tubi plays nothing).
-const TUBI = { name: 'Tubi', provider: '73', region: 'US', page: 20 };
+// The movies and series of services whose own lists can't be had (the
+// providers of the same name play them): Tubi's are behind a token its player
+// signs for, Xumo has no list of everything, The Roku Channel's pages are made
+// for a signed-in viewer. Their catalogs go by what TMDB knows to be on the
+// service in the US (its "watch providers", JustWatch's data): ordinary
+// titles, most popular first, with TMDB's genres and a search. That data runs
+// behind now and then: a title in here can turn out to have left the service,
+// or to be offered protected only. A service that only plays through a US
+// tunnel (`tunnel`) is only offered while one runs.
+const WATCH_SERVICES = [
+    { slug: 'tubi', name: 'Tubi', provider: '73', region: 'US', tunnel: true },
+    { slug: 'roku', name: 'Roku Channel', provider: '207', region: 'US', tunnel: true },
+    { slug: 'xumo', name: 'Xumo Play', provider: '1963', region: 'US', tunnel: false }
+];
+const WATCH_PAGE = 20;
 // The genres as this addon's other catalogs have them, and two more that TMDB has a genre for.
-const TUBI_GENRES = GENRE_CATALOGS.concat([
+const WATCH_GENRES = GENRE_CATALOGS.concat([
     { slug: 'documentary', label: 'Documentary', movie: { with_genres: '99' }, tv: { with_genres: '99' } },
     { slug: 'reality', label: 'Reality', tv: { with_genres: '10764|10767' } }
 ]);
-function tubiAvailable() {
+function usTunnelRuns() {
     return !!(wireguard.proxyFor('plex-us') || wireguard.proxyFor('plutotv'));
 }
-function tubiCatalogs() {
-    if (!tubiAvailable()) return [];
-    const extra = [{ name: 'search' }, { name: 'skip' }];
-    const genres = [];
-    TUBI_GENRES.forEach(g => [['movie', 'movie', 'Movies'], ['series', 'tv', 'Series']].forEach(([type, media, word]) => {
-        if (g[media]) genres.push({ type, id: `tubi-${g.slug}-${type}`, name: `${TUBI.name} ${g.label} ${word}`, extra: [{ name: 'skip' }], site: TUBI.name });
-    }));
-    return [
-        { type: 'movie', id: 'tubi-movies', name: 'Tubi Movies', extra, site: TUBI.name },
-        { type: 'series', id: 'tubi-series', name: 'Tubi Series', extra, site: TUBI.name }
-    ].concat(genres);
+function watchServiceCatalogs() {
+    const tunnel = usTunnelRuns();
+    return WATCH_SERVICES.filter(service => tunnel || !service.tunnel).flatMap(service => {
+        const extra = [{ name: 'search' }, { name: 'skip' }];
+        const genres = [];
+        WATCH_GENRES.forEach(g => [['movie', 'movie', 'Movies'], ['series', 'tv', 'Series']].forEach(([type, media, word]) => {
+            if (g[media]) genres.push({ type, id: `${service.slug}-${g.slug}-${type}`, name: `${service.name} ${g.label} ${word}`, extra: [{ name: 'skip' }], site: service.name });
+        }));
+        return [
+            { type: 'movie', id: `${service.slug}-movies`, name: `${service.name} Movies`, extra, site: service.name },
+            { type: 'series', id: `${service.slug}-series`, name: `${service.name} Series`, extra, site: service.name }
+        ].concat(genres);
+    });
 }
-// -> the titles of a Tubi catalog, or undefined when [id] isn't one.
-function resolveTubiCatalog(type, id, extra) {
-    const m = /^tubi-(?:(movies|series)|(.+)-(movie|series))$/.exec(id);
-    if (!m || (m[1] ? (m[1] === 'movies' ? 'movie' : 'series') : m[3]) !== type) return undefined;
+// What a catalog id of one of these services stands for: { service, type, genre } - or null when [id] isn't one.
+function watchCatalogOf(id) {
+    const m = /^([a-z]+)-(?:(movies|series)|(.+)-(movie|series))$/.exec(id);
+    const service = m && WATCH_SERVICES.find(s => s.slug === m[1]);
+    if (!service) return null;
+    const type = m[2] ? (m[2] === 'movies' ? 'movie' : 'series') : m[4];
+    const genre = m[3] ? WATCH_GENRES.find(g => g.slug === m[3]) : null;
+    if (m[3] && !(genre && genre[type === 'series' ? 'tv' : 'movie'])) return null;
+    return { service, type, genre };
+}
+// -> the titles of such a catalog, or undefined when [id] isn't one.
+function resolveWatchServiceCatalog(type, id, extra) {
+    const asked = watchCatalogOf(id);
+    if (!asked || asked.type !== type) return undefined;
+    const { service, genre } = asked;
     const media = type === 'series' ? 'tv' : 'movie';
-    const genre = m[2] ? TUBI_GENRES.find(g => g.slug === m[2]) : null;
-    if (m[2] && !(genre && genre[media])) return undefined;
     const e = extra || {};
-    const params = { watch_region: TUBI.region, with_watch_providers: TUBI.provider };
+    const params = { watch_region: service.region, with_watch_providers: service.provider };
     // (A genre TMDB needs two questions for: the first one here.)
     if (genre) Object.assign(params, [].concat(genre[media])[0]);
     if (e.search) params.with_text_query = String(e.search);
-    const page = Math.floor((Number(e.skip) || 0) / TUBI.page) + 1;
+    const page = Math.floor((Number(e.skip) || 0) / WATCH_PAGE) + 1;
     // (TMDB looks for the words in a title's description too: the ones that have them in their name first.)
     const words = e.search ? String(e.search).toLowerCase().split(/\s+/).filter(Boolean) : [];
     const named = (item) => { const name = String(item.title || item.name || '').toLowerCase(); return words.every(w => name.includes(w)); };
@@ -349,7 +367,7 @@ function resolveTubiCatalog(type, id, extra) {
             imdbRating: item.vote_average ? Number(item.vote_average).toFixed(1) : undefined
         })))))
         .then(metas => metas.filter(Boolean))
-        .catch(err => { console.error(`[Tubi] ${id}: ${err.message}`); return []; });
+        .catch(err => { console.error(`[${service.name}] ${id}: ${err.message}`); return []; });
 }
 
 // For lib/regularTitle.js: a series' episodes at the service that lists it.
@@ -362,7 +380,7 @@ function buildCatalogs() {
         ...plutoCatalogs(),
         ...plexCatalogs(),
         ...serviceGenreCatalogs(),
-        ...tubiCatalogs(),
+        ...watchServiceCatalogs(),
         // Plain TMDB browse catalogs (see the DISCOVER_CATALOG_* constants/
         // builders above).
         { type: 'movie', id: 'strmprov-new-movie', name: 'New' },
@@ -425,7 +443,7 @@ function enabledYoutubeCatalogs() {
 }
 // Clients cache a manifest by version, so switching a channel on/off has to
 // change it: the patch number is the switch file's revision counter.
-const MANIFEST_BASE_VERSION = '1.34';
+const MANIFEST_BASE_VERSION = '1.35';
 function manifestVersion(base) {
     return `${base}.${youtubeChannel.settingsRevision()}`;
 }
@@ -1060,8 +1078,8 @@ function resolveCatalog(type, id, extra) {
     if (id === 'plex-live' && type === 'tv') {
         return plexlive.liveCatalog(extra).catch(err => { console.error(`[PlexLive] ${err.message}`); return []; });
     }
-    const tubiTitles = resolveTubiCatalog(type, id, extra);
-    if (tubiTitles) return tubiTitles;
+    const watchTitles = resolveWatchServiceCatalog(type, id, extra);
+    if (watchTitles) return watchTitles;
     const serviceGenre = resolveServiceGenreCatalog(type, id, extra);
     if (serviceGenre) return serviceGenre;
     if ((id === 'plex-movies' && type === 'movie') || (id === 'plex-series' && type === 'series')) {
@@ -1383,6 +1401,44 @@ const server = http.createServer((req, res) => {
                     res.end(r.body);
                 })
                 .catch(err => { console.error(`[plex] Licence request failed: ${err.message}`); res.writeHead(502, { 'Content-Type': 'text/plain' }); res.end('Failed'); });
+        });
+        return undefined;
+    }
+    // /roku/dash.mpd?id=, /roku/seg/<host>/<path> and POST /roku/licence?id= - a title of The Roku
+    // Channel (providers/roku.js): its DASH description, its video and sound, and the player's
+    // licence request, all through the US tunnel - Roku's video refuses everyone outside the US.
+    if (parts[0] === 'roku' && parts[1] === 'dash.mpd' && parts.length === 2 && req.method === 'GET') {
+        return require('./providers/roku').dash(parsedUrl.searchParams.get('id') || '', `http://${req.headers.host}`)
+            .then(r => {
+                res.writeHead(r.status, { 'Content-Type': r.status === 200 ? 'application/dash+xml' : 'text/plain', 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' });
+                res.end(r.body);
+            })
+            .catch(err => { console.error(`[Roku] DASH description failed: ${err.message}`); res.writeHead(502, { 'Content-Type': 'text/plain' }); res.end('Failed'); });
+    }
+    if (parts[0] === 'roku' && parts[1] === 'seg' && parts.length > 3 && req.method === 'GET') {
+        return require('./providers/roku').segment(parsedUrl.pathname.slice('/roku/seg/'.length), parsedUrl.search, req.headers.range)
+            .then(r => {
+                const headers = { 'Content-Type': r.type || 'application/octet-stream', 'Content-Length': r.body.length, 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' };
+                if (r.range) headers['Content-Range'] = r.range;
+                res.writeHead(r.status, headers);
+                res.end(r.body);
+            })
+            .catch(err => { console.error(`[Roku] Video piece failed: ${err.message}`); res.writeHead(502, { 'Content-Type': 'text/plain' }); res.end('Failed'); });
+    }
+    if (parts[0] === 'roku' && parts[1] === 'licence' && parts.length === 2 && req.method === 'POST') {
+        // (A licence request is a few kilobytes: more than this isn't one.)
+        const MAX_LICENCE_REQUEST = 64 * 1024;
+        const chunks = [];
+        let size = 0;
+        req.on('data', c => { size += c.length; if (size <= MAX_LICENCE_REQUEST) chunks.push(c); });
+        req.on('end', () => {
+            if (size > MAX_LICENCE_REQUEST) { res.writeHead(413, { 'Content-Type': 'text/plain' }); return res.end('Too large'); }
+            require('./providers/roku').licence(parsedUrl.searchParams.get('id') || '', Buffer.concat(chunks))
+                .then(r => {
+                    res.writeHead(r.status, { 'Content-Type': r.type || 'application/octet-stream', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
+                    res.end(r.body);
+                })
+                .catch(err => { console.error(`[Roku] Licence request failed: ${err.message}`); res.writeHead(502, { 'Content-Type': 'text/plain' }); res.end('Failed'); });
         });
         return undefined;
     }

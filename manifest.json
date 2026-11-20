@@ -818,6 +818,26 @@
       "contentLanguage": [
         "en"
       ]
+    },
+    {
+      "id": "roku",
+      "name": "Roku Channel",
+      "description": "The Roku Channel's free movies and series (US, through a US VPN tunnel), found with its own search by name and year, episodes by number and title; every title is protected and comes with Roku's Widevine licence address; its video only plays in the US, so description, video and licence request all come through this server and the tunnel - see providers/roku.js.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/roku.js",
+      "enabled": true,
+      "formats": [
+        "mpd"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=roku.com&sz=128",
+      "contentLanguage": [
+        "en"
+      ]
     }
   ]
 }

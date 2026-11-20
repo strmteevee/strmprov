@@ -237,6 +237,9 @@ function buildManifest() {
         types: ['movie', 'series', 'tv'],
         catalogs: buildCatalogs(),
         idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:', 'daddylive:', 'pluto:', 'plexvod:', 'plex:live:'],
+        // Not a Stremio field: OmniStream reads it. For ids with these prefixes the streams can
+        // also be had as they are found, provider by provider (/stream-progress, see sendStreamProgress).
+        streamProgress: { idPrefixes: ['tt'] },
         behaviorHints: { configurable: false, configurationRequired: false }
     };
 }
@@ -422,7 +425,7 @@ function enabledYoutubeCatalogs() {
 }
 // Clients cache a manifest by version, so switching a channel on/off has to
 // change it: the patch number is the switch file's revision counter.
-const MANIFEST_BASE_VERSION = '1.33';
+const MANIFEST_BASE_VERSION = '1.34';
 function manifestVersion(base) {
     return `${base}.${youtubeChannel.settingsRevision()}`;
 }
@@ -1177,42 +1180,83 @@ function buildStreamResponse(type, rawId, relayBase) {
             return { streams: [] };
         }
         return aggregate.aggregateStreams(found.tmdbId, found.mediaType, season, episode, { reuse: true }).then(({ streams }) => {
-            const stremioStreams = relayAddress.resolve(streams, relayBase).map(s => {
-                const behaviorHints = { notWebReady: true };
-                // A service's own free stream of the title (Plex, Pluto TV), not a copy found
-                // elsewhere. Not a Stremio field: OmniStream reads it and can play those first.
-                if (s.official) behaviorHints.official = true;
-                // A protected stream with the service's own licence address (providers/plexvod.js), for a player that asks for the licence itself.
-                if (s.drm) behaviorHints.drm = s.drm;
-                if (s.headers && Object.keys(s.headers).length) {
-                    behaviorHints.proxyHeaders = { request: s.headers };
-                }
-                const stream = {
-                    url: s.url,
-                    name: s.name || s.source || 'Stream',
-                    title: [s.quality, s.size].filter(Boolean).join(' | ') || s.title || '',
-                    behaviorHints
-                };
-                if (Array.isArray(s.subtitles) && s.subtitles.length) {
-                    const embedded = s.subtitles
-                        .filter(sub => sub && sub.url)
-                        .map(sub => {
-                            const lang = sub.lang || sub.language || 'unknown';
-                            const name = lang.length <= 3
-                                ? subtitles.languageName(lang)
-                                : lang.charAt(0).toUpperCase() + lang.slice(1);
-                            return { url: sub.url, lang, language: lang, name };
-                        });
-                    if (embedded.length) stream.subtitles = embedded;
-                }
-                return stream;
-            });
-            return { streams: stremioStreams };
+            return { streams: stremioStreams(streams, relayBase) };
         });
     }).catch(err => {
         console.error(`[addon-server] stream error for ${imdbId}: ${err.message}`);
         return { streams: [] };
     });
+}
+
+// The providers' streams as a Stremio client gets them.
+function stremioStreams(streams, relayBase) {
+    return relayAddress.resolve(streams, relayBase).map(s => {
+        const behaviorHints = { notWebReady: true };
+        // A service's own free stream of the title (Plex, Pluto TV), not a copy found
+        // elsewhere. Not a Stremio field: OmniStream reads it and can play those first.
+        if (s.official) behaviorHints.official = true;
+        // A protected stream with the service's own licence address (providers/plexvod.js), for a player that asks for the licence itself.
+        if (s.drm) behaviorHints.drm = s.drm;
+        if (s.headers && Object.keys(s.headers).length) {
+            behaviorHints.proxyHeaders = { request: s.headers };
+        }
+        const stream = {
+            url: s.url,
+            name: s.name || s.source || 'Stream',
+            title: [s.quality, s.size].filter(Boolean).join(' | ') || s.title || '',
+            behaviorHints
+        };
+        if (Array.isArray(s.subtitles) && s.subtitles.length) {
+            const embedded = s.subtitles
+                .filter(sub => sub && sub.url)
+                .map(sub => {
+                    const lang = sub.lang || sub.language || 'unknown';
+                    const name = lang.length <= 3
+                        ? subtitles.languageName(lang)
+                        : lang.charAt(0).toUpperCase() + lang.slice(1);
+                    return { url: sub.url, lang, language: lang, name };
+                });
+            if (embedded.length) stream.subtitles = embedded;
+        }
+        return stream;
+    });
+}
+
+// The same search as buildStreamResponse, answered while it runs: one JSON
+// object per line, each sent the moment it is known, so a client can show (and
+// start) what the fast providers found without waiting for the slow ones.
+//   {"providers":[{"id","name"}]}              everyone that is asked
+//   {"provider":"id","streams":[...],"ms":n}   one provider's answer (Stremio streams; "error" when it failed)
+//   {"done":true}                              the end; a provider without a line didn't answer in time
+// A line that is neither is to be skipped. Not a Stremio resource: the
+// manifest's `streamProgress` says for which ids it can be asked.
+function sendStreamProgress(res, type, rawId, relayBase) {
+    res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
+    const line = (o) => { if (!res.writableEnded && !res.destroyed) res.write(JSON.stringify(o) + '\n'); };
+    const end = () => { line({ done: true }); res.end(); };
+    const mediaType = type === 'series' ? 'tv' : 'movie';
+    const [imdbId, seasonStr, episodeStr] = rawId.split(':');
+    const season = seasonStr ? parseInt(seasonStr, 10) : null;
+    const episode = episodeStr ? parseInt(episodeStr, 10) : null;
+    if ((type !== 'movie' && type !== 'series') || (mediaType === 'tv' && (!season || !episode))) return Promise.resolve(end());
+
+    const names = {};
+    aggregate.readManifest().scrapers.forEach(s => { names[s.id] = s.name || s.id; });
+    const onProgress = (event) => {
+        if (event.providers) return line({ providers: event.providers.map(id => ({ id, name: names[id] || id })) });
+        const out = { provider: event.provider, streams: stremioStreams(event.streams, relayBase), ms: event.ms };
+        if (event.error) out.error = event.error;
+        line(out);
+    };
+    return tmdb.findByImdbId(imdbId).then(found => {
+        if (!found) {
+            console.log(`[addon-server] No TMDB match for ${imdbId}`);
+            return null;
+        }
+        return aggregate.aggregateStreams(found.tmdbId, found.mediaType, season, episode, { reuse: true, onProgress });
+    }).catch(err => {
+        console.error(`[addon-server] stream error for ${imdbId}: ${err.message}`);
+    }).then(end);
 }
 
 // One line per stream search, so the dashboard's log shows how much memory
@@ -1396,6 +1440,16 @@ const server = http.createServer((req, res) => {
             return sendJson(res, 200, { subtitles: [] });
         }
         return buildSubtitlesResponse(type, id).then(body => sendJson(res, 200, body));
+    }
+
+    if (resource === 'stream-progress' && route.length >= 3) {
+        const type = route[1];
+        const id = decodeURIComponent(route.slice(2).join('/')).replace(/\.json$/, '');
+        return vpnCheck.check().then(vpn => {
+            if (!vpn.ok) console.log(`[addon-server] No streams for ${id}: ${vpn.reason}`);
+            // (With the VPN down the search itself answers empty: see lib/aggregate.js.)
+            return sendStreamProgress(res, type, id, `http://${req.headers.host}`).then(() => logMemory(id));
+        });
     }
 
     if (resource === 'stream' && route.length >= 3) {

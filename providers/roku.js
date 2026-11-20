@@ -22,13 +22,15 @@
 //               address of Roku's Widevine licence service with a token in it.
 //               Every title is protected. The very same request is refused
 //               about every other time (HTTP 451, "not in your region": 6 of
-//               10 in a row, whatever headers it carries) - each request is a
-//               new connection through the tunnel, which comes out on an IPv4
-//               address one time and an IPv6 one the next, and Roku seems to
-//               place only one of them in the US. So that request is asked
-//               again a few times (PLAY_TRIES) before giving up, through the
-//               other US tunnel in turn when two run. (Six refusals in a row
-//               were seen too: then there is no stream this time.)
+//               10, whatever headers it carries), in runs: on the Pi eight
+//               refusals in a row over 14 s, then fine. It isn't the tunnel's
+//               address (the same IPv4 one 12 times of 14, the country always
+//               "US"): Roku's playback service seems to mind the VPN now and
+//               then. So that request is asked again (PLAY_TRIES, some 20 s at
+//               most), through the other US tunnel in turn when two run, and
+//               it is asked as soon as a stream is handed out (see getStreams)
+//               rather than when playing starts: by then the answer is
+//               usually there (kept PLAY_TTL_MS).
 //               The description answers from anywhere, but the video itself
 //               (vod.delivery.roku.com) refuses everyone outside the US. So,
 //               unlike Tubi's, the whole stream comes through this server and
@@ -60,8 +62,8 @@ const SESSION_TTL_MS = 30 * 60 * 1000;
 const PLAY_TTL_MS = 2 * 60 * 1000;
 const MAX_PLAYS_KEPT = 20;
 // How often the playback request is asked before a refusal (451) is taken for an answer, and the pause between.
-const PLAY_TRIES = 8;
-const PLAY_RETRY_MS = 600;
+const PLAY_TRIES = 14;
+const PLAY_RETRY_MS = 500;
 const REQUEST_TIMEOUT_MS = 20000;
 const SEGMENT_TIMEOUT_MS = 30000;
 // Names a title goes by that are searched for, and search hits that are looked at.
@@ -224,8 +226,6 @@ const validId = (id) => /^[a-f0-9]{32}$/i.test(String(id || ''));
 function dash(id, relayBase) {
     if (!validId(id)) return Promise.resolve({ status: 400, body: 'Bad id' });
     if (!proxy()) return Promise.resolve({ status: 502, body: 'No VPN tunnel' });
-    // (Always a new answer: a description asked for again is a new start of playing.)
-    plays.delete(id);
     return play(id).then(p => tunnelFetch(proxy(), p.url, { headers: { 'User-Agent': UA }, timeoutMs: REQUEST_TIMEOUT_MS }).then(r => {
         if (r.status !== 200) return { status: r.status, body: 'Roku gave no description' };
         return { status: 200, body: relayDescription(r.text(), r.url || p.url, relayBase) };
@@ -299,6 +299,17 @@ function candidates(wanted, kind) {
     });
 }
 
+// Whether Roku has the title for free ({ titles, year }, kind 'movie' | 'series'), going by its own
+// search: for the catalogs, which list what TMDB says is on Roku (addon-server.js). Throws when
+// Roku can't be asked.
+function has(wanted, kind) {
+    if (!proxy()) return Promise.reject(new Error('No running US tunnel'));
+    const names = Array.from(new Set(wanted.titles)).slice(0, MAX_NAMES);
+    return Promise.all(names.map(name => api('/api/v1/search', { query: name }).then(hitsIn))).then(lists => {
+        return matchingTitles(lists.flat().filter(h => h.kind === kind), wanted).length > 0;
+    });
+}
+
 function streamsOf(hit, wanted) {
     if (hit.kind === 'movie') return content(hit.id).then(data => { const o = freeOption(data); return o ? [stream(hit.id, o)] : []; });
     return content(hit.id).then(series => {
@@ -321,6 +332,8 @@ function getStreams(tmdbId, mediaType, season, episode) {
         return tryNext(0);
     })).then(streams => {
         console.log(`[Roku] ${streams.length} stream(s)`);
+        // Asked now, not waited for: Roku refuses this in runs (see the top), and a player gives a stream some 20 s to start.
+        streams.forEach(s => { const id = (/[?&]id=([a-f0-9]{32})/i.exec(s.url) || [])[1]; if (id) play(id).catch(err => console.log(`[Roku] No playback answer ahead of time: ${err.message}`)); });
         return streams;
     }).catch(err => {
         console.log(`[Roku] getStreams failed: ${err.message}`);
@@ -328,4 +341,4 @@ function getStreams(tmdbId, mediaType, season, episode) {
     });
 }
 
-module.exports = { getStreams, dash, segment, licence, hitsIn, freeOption, episodesIn, isAskedEpisode, relayDescription, segmentAddress };
+module.exports = { getStreams, has, dash, segment, licence, hitsIn, freeOption, episodesIn, isAskedEpisode, relayDescription, segmentAddress };

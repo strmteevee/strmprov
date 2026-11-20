@@ -411,9 +411,17 @@ function getStreams(tmdbId, mediaType, season, episode) {
     });
 }
 
+// Whether Tubi's lists have a title of [kind] ('movie' | 'series') under one of the names it goes
+// by ({ titles }): for the catalogs, which list what TMDB says is on Tubi (addon-server.js).
+// Throws while there is no list to go by.
+function has(wanted, kind) {
+    if (indexAge() === Infinity) return Promise.reject(new Error('Tubi\'s titles are not listed yet'));
+    return idsFor(kind, addressNames(wanted.titles)).then(ids => ids.length > 0);
+}
+
 // At the server's start: the lists of Tubi's titles are looked up when there are none or they are old, so the first search needn't wait for them.
 function warmUp() {
     if (proxy() && indexAge() > INDEX_TTL_MS && Date.now() - lastFailedAt > INDEX_RETRY_MS) buildIndex();
 }
 
-module.exports = { getStreams, warmUp, addressNames, filmIn, seriesIn, seasonListIn, streamOf, isTitle, episodeTitle, sameEpisode };
+module.exports = { getStreams, warmUp, has, addressNames, filmIn, seriesIn, seasonListIn, streamOf, isTitle, episodeTitle, sameEpisode };

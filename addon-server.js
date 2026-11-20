@@ -61,6 +61,7 @@ const vpnCheck = require('./lib/vpnCheck');
 const wireguard = require('./lib/wireguard');
 const plutotv = require('./providers/plutotv');
 const plexvod = require('./providers/plexvod');
+const xumo = require('./providers/xumo');
 const plexlive = require('./providers/plexlive');
 const relayAddress = require('./lib/relayAddress');
 const genreRows = require('./lib/genreRows');
@@ -227,7 +228,7 @@ function buildManifest() {
             // already has full TMDB access for every stream lookup, so it can
             // fill that gap itself - a TMDB-backed fallback for any movie/
             // series 'tt' id, not just this addon's own custom catalogs.
-            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:', 'daddylive:', 'pluto:', 'plexvod:', 'plex:live:'] },
+            { name: 'meta', types: ['movie', 'series', 'tv'], idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:', 'daddylive:', 'pluto:', 'plexvod:', 'plex:live:', 'xumo:'] },
             // Scoped to real tt-id content only - neither IndyCar's nor
             // F1/F2/F3/Academy's own custom id schemes have a
             // subtitle concept, and Cinemeta already handles meta for the
@@ -236,7 +237,7 @@ function buildManifest() {
         ],
         types: ['movie', 'series', 'tv'],
         catalogs: buildCatalogs(),
-        idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:', 'daddylive:', 'pluto:', 'plexvod:', 'plex:live:'],
+        idPrefixes: ['tt', 'indycar:', 'f1:', 'fullraces:', 'ytlive:', 'daddylive:', 'pluto:', 'plexvod:', 'plex:live:', 'xumo:'],
         // Not a Stremio field: OmniStream reads it. For ids with these prefixes the streams can
         // also be had as they are found, provider by provider (/stream-progress, see sendStreamProgress).
         streamProgress: { idPrefixes: ['tt'] },
@@ -270,13 +271,23 @@ function plexCatalogs() {
     ];
 }
 
-// Pluto's and Plex's movies and series per genre ("Plex Comedy Movies"), each a
+// Xumo Play's free movies and series (providers/xumo.js): its own lists, the rows of its pages as genres.
+function xumoCatalogs() {
+    const extra = [{ name: 'genre', options: xumo.genreOptions() }, { name: 'search' }, { name: 'skip' }];
+    return [
+        { type: 'movie', id: 'xumo-movies', name: 'Xumo Play Movies', extra, site: 'Xumo Play' },
+        { type: 'series', id: 'xumo-series', name: 'Xumo Play Series', extra, site: 'Xumo Play' }
+    ];
+}
+
+// Pluto's, Plex's and Xumo's movies and series per genre ("Plex Comedy Movies"), each a
 // catalog of its own so a client can show it as a row: filled from the
 // service's rows whose name says the genre (lib/genreRows.js). Only the ones
 // a service has rows for, going by the row names known now.
 const GENRE_SERVICES = [
     { prefix: 'pluto', name: 'Pluto TV', source: plutotv, rowNames: () => plutotv.genreOptions().vod },
-    { prefix: 'plex', name: 'Plex', source: plexvod, rowNames: () => plexvod.genreOptions() }
+    { prefix: 'plex', name: 'Plex', source: plexvod, rowNames: () => plexvod.genreOptions() },
+    { prefix: 'xumo', name: 'Xumo Play', source: xumo, rowNames: () => xumo.genreOptions() }
 ];
 function serviceGenreCatalogs() {
     return [].concat(...GENRE_SERVICES.map(service => genreRows.available(service.rowNames()).map(g => ({
@@ -289,7 +300,7 @@ function serviceGenreCatalogs() {
 }
 // -> the titles of a service's genre catalog, or undefined when [id] isn't one.
 function resolveServiceGenreCatalog(type, id, extra) {
-    const m = /^(pluto|plex)-(.+)-(movie|series)$/.exec(id);
+    const m = /^(pluto|plex|xumo)-(.+)-(movie|series)$/.exec(id);
     const service = m && GENRE_SERVICES.find(s => s.prefix === m[1]);
     const match = service && m[3] === type ? genreRows.matcher(m[2], type) : null;
     if (!match) return undefined;
@@ -298,21 +309,68 @@ function resolveServiceGenreCatalog(type, id, extra) {
         .catch(err => { console.error(`[${service.name}] ${id}: ${err.message}`); return []; });
 }
 
-// The movies and series of services whose own lists can't be had (the
+// The movies and series of services whose own lists don't make a catalog (the
 // providers of the same name play them): Tubi's are behind a token its player
-// signs for, Xumo has no list of everything, The Roku Channel's pages are made
-// for a signed-in viewer. Their catalogs go by what TMDB knows to be on the
-// service in the US (its "watch providers", JustWatch's data): ordinary
-// titles, most popular first, with TMDB's genres and a search. That data runs
-// behind now and then: a title in here can turn out to have left the service,
-// or to be offered protected only. A service that only plays through a US
-// tunnel (`tunnel`) is only offered while one runs.
+// signs for and its sitemap says nothing of what is popular, The Roku
+// Channel's pages are made for a signed-in viewer. Their catalogs go by what
+// TMDB knows to be on the service in the US (its "watch providers",
+// JustWatch's data): ordinary titles, most popular first, with TMDB's genres
+// and a search. That data is wrong now and then ("The Boys" is said to be on
+// The Roku Channel, which has another series of that name), so each title is
+// asked of the service itself before it is listed (`has`: Roku's own search,
+// Tubi's lists) - see checkedOnService. A service that only plays through a
+// US tunnel (`tunnel`) is only offered while one runs.
 const WATCH_SERVICES = [
-    { slug: 'tubi', name: 'Tubi', provider: '73', region: 'US', tunnel: true },
-    { slug: 'roku', name: 'Roku Channel', provider: '207', region: 'US', tunnel: true },
-    { slug: 'xumo', name: 'Xumo Play', provider: '1963', region: 'US', tunnel: false }
+    { slug: 'tubi', name: 'Tubi', provider: '73', region: 'US', tunnel: true, has: (wanted, kind) => require('./providers/tubi').has(wanted, kind) },
+    { slug: 'roku', name: 'Roku Channel', provider: '207', region: 'US', tunnel: true, has: (wanted, kind) => require('./providers/roku').has(wanted, kind) }
 ];
 const WATCH_PAGE = 20;
+// How long a service's answer about a title holds, how many are kept, how many are asked at once,
+// how long a catalog waits for the answers (a title not answered for in time is listed: the
+// answer is there the next time), and how many of TMDB's pages are read for one of the catalog's.
+const WATCH_CHECK_TTL_MS = 24 * 60 * 60 * 1000;
+const WATCH_CHECKS_KEPT = 5000;
+const WATCH_CHECKS_AT_ONCE = 5;
+const WATCH_CHECK_WAIT_MS = 7000;
+const WATCH_PAGES_READ = 8;
+const watchChecks = new Map(); // "<slug>|<media>|<tmdb id>" -> { at, has: true | false | Promise }
+
+// Whether the service has TMDB's [item], as the service itself says: the answer when it is known,
+// else undefined - then it is being asked (a few at a time, see drainWatchChecks) for the next time.
+const watchQueue = [];
+let watchAsking = 0;
+function onService(service, media, item) {
+    const key = `${service.slug}|${media}|${item.id}`;
+    const kept = watchChecks.get(key);
+    if (kept && Date.now() - kept.at < WATCH_CHECK_TTL_MS) return kept.has;
+    const wanted = {
+        titles: [item.title, item.name, item.original_title, item.original_name].filter(Boolean),
+        year: Number(String(item.release_date || item.first_air_date || '').slice(0, 4)) || null
+    };
+    const asked = new Promise(resolve => { watchQueue.push({ service, wanted, kind: media === 'tv' ? 'series' : 'movie', resolve }); drainWatchChecks(); })
+        .then(has => { watchChecks.set(key, { at: Date.now(), has }); return has; })
+        // (The service can't be asked now: nothing is known, and it is asked again the next time.)
+        .catch(() => { watchChecks.delete(key); return undefined; });
+    watchChecks.set(key, { at: Date.now(), has: asked });
+    while (watchChecks.size > WATCH_CHECKS_KEPT) watchChecks.delete(watchChecks.keys().next().value);
+    return asked;
+}
+function drainWatchChecks() {
+    while (watchAsking < WATCH_CHECKS_AT_ONCE && watchQueue.length) {
+        const job = watchQueue.shift();
+        watchAsking++;
+        Promise.resolve().then(() => job.service.has(job.wanted, job.kind))
+            .then(has => job.resolve(!!has), err => job.resolve(Promise.reject(err)))
+            .finally(() => { watchAsking--; drainWatchChecks(); });
+    }
+}
+// TMDB's [items] without the ones the service says it doesn't have. One whose answer isn't there
+// within [waitMs] stays in (better a title too many than a row that comes up empty).
+function checkedOnService(service, media, items, waitMs) {
+    const late = new Promise(resolve => setTimeout(() => resolve(undefined), waitMs).unref());
+    return Promise.all(items.map(item => Promise.race([Promise.resolve(onService(service, media, item)), late])))
+        .then(answers => items.filter((item, i) => answers[i] !== false));
+}
 // The genres as this addon's other catalogs have them, and two more that TMDB has a genre for.
 const WATCH_GENRES = GENRE_CATALOGS.concat([
     { slug: 'documentary', label: 'Documentary', movie: { with_genres: '99' }, tv: { with_genres: '99' } },
@@ -356,11 +414,24 @@ function resolveWatchServiceCatalog(type, id, extra) {
     // (A genre TMDB needs two questions for: the first one here.)
     if (genre) Object.assign(params, [].concat(genre[media])[0]);
     if (e.search) params.with_text_query = String(e.search);
-    const page = Math.floor((Number(e.skip) || 0) / WATCH_PAGE) + 1;
+    const skip = Number(e.skip) || 0;
     // (TMDB looks for the words in a title's description too: the ones that have them in their name first.)
     const words = e.search ? String(e.search).toLowerCase().split(/\s+/).filter(Boolean) : [];
     const named = (item) => { const name = String(item.title || item.name || '').toLowerCase(); return words.every(w => name.includes(w)); };
-    return tmdb.discoverPage(media, params, page)
+    // The catalog's titles are TMDB's without the ones the service doesn't have, so its pages aren't
+    // TMDB's: TMDB's are read from the first until the asked stretch is full (the answers are kept,
+    // so only what is new is asked).
+    const started = Date.now();
+    const gather = (page, found) => tmdb.discoverPage(media, params, page).then(items => {
+        if (!items.length) return found;
+        const left = Math.max(500, WATCH_CHECK_WAIT_MS - (Date.now() - started));
+        return checkedOnService(service, media, items, left).then(kept => {
+            const all = found.concat(kept);
+            return all.length >= skip + WATCH_PAGE || page >= Math.floor(skip / WATCH_PAGE) + WATCH_PAGES_READ ? all : gather(page + 1, all);
+        });
+    });
+    return gather(1, [])
+        .then(all => all.slice(skip, skip + WATCH_PAGE))
         .then(items => (words.length ? items.filter(named).concat(items.filter(i => !named(i))) : items))
         .then(items => Promise.all(items.map(item => tmdbItemToMeta(item, media, type).then(meta => meta && Object.assign(meta, {
             background: tmdb.backdropUrl(item.backdrop_path) || undefined,
@@ -379,6 +450,7 @@ function buildCatalogs() {
     return [
         ...plutoCatalogs(),
         ...plexCatalogs(),
+        ...xumoCatalogs(),
         ...serviceGenreCatalogs(),
         ...watchServiceCatalogs(),
         // Plain TMDB browse catalogs (see the DISCOVER_CATALOG_* constants/
@@ -443,7 +515,7 @@ function enabledYoutubeCatalogs() {
 }
 // Clients cache a manifest by version, so switching a channel on/off has to
 // change it: the patch number is the switch file's revision counter.
-const MANIFEST_BASE_VERSION = '1.35';
+const MANIFEST_BASE_VERSION = '1.36';
 function manifestVersion(base) {
     return `${base}.${youtubeChannel.settingsRevision()}`;
 }
@@ -1086,6 +1158,9 @@ function resolveCatalog(type, id, extra) {
         // A service's title that surely is an ordinary one is handed out as that (lib/regularTitle.js).
         return plexvod.catalog(type, extra).then(metas => regularTitle.asRegularTitles(metas, episodesAt(plexvod))).catch(err => { console.error(`[PlexVOD] ${err.message}`); return []; });
     }
+    if ((id === 'xumo-movies' && type === 'movie') || (id === 'xumo-series' && type === 'series')) {
+        return xumo.catalog(type, extra).then(metas => regularTitle.asRegularTitles(metas, episodesAt(xumo))).catch(err => { console.error(`[Xumo] ${err.message}`); return []; });
+    }
     if ((id === 'pluto-movies' && type === 'movie') || (id === 'pluto-series' && type === 'series')) {
         return plutotv.catalog(type, extra).then(metas => regularTitle.asRegularTitles(metas, episodesAt(plutotv))).catch(err => { console.error(`[PlutoTV] ${err.message}`); return []; });
     }
@@ -1151,6 +1226,9 @@ function resolveMeta(type, id) {
     }
     if (id.startsWith(plexvod.PREFIX)) {
         return plexvod.meta(id).catch(err => { console.error(`[PlexVOD] ${err.message}`); return null; });
+    }
+    if (id.startsWith(xumo.PREFIX)) {
+        return xumo.meta(id).catch(err => { console.error(`[Xumo] ${err.message}`); return null; });
     }
     if (id.startsWith(plutotv.PREFIX)) {
         return plutotv.meta(id).catch(err => { console.error(`[PlutoTV] ${err.message}`); return null; });
@@ -1519,6 +1597,12 @@ const server = http.createServer((req, res) => {
                 console.log(`[addon-server] No streams for ${id}: ${vpn.reason}`);
                 return sendJson(res, 200, { streams: [] });
             }
+            if (id.startsWith(xumo.PREFIX)) {
+                // (Its streams play from anywhere: nothing comes through this server.)
+                return xumo.streams(id)
+                    .then(found => sendJson(res, 200, { streams: stremioStreams(found, `http://${req.headers.host}`) }))
+                    .catch(err => { console.error(`[Xumo] ${err.message}`); sendJson(res, 200, { streams: [] }); });
+            }
             const relayed = id.startsWith(plutotv.PREFIX) ? plutotv : id.startsWith(plexvod.PREFIX) ? plexvod : id.startsWith(plexlive.PREFIX) ? plexlive : null;
             if (relayed) {
                 // Their playlists can come through this server and a tunnel, at the address the client used.
@@ -1547,10 +1631,10 @@ server.listen(PORT, () => {
     console.log(`[addon-server] ${memoryTuning.describe()}`);
     // The WireGuard tunnels uploaded on the dashboard (lib/wireguard.js).
     wireguard.sync();
-    // Pluto's and Plex's genre lists are part of the manifest, which is built at once from what is
+    // Pluto's, Plex's and Xumo's genre lists are part of the manifest, which is built at once from what is
     // known: looked up now (and once more, for tunnels that needed a moment), so a client's first
     // manifest already has them.
-    [1000, 8000].forEach(ms => setTimeout(() => { plutotv.genreOptions(); plexvod.genreOptions(); plexlive.genreOptions(); }, ms).unref());
+    [1000, 8000].forEach(ms => setTimeout(() => { plutotv.genreOptions(); plexvod.genreOptions(); plexlive.genreOptions(); xumo.genreOptions(); }, ms).unref());
     // The list of Tubi's films (providers/tubi.js), once the tunnels are up: before a first search asks for it.
     setTimeout(() => require('./providers/tubi').warmUp(), 20000).unref();
     // Xumo's titles (providers/xumo.js): its lists are read every few days, a minute after the start.

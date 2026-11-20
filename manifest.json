@@ -798,6 +798,26 @@
       "contentLanguage": [
         "en"
       ]
+    },
+    {
+      "id": "xumo",
+      "name": "Xumo Play",
+      "description": "Xumo Play's free movies and series (US; its API and streams answer from anywhere), found in its channels' lists by name (films also by running time); without adverts in the stream; titles Xumo only has protected are left out - see providers/xumo.js.",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/xumo.js",
+      "enabled": true,
+      "formats": [
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=xumo.com&sz=128",
+      "contentLanguage": [
+        "en"
+      ]
     }
   ]
 }

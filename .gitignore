@@ -11,4 +11,5 @@ bin/wireproxy
 bin/wireproxy.exe
 data/plex-session.json
 data/tubi-index.txt*
+data/xumo-index.txt*
 bin/wireproxy.version

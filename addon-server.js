@@ -1352,9 +1352,10 @@ const server = http.createServer((req, res) => {
     // /probe/tubi - how Tubi offers its titles, seen through a US tunnel (lib/tubiProbe.js): a look before anything is built for it.
     if (parts[0] === 'probe' && parts[1] === 'tubi' && parts.length === 2 && req.method === 'GET') {
         const q = parsedUrl.searchParams;
-        // ?u=<one of Tubi's own addresses>: that address as it answers through the tunnel (&m=POST, &b=<body>, &a=<bearer token>, &from=, &max=).
+        // ?u=<an address of Tubi, The Roku Channel or Xumo>: that address as it answers through the tunnel
+        // (&m=POST, &b=<body>, &a=<bearer token>, &c=<cookies>, &h=<more headers as JSON>, &from=, &max=).
         const tubi = require('./lib/tubiProbe');
-        return (q.get('u') ? tubi.look(q.get('u'), { method: q.get('m'), body: q.get('b'), bearer: q.get('a'), from: q.get('from'), max: q.get('max') }) : tubi.probe())
+        return (q.get('u') ? tubi.look(q.get('u'), { method: q.get('m'), body: q.get('b'), bearer: q.get('a'), cookie: q.get('c'), headers: q.get('h'), from: q.get('from'), max: q.get('max') }) : tubi.probe())
             .then(report => sendJson(res, 200, report))
             .catch(err => sendJson(res, 200, { ok: false, reason: err.message }));
     }
@@ -1496,6 +1497,8 @@ server.listen(PORT, () => {
     [1000, 8000].forEach(ms => setTimeout(() => { plutotv.genreOptions(); plexvod.genreOptions(); plexlive.genreOptions(); }, ms).unref());
     // The list of Tubi's films (providers/tubi.js), once the tunnels are up: before a first search asks for it.
     setTimeout(() => require('./providers/tubi').warmUp(), 20000).unref();
+    // Xumo's titles (providers/xumo.js): its lists are read every few days, a minute after the start.
+    setTimeout(() => require('./providers/xumo').warmUp(), 60000).unref();
     console.log('Install this as a Nuvio/Stremio addon:');
     console.log(`  http://${ip}:${PORT}/manifest.json`);
     console.log('Press Ctrl+C to stop\n');

@@ -342,6 +342,16 @@ function convertUkTime(dateStr, hhmm) {
     return { time, ts };
 }
 
+// The day an event is on: the one its own title names, else the day it is
+// listed under. DaddyLive lists what is coming up ("Upcoming Events") under
+// today, with the real day in the title ("Formula 1 Qatar Grand Prix – Race |
+// Lusail, Qatar | 29 November 2026"): taken by the day it stood under, Sunday's
+// race showed as live on the Tuesday before (seen 2026-11-24) and its sessions
+// stood on the wrong days all week.
+function eventDate(ev) {
+    return parseDayDate(ev.title) || ev.date;
+}
+
 // Categories that aren't live sport feeds we want to surface.
 const SKIP_CATEGORY_RE = /tv shows?|24\/?7/i;
 
@@ -368,10 +378,11 @@ function crawlSchedule() {
                             cat.events.forEach((ev) => {
                                 // Stable per-event key: one channel carries many
                                 // events a day, so the channel alone can't be the id.
+                                const date = eventDate(ev);
                                 const key = crypto.createHash('sha1')
-                                    .update(`${ev.date || ''}|${ev.time}|${ev.title}`).digest('hex').slice(0, 10);
+                                    .update(`${date || ''}|${ev.time}|${ev.title}`).digest('hex').slice(0, 10);
                                 if (byKey.has(key)) return;
-                                const local = convertUkTime(ev.date, ev.time);
+                                const local = convertUkTime(date, ev.time);
                                 const entry = {
                                     key,
                                     time: local.time,       // display time in TARGET_TZ
@@ -867,5 +878,5 @@ module.exports = {
     getEvent,
     getChannelStreams,
     // exported for isolated testing against saved HTML:
-    _parse: { parseHomeSections, parseScheduleDays, extractPlayable, extractEmbedUrl, decryptEconfig, convertUkTime, parseDayDate, feedsOnAir, hasStream, eventLengthMs, usableEmbed }
+    _parse: { parseHomeSections, parseScheduleDays, extractPlayable, extractEmbedUrl, decryptEconfig, convertUkTime, parseDayDate, eventDate, feedsOnAir, hasStream, eventLengthMs, usableEmbed }
 };

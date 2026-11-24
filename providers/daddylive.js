@@ -105,11 +105,64 @@ function withHostSlot(host, fn) {
     });
 }
 
+// DaddyLive's own site can refuse the address this server goes out by: seen
+// 2026-11-24 during a Champions League evening, every connection was reset
+// right after it was made (whatever name was asked for) from the Proton VPN
+// address the home network leaves through, while the site answered the rest
+// of the world - the schedule went stale and no event had streams. So when
+// the site's own host can't be connected to directly, it is asked through one
+// of the WireGuard tunnels this server runs (lib/wireguard.js), which come out
+// elsewhere; the one that answers is kept for that host for a while. Only for
+// the site itself: a stream host asked through a tunnel could tie what it
+// hands out to an address the TV doesn't play from.
+const wireguard = require('../lib/wireguard');
+const { tunnelFetch } = require('../lib/tunnelFetch');
+const TUNNEL_ROUTE_TTL_MS = 1000 * 60 * 30;
+const tunnelRoutes = new Map(); // host -> { source, until }
+const REFUSED = /ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|socket hang up|^timeout for /i;
+
+function isSiteHost(host) {
+    const own = SEED_BASES.concat(BASE_OVERRIDE || [], baseCache.url || []).map((u) => { try { return new URL(u).hostname; } catch (e) { return null; } });
+    return own.includes(host);
+}
+
+// The request through the tunnel of [source], in rawRequest's shape (no redirect following).
+function tunnelRequest(source, url, referer) {
+    const proxy = wireguard.proxyFor(source);
+    if (!proxy) return Promise.reject(new Error(`no tunnel for ${source}`));
+    const headers = { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml,application/json,*/*' };
+    if (referer) headers.Referer = referer;
+    // (Its last argument at the limit: redirects are left to the caller, as with rawRequest.)
+    return tunnelFetch(proxy, url, { headers, timeoutMs: FETCH_TIMEOUT_MS }, Infinity)
+        .then((r) => ({ status: r.status || 0, headers: r.headers || {}, body: r.text() }));
+}
+
+// One request, by the way that works for its host: directly, or - the site's own host, refused directly - through a tunnel.
+function routedRequest(url, referer, host) {
+    const kept = tunnelRoutes.get(host);
+    if (kept && kept.until > Date.now()) {
+        return tunnelRequest(kept.source, url, referer).catch(() => { tunnelRoutes.delete(host); return routedRequest(url, referer, host); });
+    }
+    return rawRequest(url, referer).catch((err) => {
+        if (!REFUSED.test(`${err.code || ''} ${err.message || ''}`) || !isSiteHost(host)) throw err;
+        const sources = Object.keys(wireguard.SOURCES).filter((s) => wireguard.proxyFor(s));
+        const tryTunnel = (i) => {
+            if (i >= sources.length) throw err;
+            return tunnelRequest(sources[i], url, referer).then((res) => {
+                tunnelRoutes.set(host, { source: sources[i], until: Date.now() + TUNNEL_ROUTE_TTL_MS });
+                console.log(`[DaddyLive] ${host} refuses a direct connection (${err.code || err.message}): asked through the ${wireguard.SOURCES[sources[i]]} tunnel`);
+                return res;
+            }, () => tryTunnel(i + 1));
+        };
+        return tryTunnel(0);
+    });
+}
+
 // One raw request (no redirect following). Resolves { status, headers, body }.
 function request(url, referer) {
     let host;
     try { host = new URL(url).hostname; } catch (e) { return Promise.reject(e); }
-    return withHostSlot(host, () => rawRequest(url, referer));
+    return withHostSlot(host, () => routedRequest(url, referer, host));
 }
 
 function rawRequest(url, referer) {

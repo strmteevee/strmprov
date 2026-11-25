@@ -362,7 +362,10 @@ function extractDriveseedPage(url) {
         if (text.includes("instant download")) {
           const instantRes = yield fetchWithTimeout(href, { headers: HEADERS, redirect: "follow" });
           const landedUrl = instantRes.url || "";
-          const afterUrlParam = landedUrl.includes("url=") ? landedUrl.split("url=")[1] : "";
+          // (As a query value it can come encoded - "https%3A%2F%2F..." on video-seed.dev, seen
+          // 2026-11-25 - so it is read as one, which decodes it.)
+          let afterUrlParam = "";
+          try { afterUrlParam = new URL(landedUrl).searchParams.get("url") || ""; } catch (e) { afterUrlParam = landedUrl.includes("url=") ? decodeURIComponent(landedUrl.split("url=")[1]) : ""; }
           // "Instant Download" lands on one of several gateway domains
           // (confirmed live: video-seed.dev, video-plex.xyz, video-gen.xyz) -
           // video-seed.dev happens to put the real, already-playable URL

@@ -238,7 +238,8 @@
           "auth_token": "CwgTS317M83kEQR4ErRaW_IOI0hJIU00Y91Umm97ZC0",
           "disable_direct": true
         },
-        "probeTimeoutMs": 3500
+        "probeTimeoutMs": 8000,
+        "timeoutMs": 15000
       },
       "enabled": true,
       "formats": [

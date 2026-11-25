@@ -39,7 +39,9 @@ function normalizeListedDomain(value) {
         const url = new URL(domain);
         const query = url.searchParams.get('q');
         if (/(^|\.)google\.[a-z.]+$/i.test(url.hostname) && query) {
-            domain = /^https?:\/\//i.test(query) ? query : `https://${query}`;
+            // The search may be "site:movies4u.build" (seen 2026-11-25): the domain is what follows "site:".
+            const named = query.trim().replace(/^site:/i, '').split(/\s+/)[0];
+            domain = /^https?:\/\//i.test(named) ? named : `https://${named}`;
         }
     } catch (e) { /* not a URL - keep as is */ }
     return domain.replace(/\/+$/, '');

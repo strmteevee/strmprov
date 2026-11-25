@@ -35,6 +35,8 @@
 //   link that played had answered within 1.5 s, while some twenty others ran
 //   into the limit each time (their relay gives a 502 after 10 s, or a
 //   playlist after 15 s), so the whole search took the limit, every time.
+//   (Raised to 8 s for PenguPlay on 2026-11-25: its links that played then took
+//   5-6 s to answer, and at 3.5 s it gave nothing on the Pi half the time.)
 const DEFAULT_TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 
